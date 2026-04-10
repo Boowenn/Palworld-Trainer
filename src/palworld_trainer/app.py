@@ -14,6 +14,7 @@ from .environment import build_module_statuses, scan_environment
 from .models import EnvironmentReport, TrainerSettings
 from .runtime import render_runtime_commands_text
 from .ue4ss import deploy_bridge
+from . import __version__
 
 
 class TrainerApp:
@@ -286,6 +287,7 @@ def build_self_check_payload(settings: TrainerSettings) -> dict[str, object]:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Palworld desktop trainer shell")
+    parser.add_argument("--version", action="version", version=f"Palworld Trainer {__version__}")
     parser.add_argument("--self-check", action="store_true", help="Print the environment report as JSON and exit.")
     parser.add_argument("--build", action="store_true", help="Invoke the PowerShell build script and exit.")
     parser.add_argument(

@@ -33,6 +33,13 @@ Module 3 now adds:
 - Generic `FindAllOf` scans through `pt_find <ShortClassName> [limit]`
 - Quick repeat scans through `pt_repeat` and `CTRL+F8`
 
+Module 4 now adds:
+
+- Unified project versioning
+- A local release packager that creates a zip archive plus SHA256 checksum
+- A GitHub Releases workflow triggered by version tags
+- Release-ready Windows packaging from CI
+
 ## Local run
 
 ```powershell
@@ -65,10 +72,20 @@ python .\run_trainer.py --list-runtime-commands
 powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1 -Clean
 ```
 
+## Local release package
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\package_release.ps1 -Clean
+```
+
 ## CI build
 
 The repository now includes an active workflow at `.github/workflows/build.yml`.
 The original template is also kept at `docs/build-workflow.yml.example` for reference.
+
+## Release automation
+
+Push a tag such as `v0.4.0` and GitHub Actions will build the Windows package and publish a GitHub Release with the generated zip and checksum files.
 
 ## Planned modules
 
