@@ -10,7 +10,11 @@ It currently provides:
 - `pt_world`
 - `pt_players [limit]`
 - `pt_find <ShortClassName> [limit]`
+- `pt_presets`
+- `pt_scan <preset> [limit]`
 - `pt_repeat`
+- `pt_log_status`
+- `pt_log_clear`
 - `CTRL+F6` to print the local player position
 - `CTRL+F7` to print a world snapshot
 - `CTRL+F8` to repeat the last `pt_find` scan
@@ -20,6 +24,8 @@ Examples:
 - `pt_find PalCharacter 12`
 - `pt_find PlayerController 8`
 - `pt_players 8`
+- `pt_scan pal_spawners 12`
+- `pt_scan supply_spawners 10`
 
 The desktop shell can deploy this folder directly into:
 

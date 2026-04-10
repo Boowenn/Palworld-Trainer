@@ -12,7 +12,7 @@ from tkinter import filedialog, messagebox, ttk
 from .config import save_settings
 from .environment import build_module_statuses, scan_environment
 from .models import EnvironmentReport, TrainerSettings
-from .runtime import render_runtime_commands_text
+from .runtime import render_runtime_commands_text, render_runtime_presets_text
 from .ue4ss import deploy_bridge
 from . import __version__
 
@@ -58,7 +58,7 @@ class TrainerApp:
         ttk.Label(top_frame, text="Palworld Trainer", style="Header.TLabel").pack(anchor=tk.W)
         ttk.Label(
             top_frame,
-            text="Modules 1-3 provide the desktop shell, UE4SS bridge deployment, runtime diagnostics, and packaging support.",
+            text="Modules 1-5 provide the desktop shell, UE4SS bridge deployment, runtime diagnostics, preset scans, and packaging support.",
             style="Muted.TLabel",
         ).pack(anchor=tk.W, pady=(4, 12))
 
@@ -122,6 +122,12 @@ class TrainerApp:
         self.modules_container.pack(fill=tk.BOTH, expand=True)
 
     def _build_runtime_tab(self) -> None:
+        actions = ttk.Frame(self.runtime_tab)
+        actions.pack(fill=tk.X, pady=(0, 12))
+
+        ttk.Button(actions, text="Open Deployed Bridge", command=self.open_bridge_target).pack(side=tk.LEFT)
+        ttk.Button(actions, text="Open Session Log", command=self.open_bridge_log).pack(side=tk.LEFT, padx=(8, 0))
+
         self.runtime_text = tk.Text(
             self.runtime_tab,
             height=18,
@@ -180,6 +186,7 @@ class TrainerApp:
             f"UE4SSExperimentalPW    : {'Enabled' if report.active_ue4ss_experimental else 'Not enabled'}",
             f"Bridge source          : {'OK' if report.trainer_bridge_source_exists else 'Missing'}",
             f"Bridge deployed        : {'Yes' if report.trainer_bridge_deployed else 'No'}",
+            f"Bridge session log     : {'Present' if report.trainer_bridge_log_exists else 'Not found yet'}",
         ]
 
         self.summary_text.configure(state=tk.NORMAL)
@@ -203,9 +210,9 @@ class TrainerApp:
         payload = {
             "notes": report.notes,
             "next_steps": [
-                "Expand the bridge into higher-value runtime tools while keeping non-host features client-side only.",
+                "Layer in more Palworld-specific client-side scan presets and surface them through the desktop runtime tools.",
                 "Add safe diagnostics such as replicated entity scans, world snapshots, and live information panels.",
-                "Automate executable builds and release packaging in Module 4.",
+                "Keep release packaging ready for the next tagged build.",
             ],
         }
 
@@ -258,6 +265,28 @@ class TrainerApp:
         self.refresh_environment()
         messagebox.showinfo("Palworld Trainer", message)
 
+    def open_bridge_target(self) -> None:
+        if not self.report.trainer_bridge_target:
+            messagebox.showwarning("Palworld Trainer", "Bridge target path is not available yet.")
+            return
+
+        if not self.report.trainer_bridge_target.exists():
+            messagebox.showwarning("Palworld Trainer", "The bridge has not been deployed yet.")
+            return
+
+        self._open_path(self.report.trainer_bridge_target)
+
+    def open_bridge_log(self) -> None:
+        if not self.report.trainer_bridge_log_path:
+            messagebox.showwarning("Palworld Trainer", "Bridge session log path is not available yet.")
+            return
+
+        if not self.report.trainer_bridge_log_path.exists():
+            messagebox.showwarning("Palworld Trainer", "The bridge session log has not been created yet.")
+            return
+
+        self._open_path(self.report.trainer_bridge_log_path)
+
     def _open_path(self, path: Path) -> None:
         try:
             os.startfile(path)  # type: ignore[attr-defined]
@@ -281,6 +310,8 @@ def build_self_check_payload(settings: TrainerSettings) -> dict[str, object]:
         "trainer_bridge_source_exists": report.trainer_bridge_source_exists,
         "trainer_bridge_deployed": report.trainer_bridge_deployed,
         "trainer_bridge_target": str(report.trainer_bridge_target) if report.trainer_bridge_target else None,
+        "trainer_bridge_log_exists": report.trainer_bridge_log_exists,
+        "trainer_bridge_log_path": str(report.trainer_bridge_log_path) if report.trainer_bridge_log_path else None,
         "notes": report.notes,
     }
 
@@ -294,6 +325,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--list-runtime-commands",
         action="store_true",
         help="Print the runtime command catalog and exit.",
+    )
+    parser.add_argument(
+        "--list-runtime-presets",
+        action="store_true",
+        help="Print the runtime preset catalog and exit.",
     )
     parser.add_argument(
         "--deploy-ue4ss-bridge",
@@ -322,6 +358,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.list_runtime_commands:
         print(render_runtime_commands_text())
+        return 0
+
+    if args.list_runtime_presets:
+        print(render_runtime_presets_text())
         return 0
 
     if args.deploy_ue4ss_bridge:

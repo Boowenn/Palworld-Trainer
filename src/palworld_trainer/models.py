@@ -22,6 +22,15 @@ class RuntimeCommandSpec:
 
 
 @dataclass(slots=True)
+class RuntimePresetSpec:
+    key: str
+    title: str
+    query: str
+    description: str
+    source: str
+
+
+@dataclass(slots=True)
 class EnvironmentReport:
     game_root: Path | None
     repo_root: Path
@@ -36,6 +45,8 @@ class EnvironmentReport:
     trainer_bridge_source_exists: bool
     trainer_bridge_deployed: bool
     trainer_bridge_target: Path | None
+    trainer_bridge_log_exists: bool
+    trainer_bridge_log_path: Path | None
     notes: list[str] = field(default_factory=list)
 
 

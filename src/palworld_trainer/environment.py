@@ -6,6 +6,7 @@ from .models import EnvironmentReport, ModuleStatus, TrainerSettings
 
 
 BRIDGE_MOD_NAME = "PalworldTrainerBridge"
+BRIDGE_LOG_NAME = "session.log"
 
 
 def get_repo_root() -> Path:
@@ -53,6 +54,7 @@ def scan_environment(settings: TrainerSettings) -> EnvironmentReport:
     ue4ss_root = mods_root / "NativeMods" / "UE4SS" if mods_root else None
     ue4ss_mods = ue4ss_root / "Mods" if ue4ss_root else None
     trainer_bridge_target = ue4ss_mods / BRIDGE_MOD_NAME if ue4ss_mods else None
+    trainer_bridge_log = trainer_bridge_target / BRIDGE_LOG_NAME if trainer_bridge_target else None
     pal_mod_settings = mods_root / "PalModSettings.ini" if mods_root else None
 
     report = EnvironmentReport(
@@ -69,6 +71,8 @@ def scan_environment(settings: TrainerSettings) -> EnvironmentReport:
         trainer_bridge_source_exists=trainer_bridge_source.exists(),
         trainer_bridge_deployed=bool(trainer_bridge_target and trainer_bridge_target.exists()),
         trainer_bridge_target=trainer_bridge_target,
+        trainer_bridge_log_exists=bool(trainer_bridge_log and trainer_bridge_log.exists()),
+        trainer_bridge_log_path=trainer_bridge_log,
     )
 
     if not report.game_root_exists:
@@ -100,6 +104,9 @@ def scan_environment(settings: TrainerSettings) -> EnvironmentReport:
 
     if report.trainer_bridge_deployed:
         report.notes.append("PalworldTrainerBridge is already deployed into the game UE4SS Mods folder.")
+
+    if report.trainer_bridge_log_exists:
+        report.notes.append("PalworldTrainerBridge session.log is present and can be opened from the Runtime tab.")
 
     return report
 
@@ -140,6 +147,18 @@ def build_module_statuses(report: EnvironmentReport) -> list[ModuleStatus]:
             key="module-4",
             title="Module 4: Release Packaging",
             description="Standalone executable builds and GitHub release automation.",
-            status="scaffolded",
+            status="ready",
+        ),
+        ModuleStatus(
+            key="module-5",
+            title="Module 5: Preset Scans",
+            description="Preset runtime scans, session logging, and desktop shortcuts for common UE4SS diagnostics.",
+            status=(
+                "ready"
+                if report.trainer_bridge_deployed
+                else "available"
+                if report.ue4ss_root_exists and report.trainer_bridge_source_exists
+                else "blocked"
+            ),
         ),
     ]

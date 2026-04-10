@@ -11,7 +11,6 @@ Module 1 delivers:
 - UE4SS environment scanning
 - Settings persistence
 - A PyInstaller packaging entry point
-- A PyInstaller packaging entry point
 
 Module 2 now adds:
 
@@ -40,6 +39,13 @@ Module 4 now adds:
 - A GitHub Releases workflow triggered by version tags
 - Release-ready Windows packaging from CI
 
+Module 5 now adds:
+
+- Runtime preset scans derived from Palworld asset names and UE base classes
+- `pt_presets` and `pt_scan <preset> [limit]` for faster in-game diagnostics
+- A bridge session log mirrored to `Mods/NativeMods/UE4SS/Mods/PalworldTrainerBridge/session.log`
+- Runtime tab shortcuts to open the deployed bridge folder and session log
+
 ## Local run
 
 ```powershell
@@ -66,6 +72,12 @@ python .\run_trainer.py --deploy-ue4ss-bridge
 python .\run_trainer.py --list-runtime-commands
 ```
 
+## List runtime presets
+
+```powershell
+python .\run_trainer.py --list-runtime-presets
+```
+
 ## Local build
 
 ```powershell
@@ -85,7 +97,7 @@ The original template is also kept at `docs/build-workflow.yml.example` for refe
 
 ## Release automation
 
-Push a tag such as `v0.4.0` and GitHub Actions will build the Windows package and publish a GitHub Release with the generated zip and checksum files.
+Push a tag such as `v0.5.0` and GitHub Actions will build the Windows package and publish a GitHub Release with the generated zip and checksum files.
 
 ## Planned modules
 
@@ -93,3 +105,4 @@ Push a tag such as `v0.4.0` and GitHub Actions will build the Windows package an
 2. UE4SS bridge and script deployment
 3. Runtime diagnostics and command catalog
 4. Final packaging, release automation, and versioned builds
+5. Preset scans, session logging, and runtime shortcuts

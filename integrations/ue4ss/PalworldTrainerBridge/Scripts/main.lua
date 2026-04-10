@@ -1,11 +1,85 @@
 local UEHelpers = require("UEHelpers")
 
 local ModName = "PalworldTrainerBridge"
-local Version = "0.3.0"
+local Version = "0.5.0"
 local LastFindQuery = nil
+local SessionLogPath = "Mods/NativeMods/UE4SS/Mods/PalworldTrainerBridge/session.log"
+local LogWriteHealthy = true
+local LastLogFailureShown = false
+local PresetQueries = {
+    {
+        key = "characters",
+        title = "Nearby Characters",
+        query = "Character",
+        description = "Broad replicated character scan for UE Character-derived actors.",
+        source = "UE base class",
+    },
+    {
+        key = "controllers",
+        title = "Player Controllers",
+        query = "PlayerController",
+        description = "Useful for validating controller presence on the local client.",
+        source = "UE base class",
+    },
+    {
+        key = "pal_player_controller",
+        title = "Pal Player Controller",
+        query = "BP_PalPlayerController_C",
+        description = "Asset-derived Palworld player controller class.",
+        source = "Manifest-derived asset name",
+    },
+    {
+        key = "pal_spawners",
+        title = "Pal Spawners",
+        query = "BP_PalSpawner_Standard_C",
+        description = "Asset-derived standard Pal spawn points.",
+        source = "Manifest-derived asset name",
+    },
+    {
+        key = "npc_spawners",
+        title = "NPC Spawners",
+        query = "BP_MonoNPCSpawner_C",
+        description = "Asset-derived NPC spawner class.",
+        source = "Manifest-derived asset name",
+    },
+    {
+        key = "supply_spawners",
+        title = "Supply Spawners",
+        query = "BP_SupplySpawnerBase_C",
+        description = "Asset-derived supply drop spawner base class.",
+        source = "Manifest-derived asset name",
+    },
+    {
+        key = "pal_managers",
+        title = "Pal Managers",
+        query = "BP_PalCharacterManager_C",
+        description = "Asset-derived character manager class for world-level checks.",
+        source = "Manifest-derived asset name",
+    },
+}
+
+local function append_session_line(message)
+    local handle = io.open(SessionLogPath, "a+")
+    if not handle then
+        return false, "unable to open session log"
+    end
+
+    handle:write(string.format("[%s] [%s] %s\n", os.date("%Y-%m-%d %H:%M:%S"), ModName, message))
+    handle:close()
+    return true, nil
+end
 
 local function log(message)
     print(string.format("[%s] %s\n", ModName, message))
+
+    local ok, err = append_session_line(message)
+    LogWriteHealthy = ok
+    if not ok and not LastLogFailureShown then
+        LastLogFailureShown = true
+        print(string.format("[%s] Session log write failed: %s\n", ModName, tostring(err)))
+    elseif ok then
+        LastLogFailureShown = false
+    end
 end
 
 local function get_player()
@@ -26,6 +100,13 @@ end
 
 local function format_vector(vector)
     return string.format("X=%.1f Y=%.1f Z=%.1f", vector.X, vector.Y, vector.Z)
+end
+
+local function normalize_key(value)
+    if not value then
+        return ""
+    end
+    return string.lower(tostring(value))
 end
 
 local function try_get_location(object)
@@ -137,6 +218,43 @@ local function print_rows(title, rows, total)
     end
 end
 
+local function resolve_preset(preset_key)
+    local normalized = normalize_key(preset_key)
+    for _, preset in ipairs(PresetQueries) do
+        if preset.key == normalized then
+            return preset
+        end
+    end
+    return nil
+end
+
+local function print_presets()
+    log("Available presets:")
+    for _, preset in ipairs(PresetQueries) do
+        log(string.format("%s => %s | %s | %s", preset.key, preset.query, preset.title, preset.source))
+    end
+end
+
+local function print_log_status()
+    log("Session log path: " .. SessionLogPath)
+    log("Session log health: " .. (LogWriteHealthy and "OK" or "Degraded"))
+end
+
+local function clear_session_log()
+    local handle = io.open(SessionLogPath, "w")
+    if not handle then
+        log("Unable to clear the session log file.")
+        return true
+    end
+
+    handle:write("")
+    handle:close()
+    LogWriteHealthy = true
+    LastLogFailureShown = false
+    log("Session log cleared: " .. SessionLogPath)
+    return true
+end
+
 local function print_status()
     local player = get_player()
     local controller = get_player_controller()
@@ -176,7 +294,7 @@ local function print_player_snapshot(limit)
     print_rows("Nearby replicated players", rows, total)
 end
 
-local function run_find_query(short_class_name, limit)
+local function run_find_query(short_class_name, limit, label)
     if not short_class_name or short_class_name == "" then
         log("Usage: pt_find <ShortClassName> [limit]")
         return true
@@ -188,16 +306,18 @@ local function run_find_query(short_class_name, limit)
         LastFindQuery = {
             class_name = short_class_name,
             limit = limit,
+            label = label or short_class_name,
         }
         return true
     end
 
     local rows, total = build_rows(objects, limit)
-    print_rows(string.format("FindAllOf('%s')", short_class_name), rows, total)
+    print_rows(label or string.format("FindAllOf('%s')", short_class_name), rows, total)
 
     LastFindQuery = {
         class_name = short_class_name,
         limit = limit,
+        label = label or short_class_name,
     }
     return true
 end
@@ -208,7 +328,7 @@ local function repeat_last_find()
         return true
     end
 
-    return run_find_query(LastFindQuery.class_name, LastFindQuery.limit)
+    return run_find_query(LastFindQuery.class_name, LastFindQuery.limit, LastFindQuery.label)
 end
 
 RegisterConsoleCommandHandler("pt_help", function(full_command, parameters, ar)
@@ -219,7 +339,11 @@ RegisterConsoleCommandHandler("pt_help", function(full_command, parameters, ar)
     log("pt_world  - print the world, level, and replicated player snapshot")
     log("pt_players [limit] - list nearby replicated player pawns")
     log("pt_find <ShortClassName> [limit] - run a generic FindAllOf scan")
+    log("pt_presets - list the built-in scan presets")
+    log("pt_scan <preset> [limit] - run a built-in preset query")
     log("pt_repeat - repeat the most recent pt_find query")
+    log("pt_log_status - print the bridge session log health and path")
+    log("pt_log_clear - clear the bridge session log")
     log("Hotkeys: CTRL+F6 = pt_pos, CTRL+F7 = pt_world, CTRL+F8 = pt_repeat")
     return true
 end)
@@ -258,8 +382,41 @@ RegisterConsoleCommandHandler("pt_find", function(full_command, parameters, ar)
     return run_find_query(short_class_name, limit)
 end)
 
+RegisterConsoleCommandHandler("pt_presets", function(full_command, parameters, ar)
+    print_presets()
+    return true
+end)
+
+RegisterConsoleCommandHandler("pt_scan", function(full_command, parameters, ar)
+    local preset_key = parameters[1]
+    if not preset_key or preset_key == "" then
+        log("Usage: pt_scan <preset> [limit]")
+        print_presets()
+        return true
+    end
+
+    local preset = resolve_preset(preset_key)
+    if not preset then
+        log("Unknown preset: " .. tostring(preset_key))
+        print_presets()
+        return true
+    end
+
+    local limit = clamp_limit(parameters[2], 10, 64)
+    return run_find_query(preset.query, limit, string.format("Preset '%s' => %s", preset.key, preset.query))
+end)
+
 RegisterConsoleCommandHandler("pt_repeat", function(full_command, parameters, ar)
     return repeat_last_find()
+end)
+
+RegisterConsoleCommandHandler("pt_log_status", function(full_command, parameters, ar)
+    print_log_status()
+    return true
+end)
+
+RegisterConsoleCommandHandler("pt_log_clear", function(full_command, parameters, ar)
+    return clear_session_log()
 end)
 
 RegisterKeyBindAsync(Key.F6, { ModifierKey.CONTROL }, function()
@@ -295,5 +452,5 @@ end)
 
 ExecuteInGameThread(function()
     log("Bridge loaded.")
-    log("Use pt_help or the hotkeys CTRL+F6 / CTRL+F7 / CTRL+F8 in-game.")
+    log("Use pt_help, pt_presets, or the hotkeys CTRL+F6 / CTRL+F7 / CTRL+F8 in-game.")
 end)
