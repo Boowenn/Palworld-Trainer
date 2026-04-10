@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from tests import _bootstrap  # noqa: F401
 from palworld_trainer.environment import _looks_like_game_root
 
 

@@ -46,6 +46,14 @@ Module 5 now adds:
 - A bridge session log mirrored to `Mods/NativeMods/UE4SS/Mods/PalworldTrainerBridge/session.log`
 - Runtime tab shortcuts to open the deployed bridge folder and session log
 
+Module 6 now adds:
+
+- A desktop `Host Tools` tab for searchable `ClientCheatCommands` asset catalogs
+- Local enum parsing for `item`, `pal`, `technology`, and `npc` catalogs
+- Copy-ready starter command templates for `@!giveme`, `@!spawn`, and `@!unlocktech`
+- Host command export through `--list-host-commands`
+- Asset search export through `--search-assets KIND QUERY`
+
 ## Local run
 
 ```powershell
@@ -78,6 +86,20 @@ python .\run_trainer.py --list-runtime-commands
 python .\run_trainer.py --list-runtime-presets
 ```
 
+## List host commands
+
+```powershell
+python .\run_trainer.py --list-host-commands
+```
+
+## Search asset catalogs
+
+```powershell
+python .\run_trainer.py --search-assets item shield
+python .\run_trainer.py --search-assets pal anubis
+python .\run_trainer.py --search-assets technology palbox
+```
+
 ## Local build
 
 ```powershell
@@ -97,7 +119,7 @@ The original template is also kept at `docs/build-workflow.yml.example` for refe
 
 ## Release automation
 
-Push a tag such as `v0.5.0` and GitHub Actions will build the Windows package and publish a GitHub Release with the generated zip and checksum files.
+Push a tag such as `v0.6.0` and GitHub Actions will build the Windows package and publish a GitHub Release with the generated zip and checksum files.
 
 ## Planned modules
 
@@ -106,3 +128,4 @@ Push a tag such as `v0.5.0` and GitHub Actions will build the Windows package an
 3. Runtime diagnostics and command catalog
 4. Final packaging, release automation, and versioned builds
 5. Preset scans, session logging, and runtime shortcuts
+6. Host command tooling and searchable asset catalogs

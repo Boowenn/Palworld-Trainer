@@ -9,18 +9,29 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from . import __version__
+from .catalog import get_catalog_kinds, load_all_catalogs, search_catalog
 from .config import save_settings
 from .environment import build_module_statuses, scan_environment
-from .models import EnvironmentReport, TrainerSettings
+from .host_tools import (
+    get_primary_entry_command,
+    render_host_commands_text,
+    render_host_entry_text,
+    render_host_search_text,
+)
+from .models import CatalogEntry, EnvironmentReport, TrainerSettings
 from .runtime import render_runtime_commands_text, render_runtime_presets_text
 from .ue4ss import deploy_bridge
-from . import __version__
 
 
 class TrainerApp:
     def __init__(self, settings: TrainerSettings) -> None:
         self.settings = settings
         self.report = scan_environment(settings)
+        self.host_catalogs: dict[str, list[CatalogEntry]] = {}
+        self.host_search_results: list[CatalogEntry] = []
+        self.host_catalog_error: str | None = None
+        self.tab_titles = ["Overview", "Modules", "Runtime", "Host Tools", "Notes"]
 
         self.root = tk.Tk()
         self.root.title("Palworld Trainer")
@@ -30,6 +41,9 @@ class TrainerApp:
 
         self.status_var = tk.StringVar(value="Ready")
         self.game_root_var = tk.StringVar(value=str(self.report.game_root) if self.report.game_root else "")
+        self.host_kind_var = tk.StringVar(value="item")
+        self.host_query_var = tk.StringVar(value="")
+        self.host_result_count_var = tk.StringVar(value="Catalog results will appear here.")
 
         self._build_style()
         self._build_layout()
@@ -58,7 +72,10 @@ class TrainerApp:
         ttk.Label(top_frame, text="Palworld Trainer", style="Header.TLabel").pack(anchor=tk.W)
         ttk.Label(
             top_frame,
-            text="Modules 1-5 provide the desktop shell, UE4SS bridge deployment, runtime diagnostics, preset scans, and packaging support.",
+            text=(
+                "Modules 1-6 provide the desktop shell, UE4SS bridge deployment, runtime diagnostics, "
+                "preset scans, packaging support, and host command catalogs."
+            ),
             style="Muted.TLabel",
         ).pack(anchor=tk.W, pady=(4, 12))
 
@@ -75,21 +92,26 @@ class TrainerApp:
 
         notebook = ttk.Notebook(root_frame)
         notebook.pack(fill=tk.BOTH, expand=True)
+        notebook.bind("<<NotebookTabChanged>>", self.on_tab_changed)
         self.notebook = notebook
 
         self.overview_tab = ttk.Frame(notebook, padding=12)
         self.modules_tab = ttk.Frame(notebook, padding=12)
         self.runtime_tab = ttk.Frame(notebook, padding=12)
+        self.host_tab = ttk.Frame(notebook, padding=12)
         self.log_tab = ttk.Frame(notebook, padding=12)
         notebook.add(self.overview_tab, text="Overview")
         notebook.add(self.modules_tab, text="Modules")
         notebook.add(self.runtime_tab, text="Runtime")
+        notebook.add(self.host_tab, text="Host Tools")
         notebook.add(self.log_tab, text="Notes")
 
         self._build_overview_tab()
         self._build_modules_tab()
         self._build_runtime_tab()
+        self._build_host_tab()
         self._build_log_tab()
+        self._restore_last_selected_tab()
 
         status_bar = ttk.Frame(root_frame)
         status_bar.pack(fill=tk.X, pady=(10, 0))
@@ -141,6 +163,109 @@ class TrainerApp:
         )
         self.runtime_text.pack(fill=tk.BOTH, expand=True)
 
+    def _build_host_tab(self) -> None:
+        ttk.Label(
+            self.host_tab,
+            text=(
+                "Search the ClientCheatCommands enum catalogs and copy starter commands for "
+                "items, pals, and technology unlocks."
+            ),
+            style="Muted.TLabel",
+            wraplength=860,
+        ).pack(anchor=tk.W, pady=(0, 8))
+
+        self.host_commands_text = tk.Text(
+            self.host_tab,
+            height=16,
+            bg="#16202b",
+            fg="#d7e2ef",
+            relief=tk.FLAT,
+            wrap=tk.WORD,
+            font=("Consolas", 10),
+            padx=12,
+            pady=12,
+        )
+        self.host_commands_text.pack(fill=tk.X, expand=False)
+
+        controls = ttk.Frame(self.host_tab)
+        controls.pack(fill=tk.X, pady=(12, 8))
+
+        ttk.Label(controls, text="Catalog", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(controls, text="Search", style="Muted.TLabel").grid(row=0, column=1, sticky="w", padx=(8, 0))
+
+        kind_combo = ttk.Combobox(
+            controls,
+            textvariable=self.host_kind_var,
+            values=get_catalog_kinds(),
+            state="readonly",
+            width=18,
+        )
+        kind_combo.grid(row=1, column=0, sticky="ew", padx=(0, 8))
+        kind_combo.bind("<<ComboboxSelected>>", self.on_host_filters_changed)
+
+        query_entry = ttk.Entry(controls, textvariable=self.host_query_var, width=40)
+        query_entry.grid(row=1, column=1, sticky="ew", padx=(0, 8))
+        query_entry.bind("<KeyRelease>", self.on_host_filters_changed)
+        query_entry.bind("<Return>", self.on_host_filters_changed)
+
+        ttk.Button(controls, text="Search", command=self.refresh_host_results).grid(row=1, column=2, sticky="ew", padx=(0, 8))
+        ttk.Button(controls, text="Open Enum Folder", command=self.open_client_cheat_commands_enums).grid(
+            row=1,
+            column=3,
+            sticky="ew",
+            padx=(0, 8),
+        )
+        ttk.Button(controls, text="Copy Asset Key", command=self.copy_selected_asset_key).grid(row=1, column=4, sticky="ew", padx=(0, 8))
+        ttk.Button(controls, text="Copy Suggested Command", command=self.copy_selected_host_command).grid(
+            row=1,
+            column=5,
+            sticky="ew",
+        )
+        controls.columnconfigure(1, weight=1)
+
+        results_frame = ttk.Frame(self.host_tab)
+        results_frame.pack(fill=tk.BOTH, expand=True)
+
+        left = ttk.Frame(results_frame)
+        left.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(0, 10))
+
+        ttk.Label(left, textvariable=self.host_result_count_var, style="Muted.TLabel").pack(anchor=tk.W, pady=(0, 6))
+
+        list_container = ttk.Frame(left)
+        list_container.pack(fill=tk.BOTH, expand=True)
+
+        self.host_results_listbox = tk.Listbox(
+            list_container,
+            width=38,
+            bg="#16202b",
+            fg="#e8edf5",
+            selectbackground="#2f8fef",
+            selectforeground="#ffffff",
+            relief=tk.FLAT,
+            font=("Consolas", 10),
+        )
+        self.host_results_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.host_results_listbox.bind("<<ListboxSelect>>", self.on_host_selection_changed)
+
+        scrollbar = ttk.Scrollbar(list_container, orient=tk.VERTICAL, command=self.host_results_listbox.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.host_results_listbox.configure(yscrollcommand=scrollbar.set)
+
+        right = ttk.Frame(results_frame)
+        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self.host_detail_text = tk.Text(
+            right,
+            bg="#16202b",
+            fg="#d7e2ef",
+            relief=tk.FLAT,
+            wrap=tk.WORD,
+            font=("Consolas", 10),
+            padx=12,
+            pady=12,
+        )
+        self.host_detail_text.pack(fill=tk.BOTH, expand=True)
+
     def _build_log_tab(self) -> None:
         self.notes_text = tk.Text(
             self.log_tab,
@@ -155,9 +280,22 @@ class TrainerApp:
         )
         self.notes_text.pack(fill=tk.BOTH, expand=True)
 
+    def _restore_last_selected_tab(self) -> None:
+        if self.settings.last_selected_tab not in self.tab_titles:
+            return
+
+        target_index = self.tab_titles.index(self.settings.last_selected_tab)
+        self.notebook.select(target_index)
+
+    def on_tab_changed(self, _event: object | None = None) -> None:
+        current = self.notebook.tab(self.notebook.select(), "text")
+        self.settings.last_selected_tab = current
+        save_settings(self.settings)
+
     def refresh_environment(self, save_after: bool = True) -> None:
         self.settings.game_root = self.game_root_var.get().strip() or None
         self.report = scan_environment(self.settings)
+        self._load_host_catalogs()
 
         if save_after:
             save_settings(self.settings)
@@ -165,11 +303,25 @@ class TrainerApp:
         self._render_summary(self.report)
         self._render_modules(self.report)
         self._render_runtime_commands()
+        self._render_host_commands()
+        self.refresh_host_results()
         self._render_notes(self.report)
 
         detected = str(self.report.game_root) if self.report.game_root else "Not detected"
         self.game_root_var.set(detected if detected != "Not detected" else self.game_root_var.get())
         self.status_var.set(f"Environment scan completed. Game root: {detected}")
+
+    def _load_host_catalogs(self) -> None:
+        self.host_catalogs = {}
+        self.host_catalog_error = None
+
+        if not self.report.client_cheat_commands_enum_dir_exists or not self.report.client_cheat_commands_enum_dir:
+            return
+
+        try:
+            self.host_catalogs = load_all_catalogs(self.report.client_cheat_commands_enum_dir)
+        except OSError as exc:
+            self.host_catalog_error = str(exc)
 
     def _render_summary(self, report: EnvironmentReport) -> None:
         lines = [
@@ -183,6 +335,9 @@ class TrainerApp:
             f"UE4SS runtime          : {'OK' if report.ue4ss_root_exists else 'Missing'}",
             f"UE4SS mods folder      : {'OK' if report.ue4ss_mods_exists else 'Missing'}",
             f"ClientCheatCommands    : {'Enabled' if report.active_client_cheat_commands else 'Not enabled'}",
+            f"CCC mod files          : {'OK' if report.client_cheat_commands_mod_exists else 'Missing'}",
+            f"CCC enum catalogs      : {'OK' if report.client_cheat_commands_enum_dir_exists else 'Missing'}",
+            f"CCC enum dir           : {report.client_cheat_commands_enum_dir or 'Not detected'}",
             f"UE4SSExperimentalPW    : {'Enabled' if report.active_ue4ss_experimental else 'Not enabled'}",
             f"Bridge source          : {'OK' if report.trainer_bridge_source_exists else 'Missing'}",
             f"Bridge deployed        : {'Yes' if report.trainer_bridge_deployed else 'No'}",
@@ -210,9 +365,9 @@ class TrainerApp:
         payload = {
             "notes": report.notes,
             "next_steps": [
-                "Layer in more Palworld-specific client-side scan presets and surface them through the desktop runtime tools.",
-                "Add safe diagnostics such as replicated entity scans, world snapshots, and live information panels.",
-                "Keep release packaging ready for the next tagged build.",
+                "Layer in richer client-facing panels and bookmarkable scan workflows on top of the existing runtime bridge.",
+                "Add more curated Palworld-specific helper views while keeping host and client-safe flows separate.",
+                "Keep packaging and release automation ready for the next tagged build.",
             ],
         }
 
@@ -226,6 +381,83 @@ class TrainerApp:
         self.runtime_text.delete("1.0", tk.END)
         self.runtime_text.insert("1.0", render_runtime_commands_text())
         self.runtime_text.configure(state=tk.DISABLED)
+
+    def _render_host_commands(self) -> None:
+        self.host_commands_text.configure(state=tk.NORMAL)
+        self.host_commands_text.delete("1.0", tk.END)
+        self.host_commands_text.insert("1.0", render_host_commands_text())
+        self.host_commands_text.configure(state=tk.DISABLED)
+
+    def on_host_filters_changed(self, _event: object | None = None) -> None:
+        self.refresh_host_results()
+
+    def refresh_host_results(self) -> None:
+        kind = self.host_kind_var.get().strip() or "item"
+        query = self.host_query_var.get().strip()
+        all_entries = self.host_catalogs.get(kind, [])
+
+        self.host_results_listbox.delete(0, tk.END)
+        self.host_search_results = []
+
+        if self.host_catalog_error:
+            self.host_result_count_var.set("Catalog load failed.")
+            self._render_host_detail_message(
+                "Host catalog error\n------------------\n"
+                f"{self.host_catalog_error}"
+            )
+            return
+
+        if not self.report.client_cheat_commands_enum_dir_exists:
+            self.host_result_count_var.set("ClientCheatCommands enum catalogs not detected.")
+            self._render_host_detail_message(
+                render_host_search_text(self.report.client_cheat_commands_enum_dir, kind, query, limit=20)
+            )
+            return
+
+        self.host_search_results = search_catalog(all_entries, query, limit=120)
+        self.host_result_count_var.set(
+            f"{len(self.host_search_results)} shown / {len(all_entries)} available in {kind}."
+        )
+
+        for entry in self.host_search_results:
+            self.host_results_listbox.insert(tk.END, f"{entry.label} [{entry.key}]")
+
+        if not self.host_search_results:
+            self._render_host_detail_message(
+                render_host_search_text(self.report.client_cheat_commands_enum_dir, kind, query, limit=20)
+            )
+            return
+
+        self.host_results_listbox.selection_set(0)
+        self.host_results_listbox.activate(0)
+        self.host_results_listbox.see(0)
+        self._render_selected_host_entry(self.host_search_results[0])
+
+    def on_host_selection_changed(self, _event: object | None = None) -> None:
+        entry = self.get_selected_host_entry()
+        if not entry:
+            return
+        self._render_selected_host_entry(entry)
+
+    def _render_selected_host_entry(self, entry: CatalogEntry) -> None:
+        self._render_host_detail_message(render_host_entry_text(entry))
+
+    def _render_host_detail_message(self, text: str) -> None:
+        self.host_detail_text.configure(state=tk.NORMAL)
+        self.host_detail_text.delete("1.0", tk.END)
+        self.host_detail_text.insert("1.0", text)
+        self.host_detail_text.configure(state=tk.DISABLED)
+
+    def get_selected_host_entry(self) -> CatalogEntry | None:
+        selection = self.host_results_listbox.curselection()
+        if not selection:
+            return None
+
+        index = selection[0]
+        if index >= len(self.host_search_results):
+            return None
+
+        return self.host_search_results[index]
 
     def select_game_root(self) -> None:
         initial = self.game_root_var.get() or str(self.report.repo_root.parent)
@@ -254,6 +486,17 @@ class TrainerApp:
             messagebox.showwarning("Palworld Trainer", "UE4SS Mods folder was not found under the selected game root.")
             return
         self._open_path(mods_path)
+
+    def open_client_cheat_commands_enums(self) -> None:
+        if not self.report.client_cheat_commands_enum_dir:
+            messagebox.showwarning("Palworld Trainer", "ClientCheatCommands enum directory is not available yet.")
+            return
+
+        if not self.report.client_cheat_commands_enum_dir.exists():
+            messagebox.showwarning("Palworld Trainer", "ClientCheatCommands enum directory was not found.")
+            return
+
+        self._open_path(self.report.client_cheat_commands_enum_dir)
 
     def deploy_ue4ss_bridge(self) -> None:
         try:
@@ -287,6 +530,36 @@ class TrainerApp:
 
         self._open_path(self.report.trainer_bridge_log_path)
 
+    def copy_selected_asset_key(self) -> None:
+        entry = self.get_selected_host_entry()
+        if not entry:
+            messagebox.showwarning("Palworld Trainer", "Select a catalog entry first.")
+            return
+
+        self._copy_to_clipboard(entry.key, f"Copied asset key: {entry.key}")
+
+    def copy_selected_host_command(self) -> None:
+        entry = self.get_selected_host_entry()
+        if not entry:
+            messagebox.showwarning("Palworld Trainer", "Select a catalog entry first.")
+            return
+
+        command = get_primary_entry_command(entry)
+        if not command:
+            messagebox.showwarning(
+                "Palworld Trainer",
+                "No ready-made command template is available for this catalog kind yet.",
+            )
+            return
+
+        self._copy_to_clipboard(command, f"Copied command template: {command}")
+
+    def _copy_to_clipboard(self, text: str, status: str) -> None:
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.root.update()
+        self.status_var.set(status)
+
     def _open_path(self, path: Path) -> None:
         try:
             os.startfile(path)  # type: ignore[attr-defined]
@@ -307,6 +580,11 @@ def build_self_check_payload(settings: TrainerSettings) -> dict[str, object]:
         "ue4ss_root_exists": report.ue4ss_root_exists,
         "active_client_cheat_commands": report.active_client_cheat_commands,
         "active_ue4ss_experimental": report.active_ue4ss_experimental,
+        "client_cheat_commands_mod_exists": report.client_cheat_commands_mod_exists,
+        "client_cheat_commands_enum_dir_exists": report.client_cheat_commands_enum_dir_exists,
+        "client_cheat_commands_enum_dir": (
+            str(report.client_cheat_commands_enum_dir) if report.client_cheat_commands_enum_dir else None
+        ),
         "trainer_bridge_source_exists": report.trainer_bridge_source_exists,
         "trainer_bridge_deployed": report.trainer_bridge_deployed,
         "trainer_bridge_target": str(report.trainer_bridge_target) if report.trainer_bridge_target else None,
@@ -330,6 +608,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--list-runtime-presets",
         action="store_true",
         help="Print the runtime preset catalog and exit.",
+    )
+    parser.add_argument(
+        "--list-host-commands",
+        action="store_true",
+        help="Print the host command catalog and exit.",
+    )
+    parser.add_argument(
+        "--search-assets",
+        nargs=2,
+        metavar=("KIND", "QUERY"),
+        help="Search a ClientCheatCommands asset catalog such as item, pal, technology, or npc.",
+    )
+    parser.add_argument(
+        "--search-limit",
+        type=int,
+        default=20,
+        help="Maximum number of asset search results to print with --search-assets.",
     )
     parser.add_argument(
         "--deploy-ue4ss-bridge",
@@ -362,6 +657,20 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.list_runtime_presets:
         print(render_runtime_presets_text())
+        return 0
+
+    if args.list_host_commands:
+        print(render_host_commands_text())
+        return 0
+
+    if args.search_assets:
+        kind, query = args.search_assets
+        report = scan_environment(settings)
+        try:
+            print(render_host_search_text(report.client_cheat_commands_enum_dir, kind, query, limit=args.search_limit))
+        except ValueError as exc:
+            print(exc, file=sys.stderr)
+            return 2
         return 0
 
     if args.deploy_ue4ss_bridge:

@@ -31,6 +31,22 @@ class RuntimePresetSpec:
 
 
 @dataclass(slots=True)
+class CatalogEntry:
+    kind: str
+    key: str
+    label: str
+
+
+@dataclass(slots=True)
+class HostCommandSpec:
+    command: str
+    description: str
+    example: str
+    category: str
+    source: str
+
+
+@dataclass(slots=True)
 class EnvironmentReport:
     game_root: Path | None
     repo_root: Path
@@ -42,6 +58,9 @@ class EnvironmentReport:
     ue4ss_mods_exists: bool
     active_client_cheat_commands: bool
     active_ue4ss_experimental: bool
+    client_cheat_commands_mod_exists: bool
+    client_cheat_commands_enum_dir_exists: bool
+    client_cheat_commands_enum_dir: Path | None
     trainer_bridge_source_exists: bool
     trainer_bridge_deployed: bool
     trainer_bridge_target: Path | None

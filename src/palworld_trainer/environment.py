@@ -7,6 +7,7 @@ from .models import EnvironmentReport, ModuleStatus, TrainerSettings
 
 BRIDGE_MOD_NAME = "PalworldTrainerBridge"
 BRIDGE_LOG_NAME = "session.log"
+CLIENT_CHEAT_COMMANDS_MOD_NAME = "ClientCheatCommands"
 
 
 def get_repo_root() -> Path:
@@ -53,6 +54,10 @@ def scan_environment(settings: TrainerSettings) -> EnvironmentReport:
     mods_root = game_root / "Mods" if game_root else None
     ue4ss_root = mods_root / "NativeMods" / "UE4SS" if mods_root else None
     ue4ss_mods = ue4ss_root / "Mods" if ue4ss_root else None
+    client_cheat_commands_mod = ue4ss_mods / CLIENT_CHEAT_COMMANDS_MOD_NAME if ue4ss_mods else None
+    client_cheat_commands_enum_dir = (
+        client_cheat_commands_mod / "Scripts" / "enums" if client_cheat_commands_mod else None
+    )
     trainer_bridge_target = ue4ss_mods / BRIDGE_MOD_NAME if ue4ss_mods else None
     trainer_bridge_log = trainer_bridge_target / BRIDGE_LOG_NAME if trainer_bridge_target else None
     pal_mod_settings = mods_root / "PalModSettings.ini" if mods_root else None
@@ -68,6 +73,11 @@ def scan_environment(settings: TrainerSettings) -> EnvironmentReport:
         ue4ss_mods_exists=bool(ue4ss_mods and ue4ss_mods.exists()),
         active_client_cheat_commands=False,
         active_ue4ss_experimental=False,
+        client_cheat_commands_mod_exists=bool(client_cheat_commands_mod and client_cheat_commands_mod.exists()),
+        client_cheat_commands_enum_dir_exists=bool(
+            client_cheat_commands_enum_dir and client_cheat_commands_enum_dir.exists()
+        ),
+        client_cheat_commands_enum_dir=client_cheat_commands_enum_dir,
         trainer_bridge_source_exists=trainer_bridge_source.exists(),
         trainer_bridge_deployed=bool(trainer_bridge_target and trainer_bridge_target.exists()),
         trainer_bridge_target=trainer_bridge_target,
@@ -98,6 +108,16 @@ def scan_environment(settings: TrainerSettings) -> EnvironmentReport:
 
     if report.active_ue4ss_experimental:
         report.notes.append("UE4SSExperimentalPW is already enabled in PalModSettings.ini.")
+
+    if report.client_cheat_commands_mod_exists:
+        report.notes.append("ClientCheatCommands mod files are present in the UE4SS Mods folder.")
+    else:
+        report.notes.append("ClientCheatCommands mod files were not found under Mods/NativeMods/UE4SS/Mods.")
+
+    if report.client_cheat_commands_enum_dir_exists and report.client_cheat_commands_enum_dir:
+        report.notes.append(
+            f"ClientCheatCommands enum catalogs are available at {report.client_cheat_commands_enum_dir}."
+        )
 
     if report.trainer_bridge_source_exists:
         report.notes.append("PalworldTrainerBridge source is available in the repository.")
@@ -158,6 +178,18 @@ def build_module_statuses(report: EnvironmentReport) -> list[ModuleStatus]:
                 if report.trainer_bridge_deployed
                 else "available"
                 if report.ue4ss_root_exists and report.trainer_bridge_source_exists
+                else "blocked"
+            ),
+        ),
+        ModuleStatus(
+            key="module-6",
+            title="Module 6: Host Tools",
+            description="Host command deck plus searchable ClientCheatCommands asset catalogs for items, pals, technology, and NPC IDs.",
+            status=(
+                "ready"
+                if report.client_cheat_commands_enum_dir_exists
+                else "available"
+                if report.client_cheat_commands_mod_exists
                 else "blocked"
             ),
         ),

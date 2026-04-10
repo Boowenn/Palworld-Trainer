@@ -4,6 +4,7 @@ import tomllib
 import unittest
 from pathlib import Path
 
+from tests import _bootstrap  # noqa: F401
 from palworld_trainer import __version__
 
 

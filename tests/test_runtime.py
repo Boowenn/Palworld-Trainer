@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 
+from tests import _bootstrap  # noqa: F401
 from palworld_trainer.runtime import (
     get_runtime_command_specs,
     get_runtime_preset_specs,
