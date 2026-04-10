@@ -13,6 +13,15 @@ class ModuleStatus:
 
 
 @dataclass(slots=True)
+class RuntimeCommandSpec:
+    command: str
+    description: str
+    usage: str
+    example: str
+    mode: str
+
+
+@dataclass(slots=True)
 class EnvironmentReport:
     game_root: Path | None
     repo_root: Path

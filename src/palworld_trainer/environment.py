@@ -126,9 +126,15 @@ def build_module_statuses(report: EnvironmentReport) -> list[ModuleStatus]:
         ),
         ModuleStatus(
             key="module-3",
-            title="Module 3: Runtime Overlay",
-            description="Client-side panels, ESP data, and live trainer actions.",
-            status="planned",
+            title="Module 3: Runtime Diagnostics",
+            description="Pure client-side commands for world snapshots, player lists, and generic FindAllOf scans.",
+            status=(
+                "ready"
+                if report.trainer_bridge_deployed
+                else "available"
+                if report.ue4ss_root_exists and report.trainer_bridge_source_exists
+                else "blocked"
+            ),
         ),
         ModuleStatus(
             key="module-4",

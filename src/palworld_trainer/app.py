@@ -12,6 +12,7 @@ from tkinter import filedialog, messagebox, ttk
 from .config import save_settings
 from .environment import build_module_statuses, scan_environment
 from .models import EnvironmentReport, TrainerSettings
+from .runtime import render_runtime_commands_text
 from .ue4ss import deploy_bridge
 
 
@@ -56,7 +57,7 @@ class TrainerApp:
         ttk.Label(top_frame, text="Palworld Trainer", style="Header.TLabel").pack(anchor=tk.W)
         ttk.Label(
             top_frame,
-            text="Modules 1-2 provide the desktop shell, environment scan, UE4SS bridge deployment, and packaging support.",
+            text="Modules 1-3 provide the desktop shell, UE4SS bridge deployment, runtime diagnostics, and packaging support.",
             style="Muted.TLabel",
         ).pack(anchor=tk.W, pady=(4, 12))
 
@@ -77,13 +78,16 @@ class TrainerApp:
 
         self.overview_tab = ttk.Frame(notebook, padding=12)
         self.modules_tab = ttk.Frame(notebook, padding=12)
+        self.runtime_tab = ttk.Frame(notebook, padding=12)
         self.log_tab = ttk.Frame(notebook, padding=12)
         notebook.add(self.overview_tab, text="Overview")
         notebook.add(self.modules_tab, text="Modules")
+        notebook.add(self.runtime_tab, text="Runtime")
         notebook.add(self.log_tab, text="Notes")
 
         self._build_overview_tab()
         self._build_modules_tab()
+        self._build_runtime_tab()
         self._build_log_tab()
 
         status_bar = ttk.Frame(root_frame)
@@ -116,6 +120,20 @@ class TrainerApp:
         self.modules_container = ttk.Frame(self.modules_tab)
         self.modules_container.pack(fill=tk.BOTH, expand=True)
 
+    def _build_runtime_tab(self) -> None:
+        self.runtime_text = tk.Text(
+            self.runtime_tab,
+            height=18,
+            bg="#16202b",
+            fg="#d7e2ef",
+            relief=tk.FLAT,
+            wrap=tk.WORD,
+            font=("Consolas", 10),
+            padx=12,
+            pady=12,
+        )
+        self.runtime_text.pack(fill=tk.BOTH, expand=True)
+
     def _build_log_tab(self) -> None:
         self.notes_text = tk.Text(
             self.log_tab,
@@ -139,6 +157,7 @@ class TrainerApp:
 
         self._render_summary(self.report)
         self._render_modules(self.report)
+        self._render_runtime_commands()
         self._render_notes(self.report)
 
         detected = str(self.report.game_root) if self.report.game_root else "Not detected"
@@ -183,8 +202,8 @@ class TrainerApp:
         payload = {
             "notes": report.notes,
             "next_steps": [
-                "Expand the bridge into a runtime overlay and trainer action panel in Module 3.",
-                "Add safe client-side diagnostics such as entity lists, local coordinates, and visibility tools.",
+                "Expand the bridge into higher-value runtime tools while keeping non-host features client-side only.",
+                "Add safe diagnostics such as replicated entity scans, world snapshots, and live information panels.",
                 "Automate executable builds and release packaging in Module 4.",
             ],
         }
@@ -193,6 +212,12 @@ class TrainerApp:
         self.notes_text.delete("1.0", tk.END)
         self.notes_text.insert("1.0", json.dumps(payload, indent=2, ensure_ascii=False))
         self.notes_text.configure(state=tk.DISABLED)
+
+    def _render_runtime_commands(self) -> None:
+        self.runtime_text.configure(state=tk.NORMAL)
+        self.runtime_text.delete("1.0", tk.END)
+        self.runtime_text.insert("1.0", render_runtime_commands_text())
+        self.runtime_text.configure(state=tk.DISABLED)
 
     def select_game_root(self) -> None:
         initial = self.game_root_var.get() or str(self.report.repo_root.parent)
@@ -264,6 +289,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--self-check", action="store_true", help="Print the environment report as JSON and exit.")
     parser.add_argument("--build", action="store_true", help="Invoke the PowerShell build script and exit.")
     parser.add_argument(
+        "--list-runtime-commands",
+        action="store_true",
+        help="Print the runtime command catalog and exit.",
+    )
+    parser.add_argument(
         "--deploy-ue4ss-bridge",
         action="store_true",
         help="Copy the repository UE4SS bridge mod into the configured game root.",
@@ -286,6 +316,10 @@ def main(argv: list[str] | None = None) -> int:
             ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(build_script), "-Clean"],
             check=True,
         )
+        return 0
+
+    if args.list_runtime_commands:
+        print(render_runtime_commands_text())
         return 0
 
     if args.deploy_ue4ss_bridge:

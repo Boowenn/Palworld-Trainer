@@ -25,6 +25,14 @@ Module 2 now adds:
   - `CTRL+F6` hotkey logging
 - A live GitHub Actions Windows build workflow
 
+Module 3 now adds:
+
+- A desktop Runtime tab with command references for the deployed bridge features
+- Runtime command export through `--list-runtime-commands`
+- Client-side world and player snapshots
+- Generic `FindAllOf` scans through `pt_find <ShortClassName> [limit]`
+- Quick repeat scans through `pt_repeat` and `CTRL+F8`
+
 ## Local run
 
 ```powershell
@@ -45,6 +53,12 @@ The self-check now reports bridge availability and whether the bridge has alread
 python .\run_trainer.py --deploy-ue4ss-bridge
 ```
 
+## List runtime commands
+
+```powershell
+python .\run_trainer.py --list-runtime-commands
+```
+
 ## Local build
 
 ```powershell
@@ -60,5 +74,5 @@ The original template is also kept at `docs/build-workflow.yml.example` for refe
 
 1. Desktop shell and packaging scaffold
 2. UE4SS bridge and script deployment
-3. Runtime overlay and trainer actions
+3. Runtime diagnostics and command catalog
 4. Final packaging, release automation, and versioned builds
