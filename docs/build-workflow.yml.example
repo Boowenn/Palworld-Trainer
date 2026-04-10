@@ -1,0 +1,40 @@
+name: Build Trainer
+
+on:
+  push:
+    branches:
+      - main
+      - "codex/**"
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package and build deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .[build]
+
+      - name: Self check
+        run: python -m palworld_trainer --self-check
+
+      - name: Build executable
+        run: powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1 -Clean
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PalworldTrainer-windows
+          path: dist/PalworldTrainer.exe
+
