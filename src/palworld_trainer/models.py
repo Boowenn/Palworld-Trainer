@@ -24,6 +24,9 @@ class EnvironmentReport:
     ue4ss_mods_exists: bool
     active_client_cheat_commands: bool
     active_ue4ss_experimental: bool
+    trainer_bridge_source_exists: bool
+    trainer_bridge_deployed: bool
+    trainer_bridge_target: Path | None
     notes: list[str] = field(default_factory=list)
 
 
@@ -31,4 +34,3 @@ class EnvironmentReport:
 class TrainerSettings:
     game_root: str | None = None
     last_selected_tab: str = "Overview"
-

@@ -12,6 +12,7 @@ from tkinter import filedialog, messagebox, ttk
 from .config import save_settings
 from .environment import build_module_statuses, scan_environment
 from .models import EnvironmentReport, TrainerSettings
+from .ue4ss import deploy_bridge
 
 
 class TrainerApp:
@@ -55,7 +56,7 @@ class TrainerApp:
         ttk.Label(top_frame, text="Palworld Trainer", style="Header.TLabel").pack(anchor=tk.W)
         ttk.Label(
             top_frame,
-            text="Module 1 focuses on environment detection, trainer shell scaffolding, and packaging support.",
+            text="Modules 1-2 provide the desktop shell, environment scan, UE4SS bridge deployment, and packaging support.",
             style="Muted.TLabel",
         ).pack(anchor=tk.W, pady=(4, 12))
 
@@ -109,6 +110,7 @@ class TrainerApp:
         ttk.Button(actions, text="Open Repo Root", command=self.open_repo_root).pack(side=tk.LEFT)
         ttk.Button(actions, text="Open Game Root", command=self.open_game_root).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(actions, text="Open UE4SS Mods", command=self.open_ue4ss_mods).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(actions, text="Deploy UE4SS Bridge", command=self.deploy_ue4ss_bridge).pack(side=tk.LEFT, padx=(8, 0))
 
     def _build_modules_tab(self) -> None:
         self.modules_container = ttk.Frame(self.modules_tab)
@@ -156,6 +158,8 @@ class TrainerApp:
             f"UE4SS mods folder      : {'OK' if report.ue4ss_mods_exists else 'Missing'}",
             f"ClientCheatCommands    : {'Enabled' if report.active_client_cheat_commands else 'Not enabled'}",
             f"UE4SSExperimentalPW    : {'Enabled' if report.active_ue4ss_experimental else 'Not enabled'}",
+            f"Bridge source          : {'OK' if report.trainer_bridge_source_exists else 'Missing'}",
+            f"Bridge deployed        : {'Yes' if report.trainer_bridge_deployed else 'No'}",
         ]
 
         self.summary_text.configure(state=tk.NORMAL)
@@ -179,9 +183,9 @@ class TrainerApp:
         payload = {
             "notes": report.notes,
             "next_steps": [
-                "Implement the UE4SS trainer script pack in Module 2.",
-                "Add runtime actions for player, world, and overlay controls.",
-                "Package the desktop shell into a standalone exe with PyInstaller.",
+                "Expand the bridge into a runtime overlay and trainer action panel in Module 3.",
+                "Add safe client-side diagnostics such as entity lists, local coordinates, and visibility tools.",
+                "Automate executable builds and release packaging in Module 4.",
             ],
         }
 
@@ -218,6 +222,16 @@ class TrainerApp:
             return
         self._open_path(mods_path)
 
+    def deploy_ue4ss_bridge(self) -> None:
+        try:
+            message = deploy_bridge(self.report)
+        except Exception as exc:  # noqa: BLE001 - surface to the UI
+            messagebox.showerror("Palworld Trainer", f"Failed to deploy the UE4SS bridge.\n\n{exc}")
+            return
+
+        self.refresh_environment()
+        messagebox.showinfo("Palworld Trainer", message)
+
     def _open_path(self, path: Path) -> None:
         try:
             os.startfile(path)  # type: ignore[attr-defined]
@@ -238,6 +252,9 @@ def build_self_check_payload(settings: TrainerSettings) -> dict[str, object]:
         "ue4ss_root_exists": report.ue4ss_root_exists,
         "active_client_cheat_commands": report.active_client_cheat_commands,
         "active_ue4ss_experimental": report.active_ue4ss_experimental,
+        "trainer_bridge_source_exists": report.trainer_bridge_source_exists,
+        "trainer_bridge_deployed": report.trainer_bridge_deployed,
+        "trainer_bridge_target": str(report.trainer_bridge_target) if report.trainer_bridge_target else None,
         "notes": report.notes,
     }
 
@@ -246,6 +263,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Palworld desktop trainer shell")
     parser.add_argument("--self-check", action="store_true", help="Print the environment report as JSON and exit.")
     parser.add_argument("--build", action="store_true", help="Invoke the PowerShell build script and exit.")
+    parser.add_argument(
+        "--deploy-ue4ss-bridge",
+        action="store_true",
+        help="Copy the repository UE4SS bridge mod into the configured game root.",
+    )
     return parser.parse_args(argv)
 
 
@@ -266,6 +288,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    if args.deploy_ue4ss_bridge:
+        report = scan_environment(settings)
+        print(deploy_bridge(report))
+        return 0
+
     app = TrainerApp(settings)
     app.run()
     return 0
@@ -273,4 +300,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
-

@@ -5,6 +5,9 @@ from pathlib import Path
 from .models import EnvironmentReport, ModuleStatus, TrainerSettings
 
 
+BRIDGE_MOD_NAME = "PalworldTrainerBridge"
+
+
 def get_repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
@@ -42,12 +45,14 @@ def resolve_game_root(settings: TrainerSettings, repo_root: Path) -> Path | None
 def scan_environment(settings: TrainerSettings) -> EnvironmentReport:
     repo_root = get_repo_root()
     game_root = resolve_game_root(settings, repo_root)
+    trainer_bridge_source = repo_root / "integrations" / "ue4ss" / BRIDGE_MOD_NAME
 
     launcher = game_root / "Palworld.exe" if game_root else None
     shipping = game_root / "Pal" / "Binaries" / "Win64" / "Palworld-Win64-Shipping.exe" if game_root else None
     mods_root = game_root / "Mods" if game_root else None
     ue4ss_root = mods_root / "NativeMods" / "UE4SS" if mods_root else None
     ue4ss_mods = ue4ss_root / "Mods" if ue4ss_root else None
+    trainer_bridge_target = ue4ss_mods / BRIDGE_MOD_NAME if ue4ss_mods else None
     pal_mod_settings = mods_root / "PalModSettings.ini" if mods_root else None
 
     report = EnvironmentReport(
@@ -61,6 +66,9 @@ def scan_environment(settings: TrainerSettings) -> EnvironmentReport:
         ue4ss_mods_exists=bool(ue4ss_mods and ue4ss_mods.exists()),
         active_client_cheat_commands=False,
         active_ue4ss_experimental=False,
+        trainer_bridge_source_exists=trainer_bridge_source.exists(),
+        trainer_bridge_deployed=bool(trainer_bridge_target and trainer_bridge_target.exists()),
+        trainer_bridge_target=trainer_bridge_target,
     )
 
     if not report.game_root_exists:
@@ -87,6 +95,12 @@ def scan_environment(settings: TrainerSettings) -> EnvironmentReport:
     if report.active_ue4ss_experimental:
         report.notes.append("UE4SSExperimentalPW is already enabled in PalModSettings.ini.")
 
+    if report.trainer_bridge_source_exists:
+        report.notes.append("PalworldTrainerBridge source is available in the repository.")
+
+    if report.trainer_bridge_deployed:
+        report.notes.append("PalworldTrainerBridge is already deployed into the game UE4SS Mods folder.")
+
     return report
 
 
@@ -102,7 +116,13 @@ def build_module_statuses(report: EnvironmentReport) -> list[ModuleStatus]:
             key="module-2",
             title="Module 2: UE4SS Bridge",
             description="Deploy and manage our trainer Lua scripts inside the Palworld UE4SS runtime.",
-            status="in progress" if report.ue4ss_root_exists else "blocked",
+            status=(
+                "ready"
+                if report.trainer_bridge_deployed
+                else "available"
+                if report.ue4ss_root_exists and report.trainer_bridge_source_exists
+                else "blocked"
+            ),
         ),
         ModuleStatus(
             key="module-3",
@@ -117,4 +137,3 @@ def build_module_statuses(report: EnvironmentReport) -> list[ModuleStatus]:
             status="scaffolded",
         ),
     ]
-
