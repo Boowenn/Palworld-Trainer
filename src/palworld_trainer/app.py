@@ -11,7 +11,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from . import __version__
 from .catalog import get_catalog_kinds, load_all_catalogs, search_catalog
-from .config import save_settings
+from .config import load_settings, save_settings
 from .environment import build_module_statuses, scan_environment
 from .host_tools import (
     compose_host_command,
@@ -23,13 +23,18 @@ from .host_tools import (
     render_host_search_text,
     render_host_templates_text,
 )
-from .models import CatalogEntry, EnvironmentReport, TrainerSettings
+from .models import CatalogEntry, EnvironmentReport, RuntimeBookmarkSpec, TrainerSettings
 from .runtime import (
-    get_runtime_bookmark_specs,
+    build_saved_runtime_bookmark,
+    export_runtime_bookmarks,
+    get_combined_runtime_bookmark_specs,
     parse_session_log,
+    import_runtime_bookmarks,
+    merge_runtime_bookmarks,
     render_runtime_bookmarks_text,
     render_runtime_commands_text,
     render_runtime_presets_text,
+    render_saved_runtime_bookmarks_text,
     render_session_summary_text,
 )
 from .ue4ss import deploy_bridge
@@ -42,7 +47,8 @@ class TrainerApp:
         self.host_catalogs: dict[str, list[CatalogEntry]] = {}
         self.host_search_results: list[CatalogEntry] = []
         self.host_catalog_error: str | None = None
-        self.runtime_bookmarks = get_runtime_bookmark_specs()
+        self.runtime_saved_bookmarks = list(settings.runtime_saved_bookmarks)
+        self.runtime_bookmarks = get_combined_runtime_bookmark_specs(self.runtime_saved_bookmarks)
         self.host_template_specs = get_host_command_template_specs()
         self.host_template_title_to_key = {spec.title: spec.key for spec in self.host_template_specs}
         self.host_template_key_to_title = {spec.key: spec.title for spec in self.host_template_specs}
@@ -62,6 +68,10 @@ class TrainerApp:
         self.host_template_var = tk.StringVar(value=self.host_template_key_to_title["self_item"])
         self.host_template_summary_var = tk.StringVar(value="")
         self.host_composer_vars = [tk.StringVar() for _ in range(4)]
+        self.runtime_saved_summary_var = tk.StringVar(value="")
+        self.runtime_editor_title_var = tk.StringVar(value="")
+        self.runtime_editor_command_var = tk.StringVar(value="")
+        self.runtime_editor_description_var = tk.StringVar(value="")
 
         self._build_style()
         self._build_layout()
@@ -91,8 +101,9 @@ class TrainerApp:
         ttk.Label(
             top_frame,
             text=(
-                "Modules 1-8 provide the desktop shell, UE4SS bridge deployment, runtime diagnostics, "
-                "preset scans, packaging support, host command catalogs, a command composer, and a session monitor."
+                "Modules 1-9 provide the desktop shell, UE4SS bridge deployment, runtime diagnostics, "
+                "preset scans, packaging support, host command catalogs, a command composer, a session monitor, "
+                "and a persistent runtime bookmark library."
             ),
             style="Muted.TLabel",
         ).pack(anchor=tk.W, pady=(4, 12))
@@ -170,6 +181,30 @@ class TrainerApp:
         ttk.Button(actions, text="Refresh Monitor", command=self.refresh_runtime_monitor).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(actions, text="Copy Bookmark", command=self.copy_selected_runtime_bookmark).pack(side=tk.LEFT, padx=(8, 0))
 
+        library_actions = ttk.Frame(self.runtime_tab)
+        library_actions.pack(fill=tk.X, pady=(0, 12))
+
+        ttk.Button(library_actions, text="New Saved", command=self.new_runtime_saved_bookmark).pack(side=tk.LEFT)
+        ttk.Button(library_actions, text="Save Saved", command=self.save_runtime_saved_bookmark).pack(
+            side=tk.LEFT,
+            padx=(8, 0),
+        )
+        ttk.Button(
+            library_actions,
+            text="Delete Saved",
+            command=self.delete_selected_runtime_saved_bookmark,
+        ).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(
+            library_actions,
+            text="Import Saved",
+            command=self.import_runtime_saved_bookmarks_from_file,
+        ).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(
+            library_actions,
+            text="Export Saved",
+            command=self.export_runtime_saved_bookmarks_to_file,
+        ).pack(side=tk.LEFT, padx=(8, 0))
+
         self.runtime_text = tk.Text(
             self.runtime_tab,
             height=10,
@@ -219,6 +254,13 @@ class TrainerApp:
         runtime_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.runtime_bookmarks_listbox.configure(yscrollcommand=runtime_scrollbar.set)
 
+        ttk.Label(
+            runtime_left,
+            textvariable=self.runtime_saved_summary_var,
+            style="Muted.TLabel",
+            wraplength=260,
+        ).pack(anchor=tk.W, pady=(10, 0))
+
         runtime_right = ttk.Frame(runtime_lower)
         runtime_right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
@@ -237,7 +279,39 @@ class TrainerApp:
         )
         self.runtime_bookmark_text.pack(fill=tk.X, expand=False)
 
-        ttk.Label(runtime_right, text="Session monitor", style="Muted.TLabel").pack(anchor=tk.W, pady=(10, 6))
+        ttk.Label(runtime_right, text="Saved bookmark editor", style="Muted.TLabel").pack(anchor=tk.W, pady=(10, 6))
+
+        runtime_editor = ttk.Frame(runtime_right)
+        runtime_editor.pack(fill=tk.X, expand=False, pady=(0, 10))
+
+        ttk.Label(runtime_editor, text="Title", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Entry(runtime_editor, textvariable=self.runtime_editor_title_var).grid(
+            row=1,
+            column=0,
+            sticky="ew",
+            padx=(0, 8),
+        )
+
+        ttk.Label(runtime_editor, text="Command", style="Muted.TLabel").grid(row=0, column=1, sticky="w")
+        ttk.Entry(runtime_editor, textvariable=self.runtime_editor_command_var).grid(
+            row=1,
+            column=1,
+            sticky="ew",
+            padx=(0, 8),
+        )
+
+        ttk.Label(runtime_editor, text="Description", style="Muted.TLabel").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(runtime_editor, textvariable=self.runtime_editor_description_var).grid(
+            row=3,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            padx=(0, 8),
+        )
+        runtime_editor.columnconfigure(0, weight=1)
+        runtime_editor.columnconfigure(1, weight=1)
+
+        ttk.Label(runtime_right, text="Session monitor", style="Muted.TLabel").pack(anchor=tk.W, pady=(4, 6))
 
         self.runtime_session_text = tk.Text(
             runtime_right,
@@ -516,8 +590,9 @@ class TrainerApp:
         payload = {
             "notes": report.notes,
             "next_steps": [
-                "Layer in richer client-facing panels and bookmarkable scan workflows on top of the existing runtime bridge.",
+                "Layer in richer client-facing panels and portable bookmark libraries on top of the existing runtime bridge.",
                 "Add more curated Palworld-specific helper views while keeping host and client-safe flows separate.",
+                "Use the saved runtime bookmark deck to support repeatable non-host multiplayer scouting routes.",
                 "Keep packaging and release automation ready for the next tagged build.",
             ],
         }
@@ -533,22 +608,43 @@ class TrainerApp:
         self.runtime_text.insert("1.0", render_runtime_commands_text())
         self.runtime_text.configure(state=tk.DISABLED)
 
-    def _render_runtime_bookmarks(self) -> None:
-        self.runtime_bookmarks_listbox.delete(0, tk.END)
-        for bookmark in self.runtime_bookmarks:
-            self.runtime_bookmarks_listbox.insert(tk.END, f"{bookmark.title} [{bookmark.command}]")
+    def _refresh_runtime_bookmark_cache(self) -> None:
+        self.runtime_bookmarks = get_combined_runtime_bookmark_specs(self.runtime_saved_bookmarks)
+        self.runtime_saved_summary_var.set(
+            f"{len(self.runtime_saved_bookmarks)} saved bookmark(s) in your personal runtime library."
+        )
 
-        if self.runtime_bookmarks:
-            self.runtime_bookmarks_listbox.selection_set(0)
-            self.runtime_bookmarks_listbox.activate(0)
-            self._render_selected_runtime_bookmark(0)
+    def _render_runtime_bookmarks(self, selected_key: str | None = None) -> None:
+        self._refresh_runtime_bookmark_cache()
+        current = self.get_selected_runtime_bookmark()
+        target_key = selected_key or (current.key if current else None)
+
+        self.runtime_bookmarks_listbox.delete(0, tk.END)
+        selected_index = 0
+        for index, bookmark in enumerate(self.runtime_bookmarks):
+            self.runtime_bookmarks_listbox.insert(tk.END, f"[{bookmark.origin}] {bookmark.title} [{bookmark.command}]")
+            if target_key and bookmark.key == target_key:
+                selected_index = index
+
+        if not self.runtime_bookmarks:
+            self._clear_runtime_editor()
+            self._render_runtime_bookmark_detail_message("Runtime bookmark list is empty.")
+            return
+
+        self.runtime_bookmarks_listbox.selection_set(selected_index)
+        self.runtime_bookmarks_listbox.activate(selected_index)
+        self.runtime_bookmarks_listbox.see(selected_index)
+        self._render_selected_runtime_bookmark(selected_index)
 
     def refresh_runtime_monitor(self) -> None:
         summary = parse_session_log(self.report.trainer_bridge_log_path)
 
         self.runtime_session_text.configure(state=tk.NORMAL)
         self.runtime_session_text.delete("1.0", tk.END)
-        self.runtime_session_text.insert("1.0", render_session_summary_text(summary))
+        self.runtime_session_text.insert(
+            "1.0",
+            render_session_summary_text(summary, saved_bookmark_count=len(self.runtime_saved_bookmarks)),
+        )
         self.runtime_session_text.configure(state=tk.DISABLED)
 
     def on_runtime_bookmark_selection_changed(self, _event: object | None = None) -> None:
@@ -567,25 +663,159 @@ class TrainerApp:
             "-" * len(bookmark.title),
             f"Command    : {bookmark.command}",
             f"Mode       : {bookmark.mode}",
+            f"Origin     : {bookmark.origin}",
+            f"Editable   : {'Yes' if bookmark.editable else 'No'}",
             f"Description: {bookmark.description}",
             "",
             "Usage",
             "-----",
-            "Copy this command into the in-game UE4SS console during any session where the local client can resolve the objects.",
+            "Built-ins can be cloned into your saved library, while saved bookmarks can be edited, imported, and exported.",
         ]
+        self._render_runtime_bookmark_detail_message("\n".join(lines))
+        self._populate_runtime_editor(bookmark)
+
+    def _render_runtime_bookmark_detail_message(self, text: str) -> None:
         self.runtime_bookmark_text.configure(state=tk.NORMAL)
         self.runtime_bookmark_text.delete("1.0", tk.END)
-        self.runtime_bookmark_text.insert("1.0", "\n".join(lines))
+        self.runtime_bookmark_text.insert("1.0", text)
         self.runtime_bookmark_text.configure(state=tk.DISABLED)
 
-    def copy_selected_runtime_bookmark(self) -> None:
+    def _populate_runtime_editor(self, bookmark: RuntimeBookmarkSpec | None) -> None:
+        if not bookmark:
+            self._clear_runtime_editor()
+            return
+
+        self.runtime_editor_title_var.set(bookmark.title)
+        self.runtime_editor_command_var.set(bookmark.command)
+        self.runtime_editor_description_var.set(bookmark.description)
+
+    def _clear_runtime_editor(self) -> None:
+        self.runtime_editor_title_var.set("")
+        self.runtime_editor_command_var.set("")
+        self.runtime_editor_description_var.set("Saved runtime bookmark.")
+
+    def get_selected_runtime_bookmark(self) -> RuntimeBookmarkSpec | None:
         selection = self.runtime_bookmarks_listbox.curselection()
         if not selection:
+            return None
+
+        index = selection[0]
+        if index >= len(self.runtime_bookmarks):
+            return None
+
+        return self.runtime_bookmarks[index]
+
+    def copy_selected_runtime_bookmark(self) -> None:
+        bookmark = self.get_selected_runtime_bookmark()
+        if not bookmark:
             messagebox.showwarning("Palworld Trainer", "Select a runtime bookmark first.")
             return
 
-        bookmark = self.runtime_bookmarks[selection[0]]
         self._copy_to_clipboard(bookmark.command, f"Copied runtime bookmark: {bookmark.command}")
+
+    def new_runtime_saved_bookmark(self) -> None:
+        self.runtime_bookmarks_listbox.selection_clear(0, tk.END)
+        self._clear_runtime_editor()
+        self._render_runtime_bookmark_detail_message(
+            "Saved bookmark editor\n---------------------\n"
+            "Fill in a title, command, and description, then click Save Saved.\n"
+            "You can also select a built-in bookmark first and use it as a starting point."
+        )
+        self.status_var.set("Ready to create a new saved runtime bookmark.")
+
+    def save_runtime_saved_bookmark(self) -> None:
+        selected = self.get_selected_runtime_bookmark()
+        existing_key = selected.key if selected and selected.editable else None
+
+        try:
+            bookmark = build_saved_runtime_bookmark(
+                self.runtime_editor_title_var.get(),
+                self.runtime_editor_command_var.get(),
+                self.runtime_editor_description_var.get(),
+                key=existing_key,
+            )
+        except ValueError as exc:
+            messagebox.showwarning("Palworld Trainer", str(exc))
+            return
+
+        action = "Saved"
+        if existing_key:
+            for index, saved_bookmark in enumerate(self.runtime_saved_bookmarks):
+                if saved_bookmark.key == existing_key:
+                    self.runtime_saved_bookmarks[index] = bookmark
+                    action = "Updated"
+                    break
+        else:
+            self.runtime_saved_bookmarks = merge_runtime_bookmarks(self.runtime_saved_bookmarks, [bookmark])
+            for saved_bookmark in self.runtime_saved_bookmarks:
+                if saved_bookmark.title == bookmark.title and saved_bookmark.command == bookmark.command:
+                    bookmark = saved_bookmark
+                    break
+
+        self._persist_runtime_saved_bookmarks()
+        self._render_runtime_bookmarks(selected_key=bookmark.key)
+        self.refresh_runtime_monitor()
+        self.status_var.set(f"{action} runtime bookmark: {bookmark.title}")
+
+    def delete_selected_runtime_saved_bookmark(self) -> None:
+        selected = self.get_selected_runtime_bookmark()
+        if not selected or not selected.editable:
+            messagebox.showwarning("Palworld Trainer", "Select a saved runtime bookmark first.")
+            return
+
+        self.runtime_saved_bookmarks = [
+            bookmark for bookmark in self.runtime_saved_bookmarks if bookmark.key != selected.key
+        ]
+        self._persist_runtime_saved_bookmarks()
+        self._render_runtime_bookmarks()
+        self.refresh_runtime_monitor()
+        self.status_var.set(f"Deleted saved runtime bookmark: {selected.title}")
+
+    def export_runtime_saved_bookmarks_to_file(self) -> None:
+        if not self.runtime_saved_bookmarks:
+            messagebox.showwarning("Palworld Trainer", "There are no saved runtime bookmarks to export yet.")
+            return
+
+        target = filedialog.asksaveasfilename(
+            title="Export saved runtime bookmarks",
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+            initialfile="palworld-runtime-bookmarks.json",
+        )
+        if not target:
+            return
+
+        try:
+            Path(target).write_text(export_runtime_bookmarks(self.runtime_saved_bookmarks), encoding="utf-8")
+        except OSError as exc:
+            messagebox.showerror("Palworld Trainer", f"Failed to export saved runtime bookmarks.\n\n{exc}")
+            return
+
+        self.status_var.set(f"Exported saved runtime bookmarks to {target}")
+
+    def import_runtime_saved_bookmarks_from_file(self) -> None:
+        source = filedialog.askopenfilename(
+            title="Import saved runtime bookmarks",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+        )
+        if not source:
+            return
+
+        try:
+            imported = import_runtime_bookmarks(Path(source).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Palworld Trainer", f"Failed to import saved runtime bookmarks.\n\n{exc}")
+            return
+
+        self.runtime_saved_bookmarks = merge_runtime_bookmarks(self.runtime_saved_bookmarks, imported)
+        self._persist_runtime_saved_bookmarks()
+        self._render_runtime_bookmarks(selected_key=imported[0].key if imported else None)
+        self.refresh_runtime_monitor()
+        self.status_var.set(f"Imported {len(imported)} saved runtime bookmark(s) from {source}")
+
+    def _persist_runtime_saved_bookmarks(self) -> None:
+        self.settings.runtime_saved_bookmarks = list(self.runtime_saved_bookmarks)
+        save_settings(self.settings)
 
     def _render_host_commands(self) -> None:
         self.host_commands_text.configure(state=tk.NORMAL)
@@ -904,9 +1134,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Print the runtime bookmark catalog and exit.",
     )
     parser.add_argument(
+        "--list-saved-runtime-bookmarks",
+        action="store_true",
+        help="Print only the saved runtime bookmark library and exit.",
+    )
+    parser.add_argument(
         "--session-summary",
         action="store_true",
         help="Parse the current bridge session log and print a summary.",
+    )
+    parser.add_argument(
+        "--export-runtime-bookmarks",
+        metavar="PATH",
+        help="Export the saved runtime bookmark library to a JSON file.",
+    )
+    parser.add_argument(
+        "--import-runtime-bookmarks",
+        metavar="PATH",
+        help="Import saved runtime bookmarks from a JSON file and merge them into settings.",
     )
     parser.add_argument(
         "--list-host-commands",
@@ -946,7 +1191,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    settings = TrainerSettings()
+    settings = load_settings()
 
     if args.self_check:
         print(json.dumps(build_self_check_payload(settings), indent=2, ensure_ascii=False))
@@ -970,13 +1215,31 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.list_runtime_bookmarks:
-        print(render_runtime_bookmarks_text())
+        print(render_runtime_bookmarks_text(settings.runtime_saved_bookmarks))
+        return 0
+
+    if args.list_saved_runtime_bookmarks:
+        print(render_saved_runtime_bookmarks_text(settings.runtime_saved_bookmarks))
         return 0
 
     if args.session_summary:
         report = scan_environment(settings)
         summary = parse_session_log(report.trainer_bridge_log_path)
-        print(render_session_summary_text(summary))
+        print(render_session_summary_text(summary, saved_bookmark_count=len(settings.runtime_saved_bookmarks)))
+        return 0
+
+    if args.export_runtime_bookmarks:
+        export_path = Path(args.export_runtime_bookmarks)
+        export_path.write_text(export_runtime_bookmarks(settings.runtime_saved_bookmarks), encoding="utf-8")
+        print(f"Exported {len(settings.runtime_saved_bookmarks)} runtime bookmark(s) to {export_path}")
+        return 0
+
+    if args.import_runtime_bookmarks:
+        import_path = Path(args.import_runtime_bookmarks)
+        imported = import_runtime_bookmarks(import_path.read_text(encoding="utf-8"))
+        settings.runtime_saved_bookmarks = merge_runtime_bookmarks(settings.runtime_saved_bookmarks, imported)
+        save_settings(settings)
+        print(f"Imported {len(imported)} runtime bookmark(s) from {import_path}")
         return 0
 
     if args.list_host_commands:

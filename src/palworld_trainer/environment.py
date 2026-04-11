@@ -211,4 +211,16 @@ def build_module_statuses(report: EnvironmentReport) -> list[ModuleStatus]:
                 else "blocked"
             ),
         ),
+        ModuleStatus(
+            key="module-9",
+            title="Module 9: Bookmark Library",
+            description="Persistent runtime bookmark libraries with import/export support for repeatable non-host scouting routes.",
+            status=(
+                "ready"
+                if report.trainer_bridge_deployed
+                else "available"
+                if report.ue4ss_root_exists and report.trainer_bridge_source_exists
+                else "blocked"
+            ),
+        ),
     ]

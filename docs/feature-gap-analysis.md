@@ -2,7 +2,7 @@
 
 This document tracks what is already shipped, what is still worth building, and what this project intentionally does not implement.
 
-## Shipped through v0.8.0
+## Shipped through v0.9.0
 
 - Desktop shell with environment detection and settings persistence
 - UE4SS bridge deployment
@@ -12,6 +12,7 @@ This document tracks what is already shipped, what is still worth building, and 
 - Host command deck and command composer
 - Runtime scan bookmarks for client-safe repeated scans
 - Session log monitor and parsed client-side summaries
+- Saved runtime bookmark library with JSON import and export
 - Node 24-ready GitHub Actions workflow updates
 
 ## High-value features still unfinished
@@ -19,7 +20,6 @@ This document tracks what is already shipped, what is still worth building, and 
 ### Client-safe enhancements
 
 - Live session dashboard for player position, biome, temperature, and nearby scan summaries
-- Saved runtime scan bookmarks with one-click replay
 - Session log viewer with filter and export tools
 - Map-oriented bookmarks for manual coordinate workflows
 - Richer local-only discovery panels for spawners, NPCs, drops, and bosses

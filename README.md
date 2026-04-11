@@ -68,6 +68,13 @@ Module 8 now adds:
 - Runtime bookmark export through `--list-runtime-bookmarks`
 - Session summary export through `--session-summary`
 
+Module 9 now adds:
+
+- A persistent saved runtime bookmark library layered on top of the built-in client-safe scan deck
+- Runtime bookmark import and export through JSON so scouting routes can move between installs
+- A Runtime tab editor for cloning built-ins into reusable non-host multiplayer scan presets
+- Saved bookmark export through `--list-saved-runtime-bookmarks`, `--export-runtime-bookmarks PATH`, and `--import-runtime-bookmarks PATH`
+
 ## Local run
 
 ```powershell
@@ -106,10 +113,23 @@ python .\run_trainer.py --list-runtime-presets
 python .\run_trainer.py --list-runtime-bookmarks
 ```
 
+## List saved runtime bookmarks
+
+```powershell
+python .\run_trainer.py --list-saved-runtime-bookmarks
+```
+
 ## Print the current session summary
 
 ```powershell
 python .\run_trainer.py --session-summary
+```
+
+## Export or import saved runtime bookmarks
+
+```powershell
+python .\run_trainer.py --export-runtime-bookmarks .\runtime-bookmarks.json
+python .\run_trainer.py --import-runtime-bookmarks .\runtime-bookmarks.json
 ```
 
 ## List host commands
@@ -159,7 +179,7 @@ The original template is also kept at `docs/build-workflow.yml.example` for refe
 
 ## Release automation
 
-Push a tag such as `v0.8.0` and GitHub Actions will build the Windows package and publish a GitHub Release with the generated zip and checksum files.
+Push a tag such as `v0.9.0` and GitHub Actions will build the Windows package and publish a GitHub Release with the generated zip and checksum files.
 
 ## Planned modules
 
@@ -171,3 +191,4 @@ Push a tag such as `v0.8.0` and GitHub Actions will build the Windows package an
 6. Host command tooling and searchable asset catalogs
 7. Command composer and Node 24-ready CI workflows
 8. Session monitor and client-safe runtime bookmarks
+9. Persistent runtime bookmark library and import/export workflows

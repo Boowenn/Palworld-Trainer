@@ -37,6 +37,8 @@ class RuntimeBookmarkSpec:
     command: str
     description: str
     mode: str
+    origin: str = "Built-in"
+    editable: bool = False
 
 
 @dataclass(slots=True)
@@ -109,3 +111,4 @@ class EnvironmentReport:
 class TrainerSettings:
     game_root: str | None = None
     last_selected_tab: str = "Overview"
+    runtime_saved_bookmarks: list[RuntimeBookmarkSpec] = field(default_factory=list)
