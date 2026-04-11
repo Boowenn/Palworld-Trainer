@@ -193,4 +193,10 @@ def build_module_statuses(report: EnvironmentReport) -> list[ModuleStatus]:
                 else "blocked"
             ),
         ),
+        ModuleStatus(
+            key="module-7",
+            title="Module 7: Command Composer",
+            description="Composable host command presets plus Node 24-ready GitHub Actions workflows.",
+            status="ready" if report.game_root_exists else "blocked",
+        ),
     ]

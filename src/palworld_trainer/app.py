@@ -14,10 +14,14 @@ from .catalog import get_catalog_kinds, load_all_catalogs, search_catalog
 from .config import save_settings
 from .environment import build_module_statuses, scan_environment
 from .host_tools import (
+    compose_host_command,
+    get_host_command_template,
+    get_host_command_template_specs,
     get_primary_entry_command,
     render_host_commands_text,
     render_host_entry_text,
     render_host_search_text,
+    render_host_templates_text,
 )
 from .models import CatalogEntry, EnvironmentReport, TrainerSettings
 from .runtime import render_runtime_commands_text, render_runtime_presets_text
@@ -31,6 +35,9 @@ class TrainerApp:
         self.host_catalogs: dict[str, list[CatalogEntry]] = {}
         self.host_search_results: list[CatalogEntry] = []
         self.host_catalog_error: str | None = None
+        self.host_template_specs = get_host_command_template_specs()
+        self.host_template_title_to_key = {spec.title: spec.key for spec in self.host_template_specs}
+        self.host_template_key_to_title = {spec.key: spec.title for spec in self.host_template_specs}
         self.tab_titles = ["Overview", "Modules", "Runtime", "Host Tools", "Notes"]
 
         self.root = tk.Tk()
@@ -44,6 +51,9 @@ class TrainerApp:
         self.host_kind_var = tk.StringVar(value="item")
         self.host_query_var = tk.StringVar(value="")
         self.host_result_count_var = tk.StringVar(value="Catalog results will appear here.")
+        self.host_template_var = tk.StringVar(value=self.host_template_key_to_title["self_item"])
+        self.host_template_summary_var = tk.StringVar(value="")
+        self.host_composer_vars = [tk.StringVar() for _ in range(4)]
 
         self._build_style()
         self._build_layout()
@@ -73,8 +83,8 @@ class TrainerApp:
         ttk.Label(
             top_frame,
             text=(
-                "Modules 1-6 provide the desktop shell, UE4SS bridge deployment, runtime diagnostics, "
-                "preset scans, packaging support, and host command catalogs."
+                "Modules 1-7 provide the desktop shell, UE4SS bridge deployment, runtime diagnostics, "
+                "preset scans, packaging support, host command catalogs, and a command composer."
             ),
             style="Muted.TLabel",
         ).pack(anchor=tk.W, pady=(4, 12))
@@ -176,7 +186,7 @@ class TrainerApp:
 
         self.host_commands_text = tk.Text(
             self.host_tab,
-            height=16,
+            height=12,
             bg="#16202b",
             fg="#d7e2ef",
             relief=tk.FLAT,
@@ -186,6 +196,65 @@ class TrainerApp:
             pady=12,
         )
         self.host_commands_text.pack(fill=tk.X, expand=False)
+
+        composer = ttk.Frame(self.host_tab)
+        composer.pack(fill=tk.X, pady=(12, 10))
+
+        ttk.Label(composer, text="Command Composer", style="CardTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(composer, text="Preset", style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(8, 0))
+
+        template_combo = ttk.Combobox(
+            composer,
+            textvariable=self.host_template_var,
+            values=list(self.host_template_title_to_key),
+            state="readonly",
+            width=28,
+        )
+        template_combo.grid(row=2, column=0, sticky="ew", padx=(0, 8))
+        template_combo.bind("<<ComboboxSelected>>", self.on_host_template_changed)
+
+        ttk.Button(composer, text="Use Selected Asset", command=self.apply_selected_asset_to_template).grid(
+            row=2,
+            column=1,
+            sticky="ew",
+            padx=(0, 8),
+        )
+        ttk.Button(composer, text="Copy Preview", command=self.copy_host_preview_command).grid(row=2, column=2, sticky="ew")
+
+        ttk.Label(
+            composer,
+            textvariable=self.host_template_summary_var,
+            style="Muted.TLabel",
+            wraplength=820,
+        ).grid(row=3, column=0, columnspan=4, sticky="w", pady=(8, 6))
+
+        self.host_arg_labels: list[ttk.Label] = []
+        self.host_arg_entries: list[ttk.Entry] = []
+        for index, var in enumerate(self.host_composer_vars):
+            label = ttk.Label(composer, text="", style="Muted.TLabel")
+            label.grid(row=4, column=index, sticky="w", padx=(0, 8))
+            entry = ttk.Entry(composer, textvariable=var, width=18)
+            entry.grid(row=5, column=index, sticky="ew", padx=(0, 8))
+            entry.bind("<KeyRelease>", self.on_host_composer_input_changed)
+            entry.bind("<Return>", self.on_host_composer_input_changed)
+            self.host_arg_labels.append(label)
+            self.host_arg_entries.append(entry)
+            composer.columnconfigure(index, weight=1)
+
+        ttk.Label(composer, text="Preview", style="Muted.TLabel").grid(row=6, column=0, sticky="w", pady=(8, 0))
+
+        self.host_preview_text = tk.Text(
+            composer,
+            height=3,
+            bg="#16202b",
+            fg="#e8edf5",
+            relief=tk.FLAT,
+            wrap=tk.WORD,
+            font=("Consolas", 10),
+            padx=12,
+            pady=12,
+        )
+        self.host_preview_text.grid(row=7, column=0, columnspan=4, sticky="ew", pady=(4, 0))
 
         controls = ttk.Frame(self.host_tab)
         controls.pack(fill=tk.X, pady=(12, 8))
@@ -305,6 +374,7 @@ class TrainerApp:
         self._render_runtime_commands()
         self._render_host_commands()
         self.refresh_host_results()
+        self.refresh_host_template_form()
         self._render_notes(self.report)
 
         detected = str(self.report.game_root) if self.report.game_root else "Not detected"
@@ -388,8 +458,33 @@ class TrainerApp:
         self.host_commands_text.insert("1.0", render_host_commands_text())
         self.host_commands_text.configure(state=tk.DISABLED)
 
+    def _get_selected_host_template_key(self) -> str:
+        return self.host_template_title_to_key[self.host_template_var.get()]
+
+    def refresh_host_template_form(self) -> None:
+        spec = get_host_command_template(self._get_selected_host_template_key())
+        self.host_template_summary_var.set(f"{spec.category}: {spec.description}")
+
+        for index, (label, entry, var) in enumerate(zip(self.host_arg_labels, self.host_arg_entries, self.host_composer_vars)):
+            if index < len(spec.arguments):
+                label.configure(text=spec.arguments[index])
+                label.grid()
+                entry.grid()
+            else:
+                var.set("")
+                label.grid_remove()
+                entry.grid_remove()
+
+        self._render_host_command_preview()
+
     def on_host_filters_changed(self, _event: object | None = None) -> None:
         self.refresh_host_results()
+
+    def on_host_template_changed(self, _event: object | None = None) -> None:
+        self.refresh_host_template_form()
+
+    def on_host_composer_input_changed(self, _event: object | None = None) -> None:
+        self._render_host_command_preview()
 
     def refresh_host_results(self) -> None:
         kind = self.host_kind_var.get().strip() or "item"
@@ -432,12 +527,14 @@ class TrainerApp:
         self.host_results_listbox.activate(0)
         self.host_results_listbox.see(0)
         self._render_selected_host_entry(self.host_search_results[0])
+        self._render_host_command_preview()
 
     def on_host_selection_changed(self, _event: object | None = None) -> None:
         entry = self.get_selected_host_entry()
         if not entry:
             return
         self._render_selected_host_entry(entry)
+        self._render_host_command_preview()
 
     def _render_selected_host_entry(self, entry: CatalogEntry) -> None:
         self._render_host_detail_message(render_host_entry_text(entry))
@@ -447,6 +544,34 @@ class TrainerApp:
         self.host_detail_text.delete("1.0", tk.END)
         self.host_detail_text.insert("1.0", text)
         self.host_detail_text.configure(state=tk.DISABLED)
+
+    def _get_selected_asset_key_for_template(self) -> str | None:
+        spec = get_host_command_template(self._get_selected_host_template_key())
+        if not spec.asset_kind:
+            return None
+
+        entry = self.get_selected_host_entry()
+        if not entry or entry.kind != spec.asset_kind:
+            return None
+
+        return entry.key
+
+    def _render_host_command_preview(self) -> None:
+        spec = get_host_command_template(self._get_selected_host_template_key())
+        values = [var.get() for var in self.host_composer_vars]
+        selected_asset_key = self._get_selected_asset_key_for_template()
+        preview = compose_host_command(spec.key, values, selected_asset_key=selected_asset_key)
+
+        lines = [preview]
+        if selected_asset_key and spec.asset_argument_index is not None:
+            asset_value = values[spec.asset_argument_index].strip() if spec.asset_argument_index < len(values) else ""
+            if not asset_value:
+                lines.extend(["", f"Using selected {spec.asset_kind} asset: {selected_asset_key}"])
+
+        self.host_preview_text.configure(state=tk.NORMAL)
+        self.host_preview_text.delete("1.0", tk.END)
+        self.host_preview_text.insert("1.0", "\n".join(lines))
+        self.host_preview_text.configure(state=tk.DISABLED)
 
     def get_selected_host_entry(self) -> CatalogEntry | None:
         selection = self.host_results_listbox.curselection()
@@ -554,6 +679,35 @@ class TrainerApp:
 
         self._copy_to_clipboard(command, f"Copied command template: {command}")
 
+    def apply_selected_asset_to_template(self) -> None:
+        spec = get_host_command_template(self._get_selected_host_template_key())
+        entry = self.get_selected_host_entry()
+
+        if not entry:
+            messagebox.showwarning("Palworld Trainer", "Select a catalog entry first.")
+            return
+
+        if spec.asset_kind is None or spec.asset_argument_index is None:
+            messagebox.showwarning("Palworld Trainer", "The current template does not accept asset input.")
+            return
+
+        if entry.kind != spec.asset_kind:
+            messagebox.showwarning(
+                "Palworld Trainer",
+                f"The current template expects a {spec.asset_kind} entry, but the selection is {entry.kind}.",
+            )
+            return
+
+        self.host_composer_vars[spec.asset_argument_index].set(entry.key)
+        self._render_host_command_preview()
+
+    def copy_host_preview_command(self) -> None:
+        spec = get_host_command_template(self._get_selected_host_template_key())
+        values = [var.get() for var in self.host_composer_vars]
+        selected_asset_key = self._get_selected_asset_key_for_template()
+        command = compose_host_command(spec.key, values, selected_asset_key=selected_asset_key)
+        self._copy_to_clipboard(command, f"Copied composed command: {command}")
+
     def _copy_to_clipboard(self, text: str, status: str) -> None:
         self.root.clipboard_clear()
         self.root.clipboard_append(text)
@@ -615,10 +769,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Print the host command catalog and exit.",
     )
     parser.add_argument(
+        "--list-host-templates",
+        action="store_true",
+        help="Print the host command composer templates and exit.",
+    )
+    parser.add_argument(
         "--search-assets",
         nargs=2,
         metavar=("KIND", "QUERY"),
         help="Search a ClientCheatCommands asset catalog such as item, pal, technology, or npc.",
+    )
+    parser.add_argument(
+        "--compose-host-command",
+        nargs="+",
+        metavar="PART",
+        help="Compose a host command from a named template and optional argument values.",
     )
     parser.add_argument(
         "--search-limit",
@@ -663,11 +828,24 @@ def main(argv: list[str] | None = None) -> int:
         print(render_host_commands_text())
         return 0
 
+    if args.list_host_templates:
+        print(render_host_templates_text())
+        return 0
+
     if args.search_assets:
         kind, query = args.search_assets
         report = scan_environment(settings)
         try:
             print(render_host_search_text(report.client_cheat_commands_enum_dir, kind, query, limit=args.search_limit))
+        except ValueError as exc:
+            print(exc, file=sys.stderr)
+            return 2
+        return 0
+
+    if args.compose_host_command:
+        template, *values = args.compose_host_command
+        try:
+            print(compose_host_command(template, values))
         except ValueError as exc:
             print(exc, file=sys.stderr)
             return 2

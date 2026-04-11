@@ -14,10 +14,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -33,7 +33,7 @@ jobs:
         run: powershell -ExecutionPolicy Bypass -File .\scripts\package_release.ps1 -Clean
 
       - name: Upload release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: PalworldTrainer-release
           path: release/*
@@ -50,6 +50,8 @@ jobs:
           - Desktop shell with environment detection
           - UE4SS bridge deployment
           - Runtime diagnostics command pack
+          - Host tools and command composer
+          - Node 24-ready CI workflows
           - Windows standalone packaging
           "@
           gh release create $tag .\release\* --title "Palworld Trainer $tag" --notes $notes

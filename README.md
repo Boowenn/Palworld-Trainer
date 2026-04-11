@@ -54,6 +54,13 @@ Module 6 now adds:
 - Host command export through `--list-host-commands`
 - Asset search export through `--search-assets KIND QUERY`
 
+Module 7 now adds:
+
+- A host command composer with adjustable arguments for inventory, spawn, travel, and world commands
+- Template export through `--list-host-templates`
+- Direct command composition through `--compose-host-command TEMPLATE [args...]`
+- Node 24-ready GitHub Actions workflow upgrades for `checkout`, `setup-python`, and `upload-artifact`
+
 ## Local run
 
 ```powershell
@@ -92,12 +99,26 @@ python .\run_trainer.py --list-runtime-presets
 python .\run_trainer.py --list-host-commands
 ```
 
+## List host templates
+
+```powershell
+python .\run_trainer.py --list-host-templates
+```
+
 ## Search asset catalogs
 
 ```powershell
 python .\run_trainer.py --search-assets item shield
 python .\run_trainer.py --search-assets pal anubis
 python .\run_trainer.py --search-assets technology palbox
+```
+
+## Compose host commands
+
+```powershell
+python .\run_trainer.py --compose-host-command self_item Shield_Ultra 10
+python .\run_trainer.py --compose-host-command teleport_xyz -12345 6789 250
+python .\run_trainer.py --compose-host-command set_time 12
 ```
 
 ## Local build
@@ -119,7 +140,7 @@ The original template is also kept at `docs/build-workflow.yml.example` for refe
 
 ## Release automation
 
-Push a tag such as `v0.6.0` and GitHub Actions will build the Windows package and publish a GitHub Release with the generated zip and checksum files.
+Push a tag such as `v0.7.0` and GitHub Actions will build the Windows package and publish a GitHub Release with the generated zip and checksum files.
 
 ## Planned modules
 
@@ -129,3 +150,4 @@ Push a tag such as `v0.6.0` and GitHub Actions will build the Windows package an
 4. Final packaging, release automation, and versioned builds
 5. Preset scans, session logging, and runtime shortcuts
 6. Host command tooling and searchable asset catalogs
+7. Command composer and Node 24-ready CI workflows

@@ -47,6 +47,18 @@ class HostCommandSpec:
 
 
 @dataclass(slots=True)
+class HostCommandTemplateSpec:
+    key: str
+    title: str
+    description: str
+    category: str
+    arguments: tuple[str, ...]
+    example: str
+    asset_kind: str | None = None
+    asset_argument_index: int | None = None
+
+
+@dataclass(slots=True)
 class EnvironmentReport:
     game_root: Path | None
     repo_root: Path
