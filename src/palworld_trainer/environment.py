@@ -223,4 +223,16 @@ def build_module_statuses(report: EnvironmentReport) -> list[ModuleStatus]:
                 else "blocked"
             ),
         ),
+        ModuleStatus(
+            key="module-10",
+            title="Module 10: Session Explorer",
+            description="Structured session event parsing with filtering and export for non-host multiplayer scouting logs.",
+            status=(
+                "ready"
+                if report.trainer_bridge_deployed
+                else "available"
+                if report.ue4ss_root_exists and report.trainer_bridge_source_exists
+                else "blocked"
+            ),
+        ),
     ]

@@ -23,16 +23,19 @@ from .host_tools import (
     render_host_search_text,
     render_host_templates_text,
 )
-from .models import CatalogEntry, EnvironmentReport, RuntimeBookmarkSpec, TrainerSettings
+from .models import CatalogEntry, EnvironmentReport, RuntimeBookmarkSpec, SessionSummary, TrainerSettings
 from .runtime import (
     build_saved_runtime_bookmark,
     export_runtime_bookmarks,
+    export_session_events,
+    filter_session_events,
     get_combined_runtime_bookmark_specs,
     parse_session_log,
     import_runtime_bookmarks,
     merge_runtime_bookmarks,
     render_runtime_bookmarks_text,
     render_runtime_commands_text,
+    render_session_explorer_text,
     render_runtime_presets_text,
     render_saved_runtime_bookmarks_text,
     render_session_summary_text,
@@ -49,6 +52,7 @@ class TrainerApp:
         self.host_catalog_error: str | None = None
         self.runtime_saved_bookmarks = list(settings.runtime_saved_bookmarks)
         self.runtime_bookmarks = get_combined_runtime_bookmark_specs(self.runtime_saved_bookmarks)
+        self.runtime_summary: SessionSummary | None = None
         self.host_template_specs = get_host_command_template_specs()
         self.host_template_title_to_key = {spec.title: spec.key for spec in self.host_template_specs}
         self.host_template_key_to_title = {spec.key: spec.title for spec in self.host_template_specs}
@@ -72,6 +76,8 @@ class TrainerApp:
         self.runtime_editor_title_var = tk.StringVar(value="")
         self.runtime_editor_command_var = tk.StringVar(value="")
         self.runtime_editor_description_var = tk.StringVar(value="")
+        self.runtime_session_filter_var = tk.StringVar(value="")
+        self.runtime_session_state_var = tk.StringVar(value="No session events loaded yet.")
 
         self._build_style()
         self._build_layout()
@@ -101,9 +107,9 @@ class TrainerApp:
         ttk.Label(
             top_frame,
             text=(
-                "Modules 1-9 provide the desktop shell, UE4SS bridge deployment, runtime diagnostics, "
+                "Modules 1-10 provide the desktop shell, UE4SS bridge deployment, runtime diagnostics, "
                 "preset scans, packaging support, host command catalogs, a command composer, a session monitor, "
-                "and a persistent runtime bookmark library."
+                "a persistent runtime bookmark library, and a session explorer."
             ),
             style="Muted.TLabel",
         ).pack(anchor=tk.W, pady=(4, 12))
@@ -311,7 +317,34 @@ class TrainerApp:
         runtime_editor.columnconfigure(0, weight=1)
         runtime_editor.columnconfigure(1, weight=1)
 
-        ttk.Label(runtime_right, text="Session monitor", style="Muted.TLabel").pack(anchor=tk.W, pady=(4, 6))
+        ttk.Label(runtime_right, text="Session explorer", style="Muted.TLabel").pack(anchor=tk.W, pady=(4, 6))
+
+        session_controls = ttk.Frame(runtime_right)
+        session_controls.pack(fill=tk.X, expand=False, pady=(0, 8))
+
+        ttk.Label(session_controls, text="Filter", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        session_filter_entry = ttk.Entry(session_controls, textvariable=self.runtime_session_filter_var)
+        session_filter_entry.grid(row=0, column=1, sticky="ew", padx=(8, 8))
+        session_filter_entry.bind("<KeyRelease>", self.on_runtime_session_filter_changed)
+        session_filter_entry.bind("<Return>", self.on_runtime_session_filter_changed)
+        ttk.Button(
+            session_controls,
+            text="Copy Explorer",
+            command=self.copy_runtime_session_explorer,
+        ).grid(row=0, column=2, sticky="ew", padx=(0, 8))
+        ttk.Button(
+            session_controls,
+            text="Export Events",
+            command=self.export_runtime_session_events_to_file,
+        ).grid(row=0, column=3, sticky="ew")
+        session_controls.columnconfigure(1, weight=1)
+
+        ttk.Label(
+            runtime_right,
+            textvariable=self.runtime_session_state_var,
+            style="Muted.TLabel",
+            wraplength=560,
+        ).pack(anchor=tk.W, pady=(0, 6))
 
         self.runtime_session_text = tk.Text(
             runtime_right,
@@ -590,9 +623,9 @@ class TrainerApp:
         payload = {
             "notes": report.notes,
             "next_steps": [
-                "Layer in richer client-facing panels and portable bookmark libraries on top of the existing runtime bridge.",
+                "Layer in richer client-facing panels and map-oriented route tools on top of the existing runtime bridge.",
                 "Add more curated Palworld-specific helper views while keeping host and client-safe flows separate.",
-                "Use the saved runtime bookmark deck to support repeatable non-host multiplayer scouting routes.",
+                "Use the saved runtime bookmark deck and session explorer exports to support repeatable non-host multiplayer scouting routes.",
                 "Keep packaging and release automation ready for the next tagged build.",
             ],
         }
@@ -638,12 +671,24 @@ class TrainerApp:
 
     def refresh_runtime_monitor(self) -> None:
         summary = parse_session_log(self.report.trainer_bridge_log_path)
+        self.runtime_summary = summary
+        filter_text = self.runtime_session_filter_var.get().strip()
+        matched_events = filter_session_events(summary.events, filter_text)
+        category_count = len(summary.category_counts)
+        category_label = "category" if category_count == 1 else "categories"
+        self.runtime_session_state_var.set(
+            f"Showing {len(matched_events)} event(s) from {len(summary.events)} captured event(s) across {category_count} {category_label}."
+        )
 
         self.runtime_session_text.configure(state=tk.NORMAL)
         self.runtime_session_text.delete("1.0", tk.END)
         self.runtime_session_text.insert(
             "1.0",
-            render_session_summary_text(summary, saved_bookmark_count=len(self.runtime_saved_bookmarks)),
+            render_session_explorer_text(
+                summary,
+                filter_text=filter_text,
+                saved_bookmark_count=len(self.runtime_saved_bookmarks),
+            ),
         )
         self.runtime_session_text.configure(state=tk.DISABLED)
 
@@ -712,6 +757,37 @@ class TrainerApp:
             return
 
         self._copy_to_clipboard(bookmark.command, f"Copied runtime bookmark: {bookmark.command}")
+
+    def on_runtime_session_filter_changed(self, _event: object | None = None) -> None:
+        self.refresh_runtime_monitor()
+
+    def copy_runtime_session_explorer(self) -> None:
+        text = self.runtime_session_text.get("1.0", tk.END).strip()
+        if not text:
+            messagebox.showwarning("Palworld Trainer", "There is no session explorer output to copy yet.")
+            return
+
+        self._copy_to_clipboard(text, "Copied the current session explorer output.")
+
+    def export_runtime_session_events_to_file(self) -> None:
+        summary = self.runtime_summary or parse_session_log(self.report.trainer_bridge_log_path)
+        filter_text = self.runtime_session_filter_var.get().strip()
+        target = filedialog.asksaveasfilename(
+            title="Export filtered session events",
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+            initialfile="palworld-session-events.json",
+        )
+        if not target:
+            return
+
+        try:
+            Path(target).write_text(export_session_events(summary, filter_text=filter_text), encoding="utf-8")
+        except OSError as exc:
+            messagebox.showerror("Palworld Trainer", f"Failed to export filtered session events.\n\n{exc}")
+            return
+
+        self.status_var.set(f"Exported filtered session events to {target}")
 
     def new_runtime_saved_bookmark(self) -> None:
         self.runtime_bookmarks_listbox.selection_clear(0, tk.END)
@@ -1144,6 +1220,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Parse the current bridge session log and print a summary.",
     )
     parser.add_argument(
+        "--session-events",
+        action="store_true",
+        help="Print the session explorer view with optional filtering.",
+    )
+    parser.add_argument(
+        "--session-filter",
+        metavar="TEXT",
+        default="",
+        help="Optional text filter for --session-events or --export-session-events.",
+    )
+    parser.add_argument(
         "--export-runtime-bookmarks",
         metavar="PATH",
         help="Export the saved runtime bookmark library to a JSON file.",
@@ -1152,6 +1239,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--import-runtime-bookmarks",
         metavar="PATH",
         help="Import saved runtime bookmarks from a JSON file and merge them into settings.",
+    )
+    parser.add_argument(
+        "--export-session-events",
+        metavar="PATH",
+        help="Export filtered session events to a JSON file.",
     )
     parser.add_argument(
         "--list-host-commands",
@@ -1228,6 +1320,18 @@ def main(argv: list[str] | None = None) -> int:
         print(render_session_summary_text(summary, saved_bookmark_count=len(settings.runtime_saved_bookmarks)))
         return 0
 
+    if args.session_events:
+        report = scan_environment(settings)
+        summary = parse_session_log(report.trainer_bridge_log_path)
+        print(
+            render_session_explorer_text(
+                summary,
+                filter_text=args.session_filter,
+                saved_bookmark_count=len(settings.runtime_saved_bookmarks),
+            )
+        )
+        return 0
+
     if args.export_runtime_bookmarks:
         export_path = Path(args.export_runtime_bookmarks)
         export_path.write_text(export_runtime_bookmarks(settings.runtime_saved_bookmarks), encoding="utf-8")
@@ -1240,6 +1344,14 @@ def main(argv: list[str] | None = None) -> int:
         settings.runtime_saved_bookmarks = merge_runtime_bookmarks(settings.runtime_saved_bookmarks, imported)
         save_settings(settings)
         print(f"Imported {len(imported)} runtime bookmark(s) from {import_path}")
+        return 0
+
+    if args.export_session_events:
+        report = scan_environment(settings)
+        summary = parse_session_log(report.trainer_bridge_log_path)
+        export_path = Path(args.export_session_events)
+        export_path.write_text(export_session_events(summary, filter_text=args.session_filter), encoding="utf-8")
+        print(f"Exported filtered session events to {export_path}")
         return 0
 
     if args.list_host_commands:

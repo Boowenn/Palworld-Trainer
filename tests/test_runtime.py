@@ -8,6 +8,8 @@ from tests import _bootstrap  # noqa: F401
 from palworld_trainer.runtime import (
     build_saved_runtime_bookmark,
     export_runtime_bookmarks,
+    export_session_events,
+    filter_session_events,
     get_runtime_bookmark_specs,
     import_runtime_bookmarks,
     merge_runtime_bookmarks,
@@ -16,6 +18,7 @@ from palworld_trainer.runtime import (
     get_runtime_command_specs,
     get_runtime_preset_specs,
     render_runtime_commands_text,
+    render_session_explorer_text,
     render_saved_runtime_bookmarks_text,
     render_runtime_presets_text,
     render_session_summary_text,
@@ -129,6 +132,63 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual("Preset 'pal_spawners' => BP_PalSpawner_Standard_C", summary.latest_scan_title)
         self.assertEqual(6, summary.latest_scan_shown)
         self.assertEqual(8, summary.latest_scan_total)
+        self.assertIn("bridge", summary.category_counts)
+        self.assertIn("scan", summary.category_counts)
+
+    def test_filter_session_events_matches_category_or_message(self) -> None:
+        sample = "\n".join(
+            [
+                "[2026-04-11 12:00:00] [PalworldTrainerBridge] Bridge loaded.",
+                "[2026-04-11 12:00:05] [PalworldTrainerBridge] Player location: X=100.0 Y=200.0 Z=300.0",
+                "[2026-04-11 12:00:10] [PalworldTrainerBridge] Preset 'pal_spawners' => BP_PalSpawner_Standard_C (6 shown / 8 total)",
+            ]
+        )
+
+        fake_path = Path("D:/fake/session.log")
+        with patch("pathlib.Path.exists", autospec=True, return_value=True):
+            with patch("pathlib.Path.read_text", autospec=True, return_value=sample):
+                summary = parse_session_log(fake_path)
+
+        filtered = filter_session_events(summary.events, "scan")
+
+        self.assertEqual(1, len(filtered))
+        self.assertEqual("scan", filtered[0].category)
+
+    def test_render_session_explorer_mentions_filter_and_categories(self) -> None:
+        sample = "\n".join(
+            [
+                "[2026-04-11 12:00:00] [PalworldTrainerBridge] Bridge loaded.",
+                "[2026-04-11 12:00:05] [PalworldTrainerBridge] Player location: X=100.0 Y=200.0 Z=300.0",
+            ]
+        )
+        fake_path = Path("D:/fake/session.log")
+        with patch("pathlib.Path.exists", autospec=True, return_value=True):
+            with patch("pathlib.Path.read_text", autospec=True, return_value=sample):
+                summary = parse_session_log(fake_path)
+
+        rendered = render_session_explorer_text(summary, filter_text="player", saved_bookmark_count=2)
+
+        self.assertIn("Session explorer", rendered)
+        self.assertIn("Active filter       : player", rendered)
+        self.assertIn("Category counts", rendered)
+        self.assertIn("(player)", rendered)
+
+    def test_export_session_events_emits_filtered_json_payload(self) -> None:
+        sample = "\n".join(
+            [
+                "[2026-04-11 12:00:00] [PalworldTrainerBridge] Bridge loaded.",
+                "[2026-04-11 12:00:05] [PalworldTrainerBridge] Player location: X=100.0 Y=200.0 Z=300.0",
+            ]
+        )
+        fake_path = Path("D:/fake/session.log")
+        with patch("pathlib.Path.exists", autospec=True, return_value=True):
+            with patch("pathlib.Path.read_text", autospec=True, return_value=sample):
+                summary = parse_session_log(fake_path)
+
+        exported = export_session_events(summary, filter_text="player")
+
+        self.assertIn('"filter": "player"', exported)
+        self.assertIn('"category": "player"', exported)
 
     def test_render_session_summary_text_mentions_recent_events(self) -> None:
         sample = "\n".join(

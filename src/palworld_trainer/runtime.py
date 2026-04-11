@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from typing import Sequence
 
-from .models import RuntimeBookmarkSpec, RuntimeCommandSpec, RuntimePresetSpec, SessionSummary
+from .models import RuntimeBookmarkSpec, RuntimeCommandSpec, RuntimePresetSpec, SessionEvent, SessionSummary
 
 
 SESSION_LINE_PATTERN = re.compile(r"^\[(?P<timestamp>[^\]]+)\]\s+\[[^\]]+\]\s+(?P<message>.+)$")
@@ -396,6 +396,8 @@ def parse_session_log(log_path: Path | None) -> SessionSummary:
         latest_scan_shown=None,
         latest_scan_total=None,
         recent_events=[],
+        category_counts={},
+        events=[],
     )
 
     if not log_path or not log_path.exists():
@@ -419,9 +421,12 @@ def parse_session_log(log_path: Path | None) -> SessionSummary:
 
         timestamp = match.group("timestamp")
         message = match.group("message")
+        category = _classify_session_message(message)
         summary.last_timestamp = timestamp
         recent_messages.append(f"[{timestamp}] {message}")
         recent_messages = recent_messages[-8:]
+        summary.events.append(SessionEvent(timestamp=timestamp, category=category, message=message))
+        summary.category_counts[category] = summary.category_counts.get(category, 0) + 1
 
         if message.startswith("Player location: "):
             location_match = LOCATION_PATTERN.search(message)
@@ -454,7 +459,7 @@ def render_runtime_commands_text() -> str:
     lines = [
         "Runtime diagnostics",
         "-------------------",
-        "Modules 3-8 focus on pure client-side runtime commands that remain useful outside host-only flows.",
+        "Modules 3-10 focus on pure client-side runtime commands that remain useful outside host-only flows.",
         "",
     ]
 
@@ -651,9 +656,133 @@ def render_session_summary_text(summary: SessionSummary, *, saved_bookmark_count
     return "\n".join(lines)
 
 
+def filter_session_events(
+    events: Sequence[SessionEvent],
+    filter_text: str = "",
+    *,
+    limit: int | None = None,
+) -> list[SessionEvent]:
+    normalized_filter = filter_text.strip().casefold()
+    filtered: list[SessionEvent] = []
+
+    for event in events:
+        haystack = f"{event.timestamp} {event.category} {event.message}".casefold()
+        if normalized_filter and normalized_filter not in haystack:
+            continue
+        filtered.append(event)
+
+    if limit is not None:
+        return filtered[-limit:]
+    return filtered
+
+
+def render_session_explorer_text(
+    summary: SessionSummary,
+    *,
+    filter_text: str = "",
+    saved_bookmark_count: int = 0,
+    max_events: int = 25,
+) -> str:
+    filtered_events = filter_session_events(summary.events, filter_text, limit=max_events)
+    category_summary = _render_session_category_summary(summary.category_counts)
+    filter_label = filter_text.strip() or "No filter"
+
+    lines = [
+        "Session explorer",
+        "----------------",
+        f"Log path            : {summary.log_path or 'Not available'}",
+        f"Log exists          : {'Yes' if summary.log_exists else 'No'}",
+        f"Parsed log lines    : {summary.total_lines}",
+        f"Structured events   : {len(summary.events)}",
+        f"Saved bookmarks     : {saved_bookmark_count}",
+        f"Active filter       : {filter_label}",
+        f"Matched events      : {len(filter_session_events(summary.events, filter_text))}",
+        f"Last timestamp      : {summary.last_timestamp or 'n/a'}",
+        "",
+        "Category counts",
+        "---------------",
+        category_summary,
+        "",
+        "Recent matching events",
+        "----------------------",
+    ]
+
+    if filtered_events:
+        lines.extend(
+            [f"[{event.timestamp}] ({event.category}) {event.message}" for event in filtered_events]
+        )
+    else:
+        lines.append("No matching session events for the current filter.")
+
+    lines.extend(
+        [
+            "",
+            "Hints",
+            "-----",
+            "Try filters like scan, player, world, bridge, or spawners to narrow the event stream.",
+            "Export the filtered event deck from the Runtime tab or CLI when you want a reusable scouting record.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def export_session_events(summary: SessionSummary, *, filter_text: str = "") -> str:
+    filtered_events = filter_session_events(summary.events, filter_text)
+    payload = {
+        "version": 1,
+        "filter": filter_text,
+        "summary": {
+            "log_path": str(summary.log_path) if summary.log_path else None,
+            "log_exists": summary.log_exists,
+            "total_lines": summary.total_lines,
+            "last_timestamp": summary.last_timestamp,
+            "latest_player_location": summary.latest_player_location,
+            "latest_world_location": summary.latest_world_location,
+            "replicated_players": summary.replicated_players,
+            "latest_scan_title": summary.latest_scan_title,
+            "latest_scan_shown": summary.latest_scan_shown,
+            "latest_scan_total": summary.latest_scan_total,
+            "category_counts": summary.category_counts,
+        },
+        "events": [
+            {
+                "timestamp": event.timestamp,
+                "category": event.category,
+                "message": event.message,
+            }
+            for event in filtered_events
+        ],
+    }
+    return json.dumps(payload, indent=2, ensure_ascii=False)
+
+
 def _normalize_runtime_bookmark_key(value: str) -> str:
     normalized = re.sub(r"[^a-z0-9]+", "_", value.strip().casefold()).strip("_")
     return normalized or "saved_bookmark"
+
+
+def _classify_session_message(message: str) -> str:
+    if message.startswith("Player location: "):
+        return "player"
+    if message.startswith("Local player location: "):
+        return "world"
+    if SNAPSHOT_PATTERN.match(message) or message.startswith("Preset '") or message.startswith("FindAllOf"):
+        return "scan"
+    if REPLICATED_PATTERN.match(message) or "player" in message.casefold():
+        return "players"
+    if "bridge" in message.casefold():
+        return "bridge"
+    if "log" in message.casefold():
+        return "log"
+    return "event"
+
+
+def _render_session_category_summary(category_counts: dict[str, int]) -> str:
+    if not category_counts:
+        return "No structured events have been captured yet."
+
+    parts = [f"{category}={count}" for category, count in sorted(category_counts.items())]
+    return ", ".join(parts)
 
 
 def _runtime_bookmark_signature(bookmark: RuntimeBookmarkSpec) -> tuple[str, str]:

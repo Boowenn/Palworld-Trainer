@@ -24,11 +24,18 @@ if (-not $version) {
 $releaseDir = Join-Path $root "release"
 New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
 
+$releaseExeName = "PalworldTrainer-v$version-win64.exe"
+$releaseExePath = Join-Path $releaseDir $releaseExeName
 $archiveName = "PalworldTrainer-v$version-win64.zip"
 $archivePath = Join-Path $releaseDir $archiveName
+$exeHashPath = "$releaseExePath.sha256"
 $hashPath = "$archivePath.sha256"
 
+Copy-Item -Path "$root\\dist\\PalworldTrainer.exe" -Destination $releaseExePath -Force
 Compress-Archive -Path "$root\\dist\\PalworldTrainer.exe" -DestinationPath $archivePath -Force
+
+$exeHash = Get-FileHash -Algorithm SHA256 $releaseExePath
+"$($exeHash.Hash.ToLower())  $releaseExeName" | Set-Content -Path $exeHashPath -Encoding ascii
 
 $hash = Get-FileHash -Algorithm SHA256 $archivePath
 "$($hash.Hash.ToLower())  $archiveName" | Set-Content -Path $hashPath -Encoding ascii

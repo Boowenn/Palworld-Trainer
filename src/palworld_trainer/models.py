@@ -42,6 +42,13 @@ class RuntimeBookmarkSpec:
 
 
 @dataclass(slots=True)
+class SessionEvent:
+    timestamp: str
+    category: str
+    message: str
+
+
+@dataclass(slots=True)
 class SessionSummary:
     log_path: Path | None
     log_exists: bool
@@ -54,6 +61,8 @@ class SessionSummary:
     latest_scan_shown: int | None
     latest_scan_total: int | None
     recent_events: list[str] = field(default_factory=list)
+    category_counts: dict[str, int] = field(default_factory=dict)
+    events: list[SessionEvent] = field(default_factory=list)
 
 
 @dataclass(slots=True)

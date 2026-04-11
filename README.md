@@ -75,6 +75,14 @@ Module 9 now adds:
 - A Runtime tab editor for cloning built-ins into reusable non-host multiplayer scan presets
 - Saved bookmark export through `--list-saved-runtime-bookmarks`, `--export-runtime-bookmarks PATH`, and `--import-runtime-bookmarks PATH`
 
+Module 10 now adds:
+
+- A Session Explorer that turns `session.log` into structured client-visible event categories
+- Runtime-side event filtering for scans, players, world snapshots, bridge status, and other captured messages
+- Session event export through `--session-events`, `--session-filter TEXT`, and `--export-session-events PATH`
+- Release packaging that now includes a raw `exe` asset alongside the `zip`
+- Local build mirroring to the Palworld game root when the repository is inside the game folder
+
 ## Local run
 
 ```powershell
@@ -125,6 +133,14 @@ python .\run_trainer.py --list-saved-runtime-bookmarks
 python .\run_trainer.py --session-summary
 ```
 
+## Explore filtered session events
+
+```powershell
+python .\run_trainer.py --session-events
+python .\run_trainer.py --session-events --session-filter player
+python .\run_trainer.py --export-session-events .\session-events.json --session-filter scan
+```
+
 ## Export or import saved runtime bookmarks
 
 ```powershell
@@ -172,6 +188,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1 -Clean
 powershell -ExecutionPolicy Bypass -File .\scripts\package_release.ps1 -Clean
 ```
 
+The local build now writes [PalworldTrainer.exe](/D:/steam/steamapps/common/Palworld/Palworld-Trainer/dist/PalworldTrainer.exe), mirrors a copy to [PalworldTrainer.exe](/D:/steam/steamapps/common/Palworld/PalworldTrainer.exe) when the repo lives under the game directory, and packages both a raw `exe` asset and a `zip` under the `release` folder.
+
 ## CI build
 
 The repository now includes an active workflow at `.github/workflows/build.yml`.
@@ -179,7 +197,7 @@ The original template is also kept at `docs/build-workflow.yml.example` for refe
 
 ## Release automation
 
-Push a tag such as `v0.9.0` and GitHub Actions will build the Windows package and publish a GitHub Release with the generated zip and checksum files.
+Push a tag such as `v0.10.0` and GitHub Actions will build the Windows package and publish a GitHub Release with the generated `exe`, `zip`, and checksum files.
 
 ## Planned modules
 
@@ -192,3 +210,4 @@ Push a tag such as `v0.9.0` and GitHub Actions will build the Windows package an
 7. Command composer and Node 24-ready CI workflows
 8. Session monitor and client-safe runtime bookmarks
 9. Persistent runtime bookmark library and import/export workflows
+10. Session explorer, filtered event export, and direct `exe` release assets

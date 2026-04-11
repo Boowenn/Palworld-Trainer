@@ -51,8 +51,8 @@ jobs:
           - UE4SS bridge deployment
           - Runtime diagnostics command pack
           - Host tools and command composer
-          - Runtime bookmark library and session monitor
+          - Runtime bookmark library and session explorer
           - Node 24-ready CI workflows
-          - Windows standalone packaging
+          - Windows standalone packaging with direct exe assets
           "@
           gh release create $tag .\release\* --title "Palworld Trainer $tag" --notes $notes
