@@ -24,7 +24,14 @@ from .host_tools import (
     render_host_templates_text,
 )
 from .models import CatalogEntry, EnvironmentReport, TrainerSettings
-from .runtime import render_runtime_commands_text, render_runtime_presets_text
+from .runtime import (
+    get_runtime_bookmark_specs,
+    parse_session_log,
+    render_runtime_bookmarks_text,
+    render_runtime_commands_text,
+    render_runtime_presets_text,
+    render_session_summary_text,
+)
 from .ue4ss import deploy_bridge
 
 
@@ -35,6 +42,7 @@ class TrainerApp:
         self.host_catalogs: dict[str, list[CatalogEntry]] = {}
         self.host_search_results: list[CatalogEntry] = []
         self.host_catalog_error: str | None = None
+        self.runtime_bookmarks = get_runtime_bookmark_specs()
         self.host_template_specs = get_host_command_template_specs()
         self.host_template_title_to_key = {spec.title: spec.key for spec in self.host_template_specs}
         self.host_template_key_to_title = {spec.key: spec.title for spec in self.host_template_specs}
@@ -83,8 +91,8 @@ class TrainerApp:
         ttk.Label(
             top_frame,
             text=(
-                "Modules 1-7 provide the desktop shell, UE4SS bridge deployment, runtime diagnostics, "
-                "preset scans, packaging support, host command catalogs, and a command composer."
+                "Modules 1-8 provide the desktop shell, UE4SS bridge deployment, runtime diagnostics, "
+                "preset scans, packaging support, host command catalogs, a command composer, and a session monitor."
             ),
             style="Muted.TLabel",
         ).pack(anchor=tk.W, pady=(4, 12))
@@ -159,10 +167,12 @@ class TrainerApp:
 
         ttk.Button(actions, text="Open Deployed Bridge", command=self.open_bridge_target).pack(side=tk.LEFT)
         ttk.Button(actions, text="Open Session Log", command=self.open_bridge_log).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(actions, text="Refresh Monitor", command=self.refresh_runtime_monitor).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(actions, text="Copy Bookmark", command=self.copy_selected_runtime_bookmark).pack(side=tk.LEFT, padx=(8, 0))
 
         self.runtime_text = tk.Text(
             self.runtime_tab,
-            height=18,
+            height=10,
             bg="#16202b",
             fg="#d7e2ef",
             relief=tk.FLAT,
@@ -172,6 +182,75 @@ class TrainerApp:
             pady=12,
         )
         self.runtime_text.pack(fill=tk.BOTH, expand=True)
+
+        runtime_lower = ttk.Frame(self.runtime_tab)
+        runtime_lower.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
+
+        runtime_left = ttk.Frame(runtime_lower)
+        runtime_left.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(0, 10))
+
+        ttk.Label(
+            runtime_left,
+            text="Runtime bookmarks",
+            style="Muted.TLabel",
+        ).pack(anchor=tk.W, pady=(0, 6))
+
+        runtime_list_container = ttk.Frame(runtime_left)
+        runtime_list_container.pack(fill=tk.BOTH, expand=True)
+
+        self.runtime_bookmarks_listbox = tk.Listbox(
+            runtime_list_container,
+            width=34,
+            bg="#16202b",
+            fg="#e8edf5",
+            selectbackground="#2f8fef",
+            selectforeground="#ffffff",
+            relief=tk.FLAT,
+            font=("Consolas", 10),
+        )
+        self.runtime_bookmarks_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.runtime_bookmarks_listbox.bind("<<ListboxSelect>>", self.on_runtime_bookmark_selection_changed)
+
+        runtime_scrollbar = ttk.Scrollbar(
+            runtime_list_container,
+            orient=tk.VERTICAL,
+            command=self.runtime_bookmarks_listbox.yview,
+        )
+        runtime_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.runtime_bookmarks_listbox.configure(yscrollcommand=runtime_scrollbar.set)
+
+        runtime_right = ttk.Frame(runtime_lower)
+        runtime_right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        ttk.Label(runtime_right, text="Bookmark detail", style="Muted.TLabel").pack(anchor=tk.W, pady=(0, 6))
+
+        self.runtime_bookmark_text = tk.Text(
+            runtime_right,
+            height=7,
+            bg="#16202b",
+            fg="#d7e2ef",
+            relief=tk.FLAT,
+            wrap=tk.WORD,
+            font=("Consolas", 10),
+            padx=12,
+            pady=12,
+        )
+        self.runtime_bookmark_text.pack(fill=tk.X, expand=False)
+
+        ttk.Label(runtime_right, text="Session monitor", style="Muted.TLabel").pack(anchor=tk.W, pady=(10, 6))
+
+        self.runtime_session_text = tk.Text(
+            runtime_right,
+            height=12,
+            bg="#16202b",
+            fg="#d7e2ef",
+            relief=tk.FLAT,
+            wrap=tk.WORD,
+            font=("Consolas", 10),
+            padx=12,
+            pady=12,
+        )
+        self.runtime_session_text.pack(fill=tk.BOTH, expand=True)
 
     def _build_host_tab(self) -> None:
         ttk.Label(
@@ -372,6 +451,8 @@ class TrainerApp:
         self._render_summary(self.report)
         self._render_modules(self.report)
         self._render_runtime_commands()
+        self._render_runtime_bookmarks()
+        self.refresh_runtime_monitor()
         self._render_host_commands()
         self.refresh_host_results()
         self.refresh_host_template_form()
@@ -451,6 +532,60 @@ class TrainerApp:
         self.runtime_text.delete("1.0", tk.END)
         self.runtime_text.insert("1.0", render_runtime_commands_text())
         self.runtime_text.configure(state=tk.DISABLED)
+
+    def _render_runtime_bookmarks(self) -> None:
+        self.runtime_bookmarks_listbox.delete(0, tk.END)
+        for bookmark in self.runtime_bookmarks:
+            self.runtime_bookmarks_listbox.insert(tk.END, f"{bookmark.title} [{bookmark.command}]")
+
+        if self.runtime_bookmarks:
+            self.runtime_bookmarks_listbox.selection_set(0)
+            self.runtime_bookmarks_listbox.activate(0)
+            self._render_selected_runtime_bookmark(0)
+
+    def refresh_runtime_monitor(self) -> None:
+        summary = parse_session_log(self.report.trainer_bridge_log_path)
+
+        self.runtime_session_text.configure(state=tk.NORMAL)
+        self.runtime_session_text.delete("1.0", tk.END)
+        self.runtime_session_text.insert("1.0", render_session_summary_text(summary))
+        self.runtime_session_text.configure(state=tk.DISABLED)
+
+    def on_runtime_bookmark_selection_changed(self, _event: object | None = None) -> None:
+        selection = self.runtime_bookmarks_listbox.curselection()
+        if not selection:
+            return
+        self._render_selected_runtime_bookmark(selection[0])
+
+    def _render_selected_runtime_bookmark(self, index: int) -> None:
+        if index >= len(self.runtime_bookmarks):
+            return
+
+        bookmark = self.runtime_bookmarks[index]
+        lines = [
+            bookmark.title,
+            "-" * len(bookmark.title),
+            f"Command    : {bookmark.command}",
+            f"Mode       : {bookmark.mode}",
+            f"Description: {bookmark.description}",
+            "",
+            "Usage",
+            "-----",
+            "Copy this command into the in-game UE4SS console during any session where the local client can resolve the objects.",
+        ]
+        self.runtime_bookmark_text.configure(state=tk.NORMAL)
+        self.runtime_bookmark_text.delete("1.0", tk.END)
+        self.runtime_bookmark_text.insert("1.0", "\n".join(lines))
+        self.runtime_bookmark_text.configure(state=tk.DISABLED)
+
+    def copy_selected_runtime_bookmark(self) -> None:
+        selection = self.runtime_bookmarks_listbox.curselection()
+        if not selection:
+            messagebox.showwarning("Palworld Trainer", "Select a runtime bookmark first.")
+            return
+
+        bookmark = self.runtime_bookmarks[selection[0]]
+        self._copy_to_clipboard(bookmark.command, f"Copied runtime bookmark: {bookmark.command}")
 
     def _render_host_commands(self) -> None:
         self.host_commands_text.configure(state=tk.NORMAL)
@@ -764,6 +899,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Print the runtime preset catalog and exit.",
     )
     parser.add_argument(
+        "--list-runtime-bookmarks",
+        action="store_true",
+        help="Print the runtime bookmark catalog and exit.",
+    )
+    parser.add_argument(
+        "--session-summary",
+        action="store_true",
+        help="Parse the current bridge session log and print a summary.",
+    )
+    parser.add_argument(
         "--list-host-commands",
         action="store_true",
         help="Print the host command catalog and exit.",
@@ -822,6 +967,16 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.list_runtime_presets:
         print(render_runtime_presets_text())
+        return 0
+
+    if args.list_runtime_bookmarks:
+        print(render_runtime_bookmarks_text())
+        return 0
+
+    if args.session_summary:
+        report = scan_environment(settings)
+        summary = parse_session_log(report.trainer_bridge_log_path)
+        print(render_session_summary_text(summary))
         return 0
 
     if args.list_host_commands:

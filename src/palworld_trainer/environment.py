@@ -199,4 +199,16 @@ def build_module_statuses(report: EnvironmentReport) -> list[ModuleStatus]:
             description="Composable host command presets plus Node 24-ready GitHub Actions workflows.",
             status="ready" if report.game_root_exists else "blocked",
         ),
+        ModuleStatus(
+            key="module-8",
+            title="Module 8: Session Monitor",
+            description="Client-side scan bookmarks plus session log summaries for non-host multiplayer visibility.",
+            status=(
+                "ready"
+                if report.trainer_bridge_deployed
+                else "available"
+                if report.ue4ss_root_exists and report.trainer_bridge_source_exists
+                else "blocked"
+            ),
+        ),
     ]

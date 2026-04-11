@@ -1,7 +1,7 @@
 local UEHelpers = require("UEHelpers")
 
 local ModName = "PalworldTrainerBridge"
-local Version = "0.5.0"
+local Version = "0.8.0"
 local LastFindQuery = nil
 local SessionLogPath = "Mods/NativeMods/UE4SS/Mods/PalworldTrainerBridge/session.log"
 local LogWriteHealthy = true

@@ -61,6 +61,13 @@ Module 7 now adds:
 - Direct command composition through `--compose-host-command TEMPLATE [args...]`
 - Node 24-ready GitHub Actions workflow upgrades for `checkout`, `setup-python`, and `upload-artifact`
 
+Module 8 now adds:
+
+- Runtime scan bookmarks aimed at non-host multiplayer visibility
+- A desktop session monitor that parses `session.log` into player position, replicated player counts, recent scans, and recent events
+- Runtime bookmark export through `--list-runtime-bookmarks`
+- Session summary export through `--session-summary`
+
 ## Local run
 
 ```powershell
@@ -91,6 +98,18 @@ python .\run_trainer.py --list-runtime-commands
 
 ```powershell
 python .\run_trainer.py --list-runtime-presets
+```
+
+## List runtime bookmarks
+
+```powershell
+python .\run_trainer.py --list-runtime-bookmarks
+```
+
+## Print the current session summary
+
+```powershell
+python .\run_trainer.py --session-summary
 ```
 
 ## List host commands
@@ -140,7 +159,7 @@ The original template is also kept at `docs/build-workflow.yml.example` for refe
 
 ## Release automation
 
-Push a tag such as `v0.7.0` and GitHub Actions will build the Windows package and publish a GitHub Release with the generated zip and checksum files.
+Push a tag such as `v0.8.0` and GitHub Actions will build the Windows package and publish a GitHub Release with the generated zip and checksum files.
 
 ## Planned modules
 
@@ -151,3 +170,4 @@ Push a tag such as `v0.7.0` and GitHub Actions will build the Windows package an
 5. Preset scans, session logging, and runtime shortcuts
 6. Host command tooling and searchable asset catalogs
 7. Command composer and Node 24-ready CI workflows
+8. Session monitor and client-safe runtime bookmarks

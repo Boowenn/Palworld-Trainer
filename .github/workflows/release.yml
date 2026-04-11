@@ -51,6 +51,7 @@ jobs:
           - UE4SS bridge deployment
           - Runtime diagnostics command pack
           - Host tools and command composer
+          - Runtime bookmarks and session monitor
           - Node 24-ready CI workflows
           - Windows standalone packaging
           "@

@@ -31,6 +31,30 @@ class RuntimePresetSpec:
 
 
 @dataclass(slots=True)
+class RuntimeBookmarkSpec:
+    key: str
+    title: str
+    command: str
+    description: str
+    mode: str
+
+
+@dataclass(slots=True)
+class SessionSummary:
+    log_path: Path | None
+    log_exists: bool
+    total_lines: int
+    last_timestamp: str | None
+    latest_player_location: str | None
+    latest_world_location: str | None
+    replicated_players: int | None
+    latest_scan_title: str | None
+    latest_scan_shown: int | None
+    latest_scan_total: int | None
+    recent_events: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class CatalogEntry:
     kind: str
     key: str

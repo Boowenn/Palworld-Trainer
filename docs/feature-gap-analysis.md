@@ -2,7 +2,7 @@
 
 This document tracks what is already shipped, what is still worth building, and what this project intentionally does not implement.
 
-## Shipped through v0.7.0
+## Shipped through v0.8.0
 
 - Desktop shell with environment detection and settings persistence
 - UE4SS bridge deployment
@@ -10,6 +10,8 @@ This document tracks what is already shipped, what is still worth building, and 
 - Release packaging and GitHub release automation
 - Searchable `ClientCheatCommands` asset catalogs
 - Host command deck and command composer
+- Runtime scan bookmarks for client-safe repeated scans
+- Session log monitor and parsed client-side summaries
 - Node 24-ready GitHub Actions workflow updates
 
 ## High-value features still unfinished
