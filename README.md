@@ -82,12 +82,22 @@ Module 10 now adds:
 - Session event export through `--session-events`, `--session-filter TEXT`, and `--export-session-events PATH`
 - Release packaging that now includes a raw `exe` asset alongside the `zip`
 - Local build mirroring to the Palworld game root when the repository is inside the game folder
+- Packaged executable smoke tests so release builds must pass a real startup check before shipping
+
+Module 10.1 now fixes:
+
+- The packaged `exe` startup import error caused by a relative import inside `__main__.py`
+- A missing post-package startup check for the built Windows executable
 
 ## Local run
 
 ```powershell
 python .\run_trainer.py
 ```
+
+## Download note
+
+Download the packaged files from GitHub Releases, not the GitHub source-code zip. The release page now ships both a direct `exe` and a `zip` that contains the same executable.
 
 ## Local self-check
 
@@ -190,6 +200,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\package_release.ps1 -Clean
 
 The local build now writes [PalworldTrainer.exe](/D:/steam/steamapps/common/Palworld/Palworld-Trainer/dist/PalworldTrainer.exe), mirrors a copy to [PalworldTrainer.exe](/D:/steam/steamapps/common/Palworld/PalworldTrainer.exe) when the repo lives under the game directory, and packages both a raw `exe` asset and a `zip` under the `release` folder.
 
+Every local build now also runs a packaged executable smoke test through [smoke_test_exe.ps1](/D:/steam/steamapps/common/Palworld/Palworld-Trainer/scripts/smoke_test_exe.ps1).
+
 ## CI build
 
 The repository now includes an active workflow at `.github/workflows/build.yml`.
@@ -197,7 +209,7 @@ The original template is also kept at `docs/build-workflow.yml.example` for refe
 
 ## Release automation
 
-Push a tag such as `v0.10.0` and GitHub Actions will build the Windows package and publish a GitHub Release with the generated `exe`, `zip`, and checksum files.
+Push a tag such as `v0.10.1` and GitHub Actions will build the Windows package, smoke-test the packaged executable, and publish a GitHub Release with the generated `exe`, `zip`, and checksum files.
 
 ## Planned modules
 

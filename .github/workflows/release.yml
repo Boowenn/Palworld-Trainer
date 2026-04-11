@@ -32,6 +32,9 @@ jobs:
       - name: Package release
         run: powershell -ExecutionPolicy Bypass -File .\scripts\package_release.ps1 -Clean
 
+      - name: Smoke test packaged executable
+        run: powershell -ExecutionPolicy Bypass -File .\scripts\smoke_test_exe.ps1 -ExePath .\dist\PalworldTrainer.exe
+
       - name: Upload release artifacts
         uses: actions/upload-artifact@v6
         with:
@@ -52,6 +55,7 @@ jobs:
           - Runtime diagnostics command pack
           - Host tools and command composer
           - Runtime bookmark library and session explorer
+          - Packaged executable startup smoke tests
           - Node 24-ready CI workflows
           - Windows standalone packaging with direct exe assets
           "@

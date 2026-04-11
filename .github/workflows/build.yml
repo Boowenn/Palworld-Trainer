@@ -35,6 +35,9 @@ jobs:
       - name: Build executable
         run: powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1 -Clean
 
+      - name: Smoke test packaged executable
+        run: powershell -ExecutionPolicy Bypass -File .\scripts\smoke_test_exe.ps1 -ExePath .\dist\PalworldTrainer.exe
+
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:

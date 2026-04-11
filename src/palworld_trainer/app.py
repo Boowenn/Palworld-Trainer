@@ -1193,6 +1193,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Palworld desktop trainer shell")
     parser.add_argument("--version", action="version", version=f"Palworld Trainer {__version__}")
     parser.add_argument("--self-check", action="store_true", help="Print the environment report as JSON and exit.")
+    parser.add_argument("--smoke-test", action="store_true", help="Exit immediately with success for packaged executable smoke tests.")
     parser.add_argument("--build", action="store_true", help="Invoke the PowerShell build script and exit.")
     parser.add_argument(
         "--list-runtime-commands",
@@ -1283,6 +1284,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+
+    if args.smoke_test:
+        return 0
+
     settings = load_settings()
 
     if args.self_check:

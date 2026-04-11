@@ -2,7 +2,7 @@
 
 This document tracks what is already shipped, what is still worth building, and what this project intentionally does not implement.
 
-## Shipped through v0.10.0
+## Shipped through v0.10.1
 
 - Desktop shell with environment detection and settings persistence
 - UE4SS bridge deployment
@@ -14,6 +14,7 @@ This document tracks what is already shipped, what is still worth building, and 
 - Session log monitor and parsed client-side summaries
 - Saved runtime bookmark library with JSON import and export
 - Session explorer with filtered event export
+- Packaged executable startup smoke tests
 - Node 24-ready GitHub Actions workflow updates
 
 ## High-value features still unfinished
