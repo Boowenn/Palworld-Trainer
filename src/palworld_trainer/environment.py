@@ -235,4 +235,10 @@ def build_module_statuses(report: EnvironmentReport) -> list[ModuleStatus]:
                 else "blocked"
             ),
         ),
+        ModuleStatus(
+            key="module-11",
+            title="Module 11: Map Tools",
+            description="Persistent map bookmarks, route libraries, and collectible tracking that build on local session coordinates.",
+            status="ready" if report.game_root_exists else "available",
+        ),
     ]

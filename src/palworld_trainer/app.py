@@ -23,7 +23,37 @@ from .host_tools import (
     render_host_search_text,
     render_host_templates_text,
 )
-from .models import CatalogEntry, EnvironmentReport, RuntimeBookmarkSpec, SessionSummary, TrainerSettings
+from .map_tools import (
+    COLLECTIBLE_STATUSES,
+    append_route_stop,
+    build_collectible_spec,
+    build_map_bookmark,
+    build_map_bookmark_from_location_text,
+    build_route_spec,
+    export_map_library,
+    format_coordinates,
+    import_map_library,
+    merge_collectible_specs,
+    merge_map_bookmarks,
+    merge_route_specs,
+    render_collectible_detail_text,
+    render_collectible_tracker_text,
+    render_map_bookmark_detail_text,
+    render_map_bookmarks_text,
+    render_map_tools_text,
+    render_route_detail_text,
+    render_route_library_text,
+)
+from .models import (
+    CatalogEntry,
+    CollectibleSpec,
+    EnvironmentReport,
+    MapBookmarkSpec,
+    RouteSpec,
+    RuntimeBookmarkSpec,
+    SessionSummary,
+    TrainerSettings,
+)
 from .runtime import (
     build_saved_runtime_bookmark,
     export_runtime_bookmarks,
@@ -53,10 +83,13 @@ class TrainerApp:
         self.runtime_saved_bookmarks = list(settings.runtime_saved_bookmarks)
         self.runtime_bookmarks = get_combined_runtime_bookmark_specs(self.runtime_saved_bookmarks)
         self.runtime_summary: SessionSummary | None = None
+        self.map_saved_bookmarks = list(settings.map_saved_bookmarks)
+        self.map_saved_routes = list(settings.map_saved_routes)
+        self.tracked_collectibles = list(settings.tracked_collectibles)
         self.host_template_specs = get_host_command_template_specs()
         self.host_template_title_to_key = {spec.title: spec.key for spec in self.host_template_specs}
         self.host_template_key_to_title = {spec.key: spec.title for spec in self.host_template_specs}
-        self.tab_titles = ["Overview", "Modules", "Runtime", "Host Tools", "Notes"]
+        self.tab_titles = ["Overview", "Modules", "Runtime", "Host Tools", "Map Tools", "Notes"]
 
         self.root = tk.Tk()
         self.root.title("Palworld Trainer")
@@ -78,6 +111,24 @@ class TrainerApp:
         self.runtime_editor_description_var = tk.StringVar(value="")
         self.runtime_session_filter_var = tk.StringVar(value="")
         self.runtime_session_state_var = tk.StringVar(value="No session events loaded yet.")
+        self.map_overview_var = tk.StringVar(value="Map tools overview will appear here.")
+        self.map_bookmark_summary_var = tk.StringVar(value="")
+        self.map_bookmark_title_var = tk.StringVar(value="")
+        self.map_bookmark_category_var = tk.StringVar(value="note")
+        self.map_bookmark_x_var = tk.StringVar(value="")
+        self.map_bookmark_y_var = tk.StringVar(value="")
+        self.map_bookmark_z_var = tk.StringVar(value="")
+        self.map_bookmark_notes_var = tk.StringVar(value="")
+        self.map_route_summary_var = tk.StringVar(value="")
+        self.map_route_title_var = tk.StringVar(value="")
+        self.map_route_stops_var = tk.StringVar(value="")
+        self.map_route_description_var = tk.StringVar(value="")
+        self.collectible_summary_var = tk.StringVar(value="")
+        self.collectible_title_var = tk.StringVar(value="")
+        self.collectible_bookmark_key_var = tk.StringVar(value="")
+        self.collectible_category_var = tk.StringVar(value="collectible")
+        self.collectible_status_var = tk.StringVar(value="planned")
+        self.collectible_notes_var = tk.StringVar(value="")
 
         self._build_style()
         self._build_layout()
@@ -107,9 +158,9 @@ class TrainerApp:
         ttk.Label(
             top_frame,
             text=(
-                "Modules 1-10 provide the desktop shell, UE4SS bridge deployment, runtime diagnostics, "
+                "Modules 1-11 provide the desktop shell, UE4SS bridge deployment, runtime diagnostics, "
                 "preset scans, packaging support, host command catalogs, a command composer, a session monitor, "
-                "a persistent runtime bookmark library, and a session explorer."
+                "a persistent runtime bookmark library, a session explorer, and map-oriented scouting tools."
             ),
             style="Muted.TLabel",
         ).pack(anchor=tk.W, pady=(4, 12))
@@ -134,17 +185,20 @@ class TrainerApp:
         self.modules_tab = ttk.Frame(notebook, padding=12)
         self.runtime_tab = ttk.Frame(notebook, padding=12)
         self.host_tab = ttk.Frame(notebook, padding=12)
+        self.map_tab = ttk.Frame(notebook, padding=12)
         self.log_tab = ttk.Frame(notebook, padding=12)
         notebook.add(self.overview_tab, text="Overview")
         notebook.add(self.modules_tab, text="Modules")
         notebook.add(self.runtime_tab, text="Runtime")
         notebook.add(self.host_tab, text="Host Tools")
+        notebook.add(self.map_tab, text="Map Tools")
         notebook.add(self.log_tab, text="Notes")
 
         self._build_overview_tab()
         self._build_modules_tab()
         self._build_runtime_tab()
         self._build_host_tab()
+        self._build_map_tab()
         self._build_log_tab()
         self._restore_last_selected_tab()
 
@@ -521,6 +575,327 @@ class TrainerApp:
         )
         self.host_detail_text.pack(fill=tk.BOTH, expand=True)
 
+    def _build_map_tab(self) -> None:
+        ttk.Label(
+            self.map_tab,
+            text=(
+                "Build a local scouting library from session coordinates: save map bookmarks, chain them into routes, "
+                "and track collectibles or custom objectives without depending on host-only powers."
+            ),
+            style="Muted.TLabel",
+            wraplength=860,
+        ).pack(anchor=tk.W, pady=(0, 8))
+
+        actions = ttk.Frame(self.map_tab)
+        actions.pack(fill=tk.X, pady=(0, 10))
+
+        ttk.Button(actions, text="Use Latest Session Pos", command=self.use_latest_session_position_for_bookmark).pack(
+            side=tk.LEFT
+        )
+        ttk.Button(actions, text="Copy Selected Coords", command=self.copy_selected_map_coordinates).pack(
+            side=tk.LEFT,
+            padx=(8, 0),
+        )
+        ttk.Button(actions, text="Import Library", command=self.import_map_library_from_file).pack(
+            side=tk.LEFT,
+            padx=(8, 0),
+        )
+        ttk.Button(actions, text="Export Library", command=self.export_map_library_to_file).pack(
+            side=tk.LEFT,
+            padx=(8, 0),
+        )
+
+        self.map_overview_text = tk.Text(
+            self.map_tab,
+            height=8,
+            bg="#16202b",
+            fg="#d7e2ef",
+            relief=tk.FLAT,
+            wrap=tk.WORD,
+            font=("Consolas", 10),
+            padx=12,
+            pady=12,
+        )
+        self.map_overview_text.pack(fill=tk.X, expand=False)
+
+        notebook = ttk.Notebook(self.map_tab)
+        notebook.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
+        self.map_notebook = notebook
+
+        self.map_bookmarks_tab = ttk.Frame(notebook, padding=8)
+        self.map_routes_tab = ttk.Frame(notebook, padding=8)
+        self.map_collectibles_tab = ttk.Frame(notebook, padding=8)
+        notebook.add(self.map_bookmarks_tab, text="Bookmarks")
+        notebook.add(self.map_routes_tab, text="Routes")
+        notebook.add(self.map_collectibles_tab, text="Tracker")
+
+        self._build_map_bookmarks_subtab()
+        self._build_map_routes_subtab()
+        self._build_map_collectibles_subtab()
+
+    def _build_map_bookmarks_subtab(self) -> None:
+        actions = ttk.Frame(self.map_bookmarks_tab)
+        actions.pack(fill=tk.X, pady=(0, 8))
+
+        ttk.Button(actions, text="New Bookmark", command=self.new_map_bookmark).pack(side=tk.LEFT)
+        ttk.Button(actions, text="Save Bookmark", command=self.save_map_bookmark).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(actions, text="Delete Bookmark", command=self.delete_selected_map_bookmark).pack(
+            side=tk.LEFT,
+            padx=(8, 0),
+        )
+
+        frame = ttk.Frame(self.map_bookmarks_tab)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        left = ttk.Frame(frame)
+        left.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(0, 10))
+
+        ttk.Label(left, textvariable=self.map_bookmark_summary_var, style="Muted.TLabel").pack(anchor=tk.W, pady=(0, 6))
+
+        list_container = ttk.Frame(left)
+        list_container.pack(fill=tk.BOTH, expand=True)
+
+        self.map_bookmarks_listbox = tk.Listbox(
+            list_container,
+            width=34,
+            bg="#16202b",
+            fg="#e8edf5",
+            selectbackground="#2f8fef",
+            selectforeground="#ffffff",
+            relief=tk.FLAT,
+            font=("Consolas", 10),
+        )
+        self.map_bookmarks_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.map_bookmarks_listbox.bind("<<ListboxSelect>>", self.on_map_bookmark_selection_changed)
+
+        scrollbar = ttk.Scrollbar(list_container, orient=tk.VERTICAL, command=self.map_bookmarks_listbox.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.map_bookmarks_listbox.configure(yscrollcommand=scrollbar.set)
+
+        right = ttk.Frame(frame)
+        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        ttk.Label(right, text="Bookmark detail", style="Muted.TLabel").pack(anchor=tk.W, pady=(0, 6))
+
+        self.map_bookmark_detail_text = tk.Text(
+            right,
+            height=8,
+            bg="#16202b",
+            fg="#d7e2ef",
+            relief=tk.FLAT,
+            wrap=tk.WORD,
+            font=("Consolas", 10),
+            padx=12,
+            pady=12,
+        )
+        self.map_bookmark_detail_text.pack(fill=tk.X, expand=False)
+
+        ttk.Label(right, text="Bookmark editor", style="Muted.TLabel").pack(anchor=tk.W, pady=(10, 6))
+
+        editor = ttk.Frame(right)
+        editor.pack(fill=tk.X, expand=False)
+
+        ttk.Label(editor, text="Title", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Entry(editor, textvariable=self.map_bookmark_title_var).grid(row=1, column=0, sticky="ew", padx=(0, 8))
+        ttk.Label(editor, text="Category", style="Muted.TLabel").grid(row=0, column=1, sticky="w")
+        ttk.Entry(editor, textvariable=self.map_bookmark_category_var).grid(row=1, column=1, sticky="ew", padx=(0, 8))
+
+        ttk.Label(editor, text="X", style="Muted.TLabel").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(editor, textvariable=self.map_bookmark_x_var).grid(row=3, column=0, sticky="ew", padx=(0, 8))
+        ttk.Label(editor, text="Y", style="Muted.TLabel").grid(row=2, column=1, sticky="w", pady=(8, 0))
+        ttk.Entry(editor, textvariable=self.map_bookmark_y_var).grid(row=3, column=1, sticky="ew", padx=(0, 8))
+        ttk.Label(editor, text="Z", style="Muted.TLabel").grid(row=2, column=2, sticky="w", pady=(8, 0))
+        ttk.Entry(editor, textvariable=self.map_bookmark_z_var).grid(row=3, column=2, sticky="ew")
+
+        ttk.Label(editor, text="Notes", style="Muted.TLabel").grid(row=4, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(editor, textvariable=self.map_bookmark_notes_var).grid(
+            row=5,
+            column=0,
+            columnspan=3,
+            sticky="ew",
+        )
+
+        editor.columnconfigure(0, weight=1)
+        editor.columnconfigure(1, weight=1)
+        editor.columnconfigure(2, weight=1)
+
+    def _build_map_routes_subtab(self) -> None:
+        actions = ttk.Frame(self.map_routes_tab)
+        actions.pack(fill=tk.X, pady=(0, 8))
+
+        ttk.Button(actions, text="New Route", command=self.new_map_route).pack(side=tk.LEFT)
+        ttk.Button(actions, text="Save Route", command=self.save_map_route).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(actions, text="Delete Route", command=self.delete_selected_map_route).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(actions, text="Use Selected Bookmark", command=self.append_selected_bookmark_to_route).pack(
+            side=tk.LEFT,
+            padx=(8, 0),
+        )
+
+        frame = ttk.Frame(self.map_routes_tab)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        left = ttk.Frame(frame)
+        left.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(0, 10))
+
+        ttk.Label(left, textvariable=self.map_route_summary_var, style="Muted.TLabel").pack(anchor=tk.W, pady=(0, 6))
+
+        list_container = ttk.Frame(left)
+        list_container.pack(fill=tk.BOTH, expand=True)
+
+        self.map_routes_listbox = tk.Listbox(
+            list_container,
+            width=34,
+            bg="#16202b",
+            fg="#e8edf5",
+            selectbackground="#2f8fef",
+            selectforeground="#ffffff",
+            relief=tk.FLAT,
+            font=("Consolas", 10),
+        )
+        self.map_routes_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.map_routes_listbox.bind("<<ListboxSelect>>", self.on_map_route_selection_changed)
+
+        scrollbar = ttk.Scrollbar(list_container, orient=tk.VERTICAL, command=self.map_routes_listbox.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.map_routes_listbox.configure(yscrollcommand=scrollbar.set)
+
+        right = ttk.Frame(frame)
+        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        ttk.Label(right, text="Route detail", style="Muted.TLabel").pack(anchor=tk.W, pady=(0, 6))
+
+        self.map_route_detail_text = tk.Text(
+            right,
+            height=8,
+            bg="#16202b",
+            fg="#d7e2ef",
+            relief=tk.FLAT,
+            wrap=tk.WORD,
+            font=("Consolas", 10),
+            padx=12,
+            pady=12,
+        )
+        self.map_route_detail_text.pack(fill=tk.X, expand=False)
+
+        ttk.Label(right, text="Route editor", style="Muted.TLabel").pack(anchor=tk.W, pady=(10, 6))
+
+        editor = ttk.Frame(right)
+        editor.pack(fill=tk.X, expand=False)
+
+        ttk.Label(editor, text="Title", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Entry(editor, textvariable=self.map_route_title_var).grid(row=1, column=0, sticky="ew", padx=(0, 8))
+        ttk.Label(editor, text="Stops (bookmark keys)", style="Muted.TLabel").grid(row=0, column=1, sticky="w")
+        ttk.Entry(editor, textvariable=self.map_route_stops_var).grid(row=1, column=1, sticky="ew")
+        ttk.Label(editor, text="Description", style="Muted.TLabel").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(editor, textvariable=self.map_route_description_var).grid(
+            row=3,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+        )
+        editor.columnconfigure(0, weight=1)
+        editor.columnconfigure(1, weight=1)
+
+    def _build_map_collectibles_subtab(self) -> None:
+        actions = ttk.Frame(self.map_collectibles_tab)
+        actions.pack(fill=tk.X, pady=(0, 8))
+
+        ttk.Button(actions, text="New Tracker", command=self.new_collectible_entry).pack(side=tk.LEFT)
+        ttk.Button(actions, text="Save Tracker", command=self.save_collectible_entry).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(actions, text="Delete Tracker", command=self.delete_selected_collectible_entry).pack(
+            side=tk.LEFT,
+            padx=(8, 0),
+        )
+        ttk.Button(actions, text="Use Selected Bookmark", command=self.use_selected_bookmark_for_collectible).pack(
+            side=tk.LEFT,
+            padx=(8, 0),
+        )
+        ttk.Button(actions, text="Mark Found", command=self.mark_selected_collectible_found).pack(
+            side=tk.LEFT,
+            padx=(8, 0),
+        )
+
+        frame = ttk.Frame(self.map_collectibles_tab)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        left = ttk.Frame(frame)
+        left.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(0, 10))
+
+        ttk.Label(left, textvariable=self.collectible_summary_var, style="Muted.TLabel").pack(anchor=tk.W, pady=(0, 6))
+
+        list_container = ttk.Frame(left)
+        list_container.pack(fill=tk.BOTH, expand=True)
+
+        self.collectibles_listbox = tk.Listbox(
+            list_container,
+            width=34,
+            bg="#16202b",
+            fg="#e8edf5",
+            selectbackground="#2f8fef",
+            selectforeground="#ffffff",
+            relief=tk.FLAT,
+            font=("Consolas", 10),
+        )
+        self.collectibles_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.collectibles_listbox.bind("<<ListboxSelect>>", self.on_collectible_selection_changed)
+
+        scrollbar = ttk.Scrollbar(list_container, orient=tk.VERTICAL, command=self.collectibles_listbox.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.collectibles_listbox.configure(yscrollcommand=scrollbar.set)
+
+        right = ttk.Frame(frame)
+        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        ttk.Label(right, text="Tracker detail", style="Muted.TLabel").pack(anchor=tk.W, pady=(0, 6))
+
+        self.collectible_detail_text = tk.Text(
+            right,
+            height=8,
+            bg="#16202b",
+            fg="#d7e2ef",
+            relief=tk.FLAT,
+            wrap=tk.WORD,
+            font=("Consolas", 10),
+            padx=12,
+            pady=12,
+        )
+        self.collectible_detail_text.pack(fill=tk.X, expand=False)
+
+        ttk.Label(right, text="Tracker editor", style="Muted.TLabel").pack(anchor=tk.W, pady=(10, 6))
+
+        editor = ttk.Frame(right)
+        editor.pack(fill=tk.X, expand=False)
+
+        ttk.Label(editor, text="Title", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Entry(editor, textvariable=self.collectible_title_var).grid(row=1, column=0, sticky="ew", padx=(0, 8))
+        ttk.Label(editor, text="Bookmark Key", style="Muted.TLabel").grid(row=0, column=1, sticky="w")
+        ttk.Entry(editor, textvariable=self.collectible_bookmark_key_var).grid(
+            row=1,
+            column=1,
+            sticky="ew",
+            padx=(0, 8),
+        )
+        ttk.Label(editor, text="Category", style="Muted.TLabel").grid(row=0, column=2, sticky="w")
+        ttk.Entry(editor, textvariable=self.collectible_category_var).grid(row=1, column=2, sticky="ew", padx=(0, 8))
+
+        ttk.Label(editor, text="Status", style="Muted.TLabel").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        ttk.Combobox(
+            editor,
+            textvariable=self.collectible_status_var,
+            values=list(COLLECTIBLE_STATUSES),
+            state="readonly",
+        ).grid(row=3, column=0, sticky="ew", padx=(0, 8))
+        ttk.Label(editor, text="Notes", style="Muted.TLabel").grid(row=2, column=1, sticky="w", pady=(8, 0))
+        ttk.Entry(editor, textvariable=self.collectible_notes_var).grid(
+            row=3,
+            column=1,
+            columnspan=2,
+            sticky="ew",
+        )
+        editor.columnconfigure(0, weight=1)
+        editor.columnconfigure(1, weight=1)
+        editor.columnconfigure(2, weight=1)
+
     def _build_log_tab(self) -> None:
         self.notes_text = tk.Text(
             self.log_tab,
@@ -563,6 +938,7 @@ class TrainerApp:
         self._render_host_commands()
         self.refresh_host_results()
         self.refresh_host_template_form()
+        self._render_map_tools()
         self._render_notes(self.report)
 
         detected = str(self.report.game_root) if self.report.game_root else "Not detected"
@@ -623,9 +999,9 @@ class TrainerApp:
         payload = {
             "notes": report.notes,
             "next_steps": [
-                "Layer in richer client-facing panels and map-oriented route tools on top of the existing runtime bridge.",
+                "Keep growing the client-facing panels and map-oriented route tools on top of the existing runtime bridge.",
                 "Add more curated Palworld-specific helper views while keeping host and client-safe flows separate.",
-                "Use the saved runtime bookmark deck and session explorer exports to support repeatable non-host multiplayer scouting routes.",
+                "Use the saved runtime bookmark deck plus map tools to support repeatable non-host multiplayer scouting routes.",
                 "Keep packaging and release automation ready for the next tagged build.",
             ],
         }
@@ -640,6 +1016,23 @@ class TrainerApp:
         self.runtime_text.delete("1.0", tk.END)
         self.runtime_text.insert("1.0", render_runtime_commands_text())
         self.runtime_text.configure(state=tk.DISABLED)
+
+    def _render_map_tools(self) -> None:
+        self.map_overview_text.configure(state=tk.NORMAL)
+        self.map_overview_text.delete("1.0", tk.END)
+        self.map_overview_text.insert(
+            "1.0",
+            render_map_tools_text(
+                self.map_saved_bookmarks,
+                self.map_saved_routes,
+                self.tracked_collectibles,
+            ),
+        )
+        self.map_overview_text.configure(state=tk.DISABLED)
+
+        self._render_map_bookmarks()
+        self._render_map_routes()
+        self._render_collectible_entries()
 
     def _refresh_runtime_bookmark_cache(self) -> None:
         self.runtime_bookmarks = get_combined_runtime_bookmark_specs(self.runtime_saved_bookmarks)
@@ -891,6 +1284,524 @@ class TrainerApp:
 
     def _persist_runtime_saved_bookmarks(self) -> None:
         self.settings.runtime_saved_bookmarks = list(self.runtime_saved_bookmarks)
+        save_settings(self.settings)
+
+    def _render_map_bookmarks(self, selected_key: str | None = None) -> None:
+        current = self.get_selected_map_bookmark()
+        target_key = selected_key or (current.key if current else None)
+        self.map_bookmark_summary_var.set(f"{len(self.map_saved_bookmarks)} saved map bookmark(s) in your scouting library.")
+
+        self.map_bookmarks_listbox.delete(0, tk.END)
+        selected_index = 0
+        for index, bookmark in enumerate(self.map_saved_bookmarks):
+            self.map_bookmarks_listbox.insert(tk.END, f"[{bookmark.category}] {bookmark.title} [{format_coordinates(bookmark)}]")
+            if target_key and bookmark.key == target_key:
+                selected_index = index
+
+        if not self.map_saved_bookmarks:
+            self._clear_map_bookmark_editor()
+            self._render_map_bookmark_detail_message("Map bookmark list is empty.")
+            return
+
+        self.map_bookmarks_listbox.selection_set(selected_index)
+        self.map_bookmarks_listbox.activate(selected_index)
+        self.map_bookmarks_listbox.see(selected_index)
+        self._render_selected_map_bookmark(selected_index)
+
+    def on_map_bookmark_selection_changed(self, _event: object | None = None) -> None:
+        selection = self.map_bookmarks_listbox.curselection()
+        if not selection:
+            return
+        self._render_selected_map_bookmark(selection[0])
+
+    def _render_selected_map_bookmark(self, index: int) -> None:
+        if index >= len(self.map_saved_bookmarks):
+            return
+
+        bookmark = self.map_saved_bookmarks[index]
+        tracked_count = len(
+            [collectible for collectible in self.tracked_collectibles if collectible.bookmark_key == bookmark.key]
+        )
+        self._render_map_bookmark_detail_message(
+            render_map_bookmark_detail_text(bookmark, tracked_count=tracked_count)
+        )
+        self._populate_map_bookmark_editor(bookmark)
+
+    def _render_map_bookmark_detail_message(self, text: str) -> None:
+        self.map_bookmark_detail_text.configure(state=tk.NORMAL)
+        self.map_bookmark_detail_text.delete("1.0", tk.END)
+        self.map_bookmark_detail_text.insert("1.0", text)
+        self.map_bookmark_detail_text.configure(state=tk.DISABLED)
+
+    def _populate_map_bookmark_editor(self, bookmark: MapBookmarkSpec | None) -> None:
+        if not bookmark:
+            self._clear_map_bookmark_editor()
+            return
+
+        self.map_bookmark_title_var.set(bookmark.title)
+        self.map_bookmark_category_var.set(bookmark.category)
+        self.map_bookmark_x_var.set(f"{bookmark.x:.1f}")
+        self.map_bookmark_y_var.set(f"{bookmark.y:.1f}")
+        self.map_bookmark_z_var.set(f"{bookmark.z:.1f}")
+        self.map_bookmark_notes_var.set(bookmark.notes)
+
+    def _clear_map_bookmark_editor(self) -> None:
+        self.map_bookmark_title_var.set("")
+        self.map_bookmark_category_var.set("note")
+        self.map_bookmark_x_var.set("")
+        self.map_bookmark_y_var.set("")
+        self.map_bookmark_z_var.set("")
+        self.map_bookmark_notes_var.set("Saved map bookmark.")
+
+    def get_selected_map_bookmark(self) -> MapBookmarkSpec | None:
+        selection = self.map_bookmarks_listbox.curselection()
+        if not selection:
+            return None
+
+        index = selection[0]
+        if index >= len(self.map_saved_bookmarks):
+            return None
+
+        return self.map_saved_bookmarks[index]
+
+    def _latest_location_text(self) -> str | None:
+        summary = self.runtime_summary or parse_session_log(self.report.trainer_bridge_log_path)
+        self.runtime_summary = summary
+        return summary.latest_player_location or summary.latest_world_location
+
+    def use_latest_session_position_for_bookmark(self) -> None:
+        location_text = self._latest_location_text()
+        if not location_text:
+            messagebox.showwarning(
+                "Palworld Trainer",
+                "No session coordinates are available yet. Refresh the Runtime monitor after loading into the game first.",
+            )
+            return
+
+        try:
+            bookmark = build_map_bookmark_from_location_text(
+                self.map_bookmark_title_var.get().strip() or "Captured Session Bookmark",
+                location_text,
+                self.map_bookmark_category_var.get(),
+                self.map_bookmark_notes_var.get(),
+            )
+        except ValueError as exc:
+            messagebox.showwarning("Palworld Trainer", str(exc))
+            return
+
+        self._populate_map_bookmark_editor(bookmark)
+        self.status_var.set(f"Loaded latest session coordinates into bookmark editor: {location_text}")
+
+    def copy_selected_map_coordinates(self) -> None:
+        bookmark = self.get_selected_map_bookmark()
+        if not bookmark:
+            messagebox.showwarning("Palworld Trainer", "Select a map bookmark first.")
+            return
+
+        self._copy_to_clipboard(format_coordinates(bookmark), f"Copied coordinates: {format_coordinates(bookmark)}")
+
+    def new_map_bookmark(self) -> None:
+        self.map_bookmarks_listbox.selection_clear(0, tk.END)
+        self._clear_map_bookmark_editor()
+        self._render_map_bookmark_detail_message(
+            "Map bookmark editor\n-------------------\n"
+            "Capture the latest session coordinates or enter X/Y/Z manually, then save the bookmark into your scouting library."
+        )
+        self.status_var.set("Ready to create a new map bookmark.")
+
+    def save_map_bookmark(self) -> None:
+        selected = self.get_selected_map_bookmark()
+        existing_key = selected.key if selected and selected.editable else None
+
+        try:
+            bookmark = build_map_bookmark(
+                self.map_bookmark_title_var.get(),
+                self.map_bookmark_x_var.get(),
+                self.map_bookmark_y_var.get(),
+                self.map_bookmark_z_var.get(),
+                self.map_bookmark_category_var.get(),
+                self.map_bookmark_notes_var.get(),
+                key=existing_key,
+            )
+        except ValueError as exc:
+            messagebox.showwarning("Palworld Trainer", str(exc))
+            return
+
+        action = "Saved"
+        if existing_key:
+            for index, saved_bookmark in enumerate(self.map_saved_bookmarks):
+                if saved_bookmark.key == existing_key:
+                    self.map_saved_bookmarks[index] = bookmark
+                    action = "Updated"
+                    break
+        else:
+            self.map_saved_bookmarks = merge_map_bookmarks(self.map_saved_bookmarks, [bookmark])
+            for saved_bookmark in self.map_saved_bookmarks:
+                if saved_bookmark.title == bookmark.title and saved_bookmark.key.startswith(bookmark.key):
+                    bookmark = saved_bookmark
+                    break
+
+        self._persist_map_tool_settings()
+        self._render_map_tools()
+        self._render_map_bookmarks(selected_key=bookmark.key)
+        self.status_var.set(f"{action} map bookmark: {bookmark.title}")
+
+    def delete_selected_map_bookmark(self) -> None:
+        selected = self.get_selected_map_bookmark()
+        if not selected or not selected.editable:
+            messagebox.showwarning("Palworld Trainer", "Select a saved map bookmark first.")
+            return
+
+        self.map_saved_bookmarks = [bookmark for bookmark in self.map_saved_bookmarks if bookmark.key != selected.key]
+        self._persist_map_tool_settings()
+        self._render_map_tools()
+        self.status_var.set(
+            f"Deleted map bookmark: {selected.title}. Routes or tracked spots referencing it will now show missing anchors."
+        )
+
+    def _render_map_routes(self, selected_key: str | None = None) -> None:
+        current = self.get_selected_map_route()
+        target_key = selected_key or (current.key if current else None)
+        self.map_route_summary_var.set(f"{len(self.map_saved_routes)} saved route(s) built from your map bookmark library.")
+
+        self.map_routes_listbox.delete(0, tk.END)
+        selected_index = 0
+        for index, route in enumerate(self.map_saved_routes):
+            self.map_routes_listbox.insert(tk.END, f"{route.title} [{len(route.bookmark_keys)} stops]")
+            if target_key and route.key == target_key:
+                selected_index = index
+
+        if not self.map_saved_routes:
+            self._clear_map_route_editor()
+            self._render_map_route_detail_message("Route library is empty.")
+            return
+
+        self.map_routes_listbox.selection_set(selected_index)
+        self.map_routes_listbox.activate(selected_index)
+        self.map_routes_listbox.see(selected_index)
+        self._render_selected_map_route(selected_index)
+
+    def on_map_route_selection_changed(self, _event: object | None = None) -> None:
+        selection = self.map_routes_listbox.curselection()
+        if not selection:
+            return
+        self._render_selected_map_route(selection[0])
+
+    def _render_selected_map_route(self, index: int) -> None:
+        if index >= len(self.map_saved_routes):
+            return
+
+        route = self.map_saved_routes[index]
+        self._render_map_route_detail_message(render_route_detail_text(route, self.map_saved_bookmarks))
+        self._populate_map_route_editor(route)
+
+    def _render_map_route_detail_message(self, text: str) -> None:
+        self.map_route_detail_text.configure(state=tk.NORMAL)
+        self.map_route_detail_text.delete("1.0", tk.END)
+        self.map_route_detail_text.insert("1.0", text)
+        self.map_route_detail_text.configure(state=tk.DISABLED)
+
+    def _populate_map_route_editor(self, route: RouteSpec | None) -> None:
+        if not route:
+            self._clear_map_route_editor()
+            return
+
+        self.map_route_title_var.set(route.title)
+        self.map_route_stops_var.set(", ".join(route.bookmark_keys))
+        self.map_route_description_var.set(route.description)
+
+    def _clear_map_route_editor(self) -> None:
+        self.map_route_title_var.set("")
+        self.map_route_stops_var.set("")
+        self.map_route_description_var.set("Saved route library entry.")
+
+    def get_selected_map_route(self) -> RouteSpec | None:
+        selection = self.map_routes_listbox.curselection()
+        if not selection:
+            return None
+
+        index = selection[0]
+        if index >= len(self.map_saved_routes):
+            return None
+
+        return self.map_saved_routes[index]
+
+    def append_selected_bookmark_to_route(self) -> None:
+        bookmark = self.get_selected_map_bookmark()
+        if not bookmark:
+            messagebox.showwarning("Palworld Trainer", "Select a map bookmark in the Bookmarks view first.")
+            return
+
+        self.map_route_stops_var.set(append_route_stop(self.map_route_stops_var.get(), bookmark.key))
+        self.status_var.set(f"Added bookmark to route editor: {bookmark.key}")
+
+    def new_map_route(self) -> None:
+        self.map_routes_listbox.selection_clear(0, tk.END)
+        self._clear_map_route_editor()
+        self._render_map_route_detail_message(
+            "Route editor\n------------\n"
+            "Enter a title plus one or more bookmark keys separated by commas, or append the selected bookmark from the Bookmarks subtab."
+        )
+        self.status_var.set("Ready to create a new route.")
+
+    def save_map_route(self) -> None:
+        selected = self.get_selected_map_route()
+        existing_key = selected.key if selected and selected.editable else None
+
+        try:
+            route = build_route_spec(
+                self.map_route_title_var.get(),
+                self.map_route_stops_var.get(),
+                self.map_route_description_var.get(),
+                key=existing_key,
+            )
+        except ValueError as exc:
+            messagebox.showwarning("Palworld Trainer", str(exc))
+            return
+
+        action = "Saved"
+        if existing_key:
+            for index, saved_route in enumerate(self.map_saved_routes):
+                if saved_route.key == existing_key:
+                    self.map_saved_routes[index] = route
+                    action = "Updated"
+                    break
+        else:
+            self.map_saved_routes = merge_route_specs(self.map_saved_routes, [route])
+            for saved_route in self.map_saved_routes:
+                if saved_route.title == route.title and saved_route.key.startswith(route.key):
+                    route = saved_route
+                    break
+
+        self._persist_map_tool_settings()
+        self._render_map_tools()
+        self._render_map_routes(selected_key=route.key)
+        self.status_var.set(f"{action} route: {route.title}")
+
+    def delete_selected_map_route(self) -> None:
+        selected = self.get_selected_map_route()
+        if not selected or not selected.editable:
+            messagebox.showwarning("Palworld Trainer", "Select a saved route first.")
+            return
+
+        self.map_saved_routes = [route for route in self.map_saved_routes if route.key != selected.key]
+        self._persist_map_tool_settings()
+        self._render_map_tools()
+        self.status_var.set(f"Deleted route: {selected.title}")
+
+    def _render_collectible_entries(self, selected_key: str | None = None) -> None:
+        current = self.get_selected_collectible_entry()
+        target_key = selected_key or (current.key if current else None)
+        self.collectible_summary_var.set(
+            f"{len(self.tracked_collectibles)} tracked spot(s) linked to your local bookmark library."
+        )
+
+        self.collectibles_listbox.delete(0, tk.END)
+        selected_index = 0
+        for index, collectible in enumerate(self.tracked_collectibles):
+            self.collectibles_listbox.insert(tk.END, f"[{collectible.status}] {collectible.title} [{collectible.bookmark_key}]")
+            if target_key and collectible.key == target_key:
+                selected_index = index
+
+        if not self.tracked_collectibles:
+            self._clear_collectible_editor()
+            self._render_collectible_detail_message("Collectible tracker is empty.")
+            return
+
+        self.collectibles_listbox.selection_set(selected_index)
+        self.collectibles_listbox.activate(selected_index)
+        self.collectibles_listbox.see(selected_index)
+        self._render_selected_collectible_entry(selected_index)
+
+    def on_collectible_selection_changed(self, _event: object | None = None) -> None:
+        selection = self.collectibles_listbox.curselection()
+        if not selection:
+            return
+        self._render_selected_collectible_entry(selection[0])
+
+    def _render_selected_collectible_entry(self, index: int) -> None:
+        if index >= len(self.tracked_collectibles):
+            return
+
+        collectible = self.tracked_collectibles[index]
+        self._render_collectible_detail_message(
+            render_collectible_detail_text(collectible, self.map_saved_bookmarks)
+        )
+        self._populate_collectible_editor(collectible)
+
+    def _render_collectible_detail_message(self, text: str) -> None:
+        self.collectible_detail_text.configure(state=tk.NORMAL)
+        self.collectible_detail_text.delete("1.0", tk.END)
+        self.collectible_detail_text.insert("1.0", text)
+        self.collectible_detail_text.configure(state=tk.DISABLED)
+
+    def _populate_collectible_editor(self, collectible: CollectibleSpec | None) -> None:
+        if not collectible:
+            self._clear_collectible_editor()
+            return
+
+        self.collectible_title_var.set(collectible.title)
+        self.collectible_bookmark_key_var.set(collectible.bookmark_key)
+        self.collectible_category_var.set(collectible.category)
+        self.collectible_status_var.set(collectible.status)
+        self.collectible_notes_var.set(collectible.notes)
+
+    def _clear_collectible_editor(self) -> None:
+        self.collectible_title_var.set("")
+        self.collectible_bookmark_key_var.set("")
+        self.collectible_category_var.set("collectible")
+        self.collectible_status_var.set("planned")
+        self.collectible_notes_var.set("Tracked collectible entry.")
+
+    def get_selected_collectible_entry(self) -> CollectibleSpec | None:
+        selection = self.collectibles_listbox.curselection()
+        if not selection:
+            return None
+
+        index = selection[0]
+        if index >= len(self.tracked_collectibles):
+            return None
+
+        return self.tracked_collectibles[index]
+
+    def use_selected_bookmark_for_collectible(self) -> None:
+        bookmark = self.get_selected_map_bookmark()
+        if not bookmark:
+            messagebox.showwarning("Palworld Trainer", "Select a map bookmark in the Bookmarks view first.")
+            return
+
+        self.collectible_bookmark_key_var.set(bookmark.key)
+        if not self.collectible_title_var.get().strip():
+            self.collectible_title_var.set(bookmark.title)
+        if self.collectible_category_var.get().strip() == "collectible":
+            self.collectible_category_var.set(bookmark.category)
+        self.status_var.set(f"Loaded bookmark into tracker editor: {bookmark.key}")
+
+    def new_collectible_entry(self) -> None:
+        self.collectibles_listbox.selection_clear(0, tk.END)
+        self._clear_collectible_editor()
+        self._render_collectible_detail_message(
+            "Tracker editor\n--------------\n"
+            "Link a tracked spot to one of your saved bookmark keys, then mark it as planned, tracking, or found."
+        )
+        self.status_var.set("Ready to create a new tracked spot.")
+
+    def save_collectible_entry(self) -> None:
+        selected = self.get_selected_collectible_entry()
+        existing_key = selected.key if selected and selected.editable else None
+
+        try:
+            collectible = build_collectible_spec(
+                self.collectible_title_var.get(),
+                self.collectible_bookmark_key_var.get(),
+                self.collectible_category_var.get(),
+                self.collectible_status_var.get(),
+                self.collectible_notes_var.get(),
+                key=existing_key,
+            )
+        except ValueError as exc:
+            messagebox.showwarning("Palworld Trainer", str(exc))
+            return
+
+        action = "Saved"
+        if existing_key:
+            for index, existing_collectible in enumerate(self.tracked_collectibles):
+                if existing_collectible.key == existing_key:
+                    self.tracked_collectibles[index] = collectible
+                    action = "Updated"
+                    break
+        else:
+            self.tracked_collectibles = merge_collectible_specs(self.tracked_collectibles, [collectible])
+            for existing_collectible in self.tracked_collectibles:
+                if existing_collectible.title == collectible.title and existing_collectible.key.startswith(collectible.key):
+                    collectible = existing_collectible
+                    break
+
+        self._persist_map_tool_settings()
+        self._render_map_tools()
+        self._render_collectible_entries(selected_key=collectible.key)
+        self.status_var.set(f"{action} tracked spot: {collectible.title}")
+
+    def delete_selected_collectible_entry(self) -> None:
+        selected = self.get_selected_collectible_entry()
+        if not selected or not selected.editable:
+            messagebox.showwarning("Palworld Trainer", "Select a tracked spot first.")
+            return
+
+        self.tracked_collectibles = [
+            collectible for collectible in self.tracked_collectibles if collectible.key != selected.key
+        ]
+        self._persist_map_tool_settings()
+        self._render_map_tools()
+        self.status_var.set(f"Deleted tracked spot: {selected.title}")
+
+    def mark_selected_collectible_found(self) -> None:
+        selected = self.get_selected_collectible_entry()
+        if not selected:
+            messagebox.showwarning("Palworld Trainer", "Select a tracked spot first.")
+            return
+
+        self.collectible_status_var.set("found")
+        self.save_collectible_entry()
+
+    def import_map_library_from_file(self) -> None:
+        source = filedialog.askopenfilename(
+            title="Import map tools library",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+        )
+        if not source:
+            return
+
+        try:
+            imported_bookmarks, imported_routes, imported_collectibles = import_map_library(
+                Path(source).read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Palworld Trainer", f"Failed to import map tools library.\n\n{exc}")
+            return
+
+        self.map_saved_bookmarks = merge_map_bookmarks(self.map_saved_bookmarks, imported_bookmarks)
+        self.map_saved_routes = merge_route_specs(self.map_saved_routes, imported_routes)
+        self.tracked_collectibles = merge_collectible_specs(self.tracked_collectibles, imported_collectibles)
+        self._persist_map_tool_settings()
+        self._render_map_tools()
+        self.status_var.set(
+            f"Imported map library from {source}: {len(imported_bookmarks)} bookmark(s), {len(imported_routes)} route(s), {len(imported_collectibles)} tracked spot(s)."
+        )
+
+    def export_map_library_to_file(self) -> None:
+        if not self.map_saved_bookmarks and not self.map_saved_routes and not self.tracked_collectibles:
+            messagebox.showwarning("Palworld Trainer", "There is no map library data to export yet.")
+            return
+
+        target = filedialog.asksaveasfilename(
+            title="Export map tools library",
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+            initialfile="palworld-map-library.json",
+        )
+        if not target:
+            return
+
+        try:
+            Path(target).write_text(
+                export_map_library(
+                    self.map_saved_bookmarks,
+                    self.map_saved_routes,
+                    self.tracked_collectibles,
+                ),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            messagebox.showerror("Palworld Trainer", f"Failed to export map tools library.\n\n{exc}")
+            return
+
+        self.status_var.set(f"Exported map tools library to {target}")
+
+    def _persist_map_tool_settings(self) -> None:
+        self.settings.map_saved_bookmarks = list(self.map_saved_bookmarks)
+        self.settings.map_saved_routes = list(self.map_saved_routes)
+        self.settings.tracked_collectibles = list(self.tracked_collectibles)
         save_settings(self.settings)
 
     def _render_host_commands(self) -> None:
@@ -1247,6 +2158,31 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Export filtered session events to a JSON file.",
     )
     parser.add_argument(
+        "--list-map-bookmarks",
+        action="store_true",
+        help="Print the saved map bookmark library and exit.",
+    )
+    parser.add_argument(
+        "--list-routes",
+        action="store_true",
+        help="Print the saved route library and exit.",
+    )
+    parser.add_argument(
+        "--list-collectibles",
+        action="store_true",
+        help="Print the tracked collectible library and exit.",
+    )
+    parser.add_argument(
+        "--export-map-library",
+        metavar="PATH",
+        help="Export the map bookmark, route, and collectible library to a JSON file.",
+    )
+    parser.add_argument(
+        "--import-map-library",
+        metavar="PATH",
+        help="Import map bookmarks, routes, and collectibles from a JSON file and merge them into settings.",
+    )
+    parser.add_argument(
         "--list-host-commands",
         action="store_true",
         help="Print the host command catalog and exit.",
@@ -1357,6 +2293,54 @@ def main(argv: list[str] | None = None) -> int:
         export_path = Path(args.export_session_events)
         export_path.write_text(export_session_events(summary, filter_text=args.session_filter), encoding="utf-8")
         print(f"Exported filtered session events to {export_path}")
+        return 0
+
+    if args.list_map_bookmarks:
+        print(render_map_bookmarks_text(settings.map_saved_bookmarks))
+        return 0
+
+    if args.list_routes:
+        print(render_route_library_text(settings.map_saved_routes, settings.map_saved_bookmarks))
+        return 0
+
+    if args.list_collectibles:
+        print(render_collectible_tracker_text(settings.tracked_collectibles, settings.map_saved_bookmarks))
+        return 0
+
+    if args.export_map_library:
+        export_path = Path(args.export_map_library)
+        export_path.write_text(
+            export_map_library(
+                settings.map_saved_bookmarks,
+                settings.map_saved_routes,
+                settings.tracked_collectibles,
+            ),
+            encoding="utf-8",
+        )
+        print(
+            "Exported map tools library "
+            f"({len(settings.map_saved_bookmarks)} bookmark(s), {len(settings.map_saved_routes)} route(s), "
+            f"{len(settings.tracked_collectibles)} tracked spot(s)) to {export_path}"
+        )
+        return 0
+
+    if args.import_map_library:
+        import_path = Path(args.import_map_library)
+        imported_bookmarks, imported_routes, imported_collectibles = import_map_library(
+            import_path.read_text(encoding="utf-8")
+        )
+        settings.map_saved_bookmarks = merge_map_bookmarks(settings.map_saved_bookmarks, imported_bookmarks)
+        settings.map_saved_routes = merge_route_specs(settings.map_saved_routes, imported_routes)
+        settings.tracked_collectibles = merge_collectible_specs(
+            settings.tracked_collectibles,
+            imported_collectibles,
+        )
+        save_settings(settings)
+        print(
+            "Imported map tools library "
+            f"from {import_path}: {len(imported_bookmarks)} bookmark(s), "
+            f"{len(imported_routes)} route(s), {len(imported_collectibles)} tracked spot(s)"
+        )
         return 0
 
     if args.list_host_commands:

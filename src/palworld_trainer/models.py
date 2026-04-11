@@ -66,6 +66,41 @@ class SessionSummary:
 
 
 @dataclass(slots=True)
+class MapBookmarkSpec:
+    key: str
+    title: str
+    category: str
+    x: float
+    y: float
+    z: float
+    notes: str
+    origin: str = "Saved"
+    editable: bool = True
+
+
+@dataclass(slots=True)
+class RouteSpec:
+    key: str
+    title: str
+    bookmark_keys: list[str]
+    description: str
+    origin: str = "Saved"
+    editable: bool = True
+
+
+@dataclass(slots=True)
+class CollectibleSpec:
+    key: str
+    title: str
+    bookmark_key: str
+    category: str
+    status: str
+    notes: str
+    origin: str = "Saved"
+    editable: bool = True
+
+
+@dataclass(slots=True)
 class CatalogEntry:
     kind: str
     key: str
@@ -121,3 +156,6 @@ class TrainerSettings:
     game_root: str | None = None
     last_selected_tab: str = "Overview"
     runtime_saved_bookmarks: list[RuntimeBookmarkSpec] = field(default_factory=list)
+    map_saved_bookmarks: list[MapBookmarkSpec] = field(default_factory=list)
+    map_saved_routes: list[RouteSpec] = field(default_factory=list)
+    tracked_collectibles: list[CollectibleSpec] = field(default_factory=list)

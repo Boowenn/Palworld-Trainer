@@ -89,6 +89,15 @@ Module 10.1 now fixes:
 - The packaged `exe` startup import error caused by a relative import inside `__main__.py`
 - A missing post-package startup check for the built Windows executable
 
+Module 11 now adds:
+
+- A dedicated `Map Tools` tab for local scouting workflows that still matter in non-host multiplayer sessions
+- Persistent map bookmarks with manual coordinates or capture from the latest Runtime session location
+- Route libraries built from saved bookmark keys with estimated 3D travel distance
+- Collectible tracking linked to bookmark anchors with `planned`, `tracking`, and `found` states
+- Map library import and export through `--list-map-bookmarks`, `--list-routes`, `--list-collectibles`, `--export-map-library PATH`, and `--import-map-library PATH`
+- A more robust settings-path fallback chain so restricted environments can still load and save trainer settings
+
 ## Local run
 
 ```powershell
@@ -151,6 +160,16 @@ python .\run_trainer.py --session-events --session-filter player
 python .\run_trainer.py --export-session-events .\session-events.json --session-filter scan
 ```
 
+## Explore map tools data
+
+```powershell
+python .\run_trainer.py --list-map-bookmarks
+python .\run_trainer.py --list-routes
+python .\run_trainer.py --list-collectibles
+python .\run_trainer.py --export-map-library .\palworld-map-library.json
+python .\run_trainer.py --import-map-library .\palworld-map-library.json
+```
+
 ## Export or import saved runtime bookmarks
 
 ```powershell
@@ -209,7 +228,7 @@ The original template is also kept at `docs/build-workflow.yml.example` for refe
 
 ## Release automation
 
-Push a tag such as `v0.10.1` and GitHub Actions will build the Windows package, smoke-test the packaged executable, and publish a GitHub Release with the generated `exe`, `zip`, and checksum files.
+Push a tag such as `v0.11.0` and GitHub Actions will build the Windows package, smoke-test the packaged executable, and publish a GitHub Release with the generated `exe`, `zip`, and checksum files.
 
 ## Planned modules
 
@@ -223,3 +242,4 @@ Push a tag such as `v0.10.1` and GitHub Actions will build the Windows package, 
 8. Session monitor and client-safe runtime bookmarks
 9. Persistent runtime bookmark library and import/export workflows
 10. Session explorer, filtered event export, and direct `exe` release assets
+11. Map bookmarks, route libraries, collectible tracking, and settings-path hardening
