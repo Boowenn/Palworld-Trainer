@@ -29,8 +29,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install .[build]
 
-      - name: Self check
-        run: python -m palworld_trainer --self-check
+      - name: Run unit tests
+        run: python -m unittest discover -s tests
 
       - name: Build executable
         run: powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1 -Clean

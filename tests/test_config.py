@@ -1,64 +1,64 @@
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from tests import _bootstrap  # noqa: F401
-from palworld_trainer.config import load_settings, save_settings
-from palworld_trainer.map_tools import build_collectible_spec, build_map_bookmark, build_route_spec
-from palworld_trainer.runtime import build_saved_runtime_bookmark
-from palworld_trainer.models import TrainerSettings
+from palworld_trainer.config import TrainerSettings, load_settings, save_settings
 
 
 class ConfigTests(unittest.TestCase):
-    def test_settings_round_trip_saved_runtime_bookmarks(self) -> None:
-        fake_settings_path = Path("D:/fake/settings.json")
-        settings = TrainerSettings(
-            game_root="D:/steam/steamapps/common/Palworld",
-            last_selected_tab="Map Tools",
-            runtime_saved_bookmarks=[
-                build_saved_runtime_bookmark(
-                    "Saved Players",
-                    "pt_players 12",
-                    "Repeatable player visibility bookmark.",
-                )
-            ],
-            map_saved_bookmarks=[
-                build_map_bookmark("Ore Ridge", "100", "200", "300", "resource", "Ore farming anchor.")
-            ],
-            map_saved_routes=[
-                build_route_spec("Ore Loop", ["ore_ridge"], "Short ore farming circuit.")
-            ],
-            tracked_collectibles=[
-                build_collectible_spec("Statue Sweep", "ore_ridge", "lifmunk", "tracking", "Check ridge statue.")
-            ],
-        )
+    def test_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "settings.json"
+            settings = TrainerSettings(
+                game_root="D:/steam/steamapps/common/Palworld",
+                last_tab="items",
+                custom_item_count=10,
+                custom_pal_count=3,
+                custom_exp_amount=250000,
+                recent_item_ids=["Shield_Ultra", "Bow"],
+                recent_pal_ids=["Anubis"],
+            )
 
-        written_payload: dict[str, str] = {}
-
-        def fake_write_text(self: Path, payload: str, encoding: str = "utf-8") -> int:
-            written_payload["text"] = payload
-            return len(payload)
-
-        with patch("palworld_trainer.config.get_settings_path", return_value=fake_settings_path):
-            with patch("pathlib.Path.write_text", autospec=True, side_effect=fake_write_text):
+            with patch("palworld_trainer.config.get_settings_path", return_value=path):
                 save_settings(settings)
+                loaded = load_settings()
 
-            with patch("pathlib.Path.exists", autospec=True, return_value=True):
-                with patch("pathlib.Path.read_text", autospec=True, return_value=written_payload["text"]):
-                    loaded = load_settings()
+            self.assertEqual(settings.game_root, loaded.game_root)
+            self.assertEqual("items", loaded.last_tab)
+            self.assertEqual(10, loaded.custom_item_count)
+            self.assertEqual(3, loaded.custom_pal_count)
+            self.assertEqual(250000, loaded.custom_exp_amount)
+            self.assertEqual(["Shield_Ultra", "Bow"], loaded.recent_item_ids)
+            self.assertEqual(["Anubis"], loaded.recent_pal_ids)
 
-        self.assertEqual("Map Tools", loaded.last_selected_tab)
-        self.assertEqual(1, len(loaded.runtime_saved_bookmarks))
-        self.assertEqual("Saved Players", loaded.runtime_saved_bookmarks[0].title)
-        self.assertEqual("pt_players 12", loaded.runtime_saved_bookmarks[0].command)
-        self.assertEqual(1, len(loaded.map_saved_bookmarks))
-        self.assertEqual("Ore Ridge", loaded.map_saved_bookmarks[0].title)
-        self.assertEqual(1, len(loaded.map_saved_routes))
-        self.assertEqual("Ore Loop", loaded.map_saved_routes[0].title)
-        self.assertEqual(1, len(loaded.tracked_collectibles))
-        self.assertEqual("Statue Sweep", loaded.tracked_collectibles[0].title)
+    def test_missing_file_returns_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "nothing.json"
+            with patch("palworld_trainer.config.get_settings_path", return_value=path):
+                loaded = load_settings()
+            self.assertIsNone(loaded.game_root)
+            self.assertEqual("home", loaded.last_tab)
+
+    def test_corrupt_file_returns_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "settings.json"
+            path.write_text("{ not json", encoding="utf-8")
+            with patch("palworld_trainer.config.get_settings_path", return_value=path):
+                loaded = load_settings()
+            self.assertIsNone(loaded.game_root)
+
+    def test_saved_payload_is_valid_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "settings.json"
+            with patch("palworld_trainer.config.get_settings_path", return_value=path):
+                save_settings(TrainerSettings(game_root="X:/Palworld"))
+            parsed = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual("X:/Palworld", parsed["game_root"])
 
 
 if __name__ == "__main__":

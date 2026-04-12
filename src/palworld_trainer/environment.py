@@ -1,32 +1,48 @@
+"""Environment discovery and UE4SS bridge deployment.
+
+The trainer needs to know three things:
+
+1. Where the Palworld install lives (auto-detected, overridable in Settings).
+2. Whether UE4SS + ClientCheatCommands are present — cheat commands cannot
+   reach the game without them.
+3. Whether our own PalworldTrainerBridge Lua mod has been deployed into the
+   UE4SS Mods folder (optional, but nice for diagnostics).
+"""
+
 from __future__ import annotations
 
+import shutil
+import sys
+from dataclasses import dataclass, field
 from pathlib import Path
-
-from .models import EnvironmentReport, ModuleStatus, TrainerSettings
 
 
 BRIDGE_MOD_NAME = "PalworldTrainerBridge"
-BRIDGE_LOG_NAME = "session.log"
 CLIENT_CHEAT_COMMANDS_MOD_NAME = "ClientCheatCommands"
 
 
+@dataclass
+class EnvironmentReport:
+    game_root: Path | None
+    game_root_exists: bool = False
+    launcher_exists: bool = False
+    shipping_exists: bool = False
+    ue4ss_root_exists: bool = False
+    client_cheat_commands_present: bool = False
+    client_cheat_commands_active: bool = False
+    client_cheat_commands_enum_dir: Path | None = None
+    trainer_bridge_deployed: bool = False
+    trainer_bridge_target: Path | None = None
+    notes: list[str] = field(default_factory=list)
+
+    @property
+    def ready_for_cheats(self) -> bool:
+        return self.game_root_exists and self.client_cheat_commands_present
+
+
 def get_repo_root() -> Path:
+    """Return the project root (two levels up from this file in dev)."""
     return Path(__file__).resolve().parents[2]
-
-
-def detect_default_game_root(repo_root: Path) -> Path | None:
-    candidates: list[Path] = []
-
-    parent = repo_root.parent
-    candidates.append(parent)
-
-    env_root = Path.cwd()
-    candidates.append(env_root)
-
-    for candidate in candidates:
-        if _looks_like_game_root(candidate):
-            return candidate
-    return None
 
 
 def _looks_like_game_root(path: Path) -> bool:
@@ -36,209 +52,139 @@ def _looks_like_game_root(path: Path) -> bool:
     )
 
 
-def resolve_game_root(settings: TrainerSettings, repo_root: Path) -> Path | None:
-    if settings.game_root:
-        configured = Path(settings.game_root)
-        if configured.exists():
-            return configured
-    return detect_default_game_root(repo_root)
+def detect_default_game_root() -> Path | None:
+    """Best-effort auto-detection of the Palworld install directory."""
 
+    candidates: list[Path] = []
 
-def scan_environment(settings: TrainerSettings) -> EnvironmentReport:
+    # When running from source inside the game directory (common during dev).
     repo_root = get_repo_root()
-    game_root = resolve_game_root(settings, repo_root)
-    trainer_bridge_source = repo_root / "integrations" / "ue4ss" / BRIDGE_MOD_NAME
+    candidates.append(repo_root.parent)
+    candidates.append(repo_root)
 
-    launcher = game_root / "Palworld.exe" if game_root else None
-    shipping = game_root / "Pal" / "Binaries" / "Win64" / "Palworld-Win64-Shipping.exe" if game_root else None
-    mods_root = game_root / "Mods" if game_root else None
-    ue4ss_root = mods_root / "NativeMods" / "UE4SS" if mods_root else None
-    ue4ss_mods = ue4ss_root / "Mods" if ue4ss_root else None
-    client_cheat_commands_mod = ue4ss_mods / CLIENT_CHEAT_COMMANDS_MOD_NAME if ue4ss_mods else None
-    client_cheat_commands_enum_dir = (
-        client_cheat_commands_mod / "Scripts" / "enums" if client_cheat_commands_mod else None
-    )
-    trainer_bridge_target = ue4ss_mods / BRIDGE_MOD_NAME if ue4ss_mods else None
-    trainer_bridge_log = trainer_bridge_target / BRIDGE_LOG_NAME if trainer_bridge_target else None
-    pal_mod_settings = mods_root / "PalModSettings.ini" if mods_root else None
+    # When running as a packaged exe dropped anywhere.
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).parent
+        candidates.append(exe_dir)
+        candidates.append(exe_dir.parent)
 
-    report = EnvironmentReport(
-        game_root=game_root,
-        repo_root=repo_root,
-        game_root_exists=bool(game_root and game_root.exists()),
-        launcher_exists=bool(launcher and launcher.exists()),
-        shipping_exists=bool(shipping and shipping.exists()),
-        mods_root_exists=bool(mods_root and mods_root.exists()),
-        ue4ss_root_exists=bool(ue4ss_root and ue4ss_root.exists()),
-        ue4ss_mods_exists=bool(ue4ss_mods and ue4ss_mods.exists()),
-        active_client_cheat_commands=False,
-        active_ue4ss_experimental=False,
-        client_cheat_commands_mod_exists=bool(client_cheat_commands_mod and client_cheat_commands_mod.exists()),
-        client_cheat_commands_enum_dir_exists=bool(
-            client_cheat_commands_enum_dir and client_cheat_commands_enum_dir.exists()
-        ),
-        client_cheat_commands_enum_dir=client_cheat_commands_enum_dir,
-        trainer_bridge_source_exists=trainer_bridge_source.exists(),
-        trainer_bridge_deployed=bool(trainer_bridge_target and trainer_bridge_target.exists()),
-        trainer_bridge_target=trainer_bridge_target,
-        trainer_bridge_log_exists=bool(trainer_bridge_log and trainer_bridge_log.exists()),
-        trainer_bridge_log_path=trainer_bridge_log,
-    )
+    candidates.append(Path.cwd())
 
-    if not report.game_root_exists:
-        report.notes.append("Palworld game root was not detected automatically.")
+    # Common Steam install paths on Windows.
+    for drive in ("C", "D", "E", "F"):
+        candidates.append(Path(f"{drive}:/Program Files (x86)/Steam/steamapps/common/Palworld"))
+        candidates.append(Path(f"{drive}:/Steam/steamapps/common/Palworld"))
+        candidates.append(Path(f"{drive}:/SteamLibrary/steamapps/common/Palworld"))
+        candidates.append(Path(f"{drive}:/steam/steamapps/common/Palworld"))
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if _looks_like_game_root(resolved):
+            return resolved
+    return None
+
+
+def resolve_game_root(configured_path: str | None) -> Path | None:
+    if configured_path:
+        candidate = Path(configured_path)
+        if _looks_like_game_root(candidate):
+            return candidate
+    return detect_default_game_root()
+
+
+def scan_environment(configured_game_root: str | None) -> EnvironmentReport:
+    game_root = resolve_game_root(configured_game_root)
+
+    report = EnvironmentReport(game_root=game_root)
+    if not game_root:
+        report.notes.append("未能自动定位 Palworld 安装目录，请在 设置 里手动填。")
         return report
 
-    if pal_mod_settings and pal_mod_settings.exists():
+    report.game_root_exists = game_root.exists()
+    report.launcher_exists = (game_root / "Palworld.exe").exists()
+    report.shipping_exists = (
+        game_root / "Pal" / "Binaries" / "Win64" / "Palworld-Win64-Shipping.exe"
+    ).exists()
+
+    ue4ss_root = game_root / "Mods" / "NativeMods" / "UE4SS"
+    report.ue4ss_root_exists = ue4ss_root.exists()
+
+    ccc_mod = ue4ss_root / "Mods" / CLIENT_CHEAT_COMMANDS_MOD_NAME
+    report.client_cheat_commands_present = ccc_mod.exists()
+    enum_dir = ccc_mod / "Scripts" / "enums"
+    if enum_dir.exists():
+        report.client_cheat_commands_enum_dir = enum_dir
+
+    pal_mod_settings = game_root / "Mods" / "PalModSettings.ini"
+    if pal_mod_settings.exists():
         try:
             contents = pal_mod_settings.read_text(encoding="utf-8")
         except OSError:
             contents = ""
+        report.client_cheat_commands_active = "ActiveModList=ClientCheatCommands" in contents
 
-        report.active_client_cheat_commands = "ActiveModList=ClientCheatCommands" in contents
-        report.active_ue4ss_experimental = "ActiveModList=UE4SSExperimentalPW" in contents
+    bridge_target = ue4ss_root / "Mods" / BRIDGE_MOD_NAME
+    report.trainer_bridge_target = bridge_target
+    report.trainer_bridge_deployed = bridge_target.exists()
 
-    if report.ue4ss_root_exists:
-        report.notes.append("UE4SS runtime detected.")
-    else:
-        report.notes.append("UE4SS runtime not detected in Mods/NativeMods/UE4SS.")
-
-    if report.active_client_cheat_commands:
-        report.notes.append("ClientCheatCommands is already enabled in PalModSettings.ini.")
-
-    if report.active_ue4ss_experimental:
-        report.notes.append("UE4SSExperimentalPW is already enabled in PalModSettings.ini.")
-
-    if report.client_cheat_commands_mod_exists:
-        report.notes.append("ClientCheatCommands mod files are present in the UE4SS Mods folder.")
-    else:
-        report.notes.append("ClientCheatCommands mod files were not found under Mods/NativeMods/UE4SS/Mods.")
-
-    if report.client_cheat_commands_enum_dir_exists and report.client_cheat_commands_enum_dir:
+    if not report.ue4ss_root_exists:
         report.notes.append(
-            f"ClientCheatCommands enum catalogs are available at {report.client_cheat_commands_enum_dir}."
+            "没检测到 UE4SS。请先装 UE4SS Experimental (Palworld) 和 ClientCheatCommands。"
         )
-
-    if report.trainer_bridge_source_exists:
-        report.notes.append("PalworldTrainerBridge source is available in the repository.")
-
-    if report.trainer_bridge_deployed:
-        report.notes.append("PalworldTrainerBridge is already deployed into the game UE4SS Mods folder.")
-
-    if report.trainer_bridge_log_exists:
-        report.notes.append("PalworldTrainerBridge session.log is present and can be opened from the Runtime tab.")
+    elif not report.client_cheat_commands_present:
+        report.notes.append(
+            "UE4SS 已安装但没发现 ClientCheatCommands，大部分作弊命令会失效。"
+        )
+    elif not report.client_cheat_commands_active:
+        report.notes.append(
+            "ClientCheatCommands 已存在但未在 PalModSettings.ini 中启用。"
+        )
+    else:
+        report.notes.append("环境就绪：UE4SS + ClientCheatCommands 均已启用。")
 
     return report
 
 
-def build_module_statuses(report: EnvironmentReport) -> list[ModuleStatus]:
-    return [
-        ModuleStatus(
-            key="module-1",
-            title="Module 1: Desktop Shell",
-            description="Desktop UI, settings persistence, environment scan, and packaging skeleton.",
-            status="ready",
-        ),
-        ModuleStatus(
-            key="module-2",
-            title="Module 2: UE4SS Bridge",
-            description="Deploy and manage our trainer Lua scripts inside the Palworld UE4SS runtime.",
-            status=(
-                "ready"
-                if report.trainer_bridge_deployed
-                else "available"
-                if report.ue4ss_root_exists and report.trainer_bridge_source_exists
-                else "blocked"
-            ),
-        ),
-        ModuleStatus(
-            key="module-3",
-            title="Module 3: Runtime Diagnostics",
-            description="Pure client-side commands for world snapshots, player lists, and generic FindAllOf scans.",
-            status=(
-                "ready"
-                if report.trainer_bridge_deployed
-                else "available"
-                if report.ue4ss_root_exists and report.trainer_bridge_source_exists
-                else "blocked"
-            ),
-        ),
-        ModuleStatus(
-            key="module-4",
-            title="Module 4: Release Packaging",
-            description="Standalone executable builds and GitHub release automation.",
-            status="ready",
-        ),
-        ModuleStatus(
-            key="module-5",
-            title="Module 5: Preset Scans",
-            description="Preset runtime scans, session logging, and desktop shortcuts for common UE4SS diagnostics.",
-            status=(
-                "ready"
-                if report.trainer_bridge_deployed
-                else "available"
-                if report.ue4ss_root_exists and report.trainer_bridge_source_exists
-                else "blocked"
-            ),
-        ),
-        ModuleStatus(
-            key="module-6",
-            title="Module 6: Host Tools",
-            description="Host command deck plus searchable ClientCheatCommands asset catalogs for items, pals, technology, and NPC IDs.",
-            status=(
-                "ready"
-                if report.client_cheat_commands_enum_dir_exists
-                else "available"
-                if report.client_cheat_commands_mod_exists
-                else "blocked"
-            ),
-        ),
-        ModuleStatus(
-            key="module-7",
-            title="Module 7: Command Composer",
-            description="Composable host command presets plus Node 24-ready GitHub Actions workflows.",
-            status="ready" if report.game_root_exists else "blocked",
-        ),
-        ModuleStatus(
-            key="module-8",
-            title="Module 8: Session Monitor",
-            description="Client-side scan bookmarks plus session log summaries for non-host multiplayer visibility.",
-            status=(
-                "ready"
-                if report.trainer_bridge_deployed
-                else "available"
-                if report.ue4ss_root_exists and report.trainer_bridge_source_exists
-                else "blocked"
-            ),
-        ),
-        ModuleStatus(
-            key="module-9",
-            title="Module 9: Bookmark Library",
-            description="Persistent runtime bookmark libraries with import/export support for repeatable non-host scouting routes.",
-            status=(
-                "ready"
-                if report.trainer_bridge_deployed
-                else "available"
-                if report.ue4ss_root_exists and report.trainer_bridge_source_exists
-                else "blocked"
-            ),
-        ),
-        ModuleStatus(
-            key="module-10",
-            title="Module 10: Session Explorer",
-            description="Structured session event parsing with filtering and export for non-host multiplayer scouting logs.",
-            status=(
-                "ready"
-                if report.trainer_bridge_deployed
-                else "available"
-                if report.ue4ss_root_exists and report.trainer_bridge_source_exists
-                else "blocked"
-            ),
-        ),
-        ModuleStatus(
-            key="module-11",
-            title="Module 11: Map Tools",
-            description="Persistent map bookmarks, route libraries, and collectible tracking that build on local session coordinates.",
-            status="ready" if report.game_root_exists else "available",
-        ),
-    ]
+def deploy_bridge(report: EnvironmentReport) -> tuple[bool, str]:
+    """Copy the bundled bridge mod into the game's UE4SS Mods folder."""
+
+    if not report.trainer_bridge_target:
+        return False, "没定位到 UE4SS Mods 目录。"
+
+    if getattr(sys, "frozen", False):
+        # Packaged mode: try exe-adjacent integrations, then MEIPASS.
+        exe_dir = Path(sys.executable).parent
+        source_candidates = [
+            exe_dir / "integrations" / "ue4ss" / BRIDGE_MOD_NAME,
+            Path(getattr(sys, "_MEIPASS", exe_dir)) / "integrations" / "ue4ss" / BRIDGE_MOD_NAME,
+        ]
+    else:
+        source_candidates = [
+            get_repo_root() / "integrations" / "ue4ss" / BRIDGE_MOD_NAME,
+        ]
+
+    source: Path | None = None
+    for candidate in source_candidates:
+        if candidate.exists():
+            source = candidate
+            break
+
+    if not source:
+        return False, "找不到 bridge 源文件。"
+
+    target = report.trainer_bridge_target
+    try:
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.copytree(source, target)
+    except OSError as error:
+        return False, f"部署失败：{error}"
+
+    return True, f"Bridge 已部署到 {target}"

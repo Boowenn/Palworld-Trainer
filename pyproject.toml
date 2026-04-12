@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "palworld-trainer"
-version = "0.11.0"
-description = "A staged desktop trainer shell for Palworld."
+version = "1.0.0"
+description = "傻瓜版 Palworld 修改器 — 一键点按，自动把命令打到游戏聊天框里。"
 readme = "README.md"
 requires-python = ">=3.12"
 authors = [

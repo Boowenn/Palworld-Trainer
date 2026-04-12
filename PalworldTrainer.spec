@@ -4,8 +4,21 @@ from pathlib import Path
 
 project_root = Path.cwd()
 src_root = project_root / "src"
+data_enums = src_root / "palworld_trainer" / "data" / "enums"
+bridge_source = project_root / "integrations" / "ue4ss" / "PalworldTrainerBridge"
 
 datas = []
+
+if data_enums.exists():
+    for lua_file in data_enums.glob("*.lua"):
+        datas.append((str(lua_file), "palworld_trainer/data/enums"))
+
+if bridge_source.exists():
+    for entry in bridge_source.rglob("*"):
+        if entry.is_file():
+            relative = entry.relative_to(bridge_source.parent)
+            datas.append((str(entry), str(Path("integrations/ue4ss") / relative.parent)))
+
 hiddenimports = []
 
 a = Analysis(
@@ -42,4 +55,3 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
 )
-

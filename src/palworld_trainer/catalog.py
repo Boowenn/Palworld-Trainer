@@ -1,9 +1,28 @@
+"""Item/Pal/Technology/NPC catalog loader.
+
+Catalog data is parsed from the ``*.lua`` enum files shipped by the
+ClientCheatCommands mod. The trainer bundles a snapshot of those files under
+``palworld_trainer/data/enums`` so the GUI lists work even before the mod is
+installed into the game directory.
+
+If the user *does* have ClientCheatCommands installed, the live files under
+``Mods/NativeMods/UE4SS/Mods/ClientCheatCommands/Scripts/enums`` are loaded
+instead so new game updates are picked up without rebuilding the trainer.
+"""
+
 from __future__ import annotations
 
 import re
+import sys
+from dataclasses import dataclass
 from pathlib import Path
 
-from .models import CatalogEntry
+
+@dataclass(frozen=True)
+class CatalogEntry:
+    kind: str
+    key: str
+    label: str
 
 
 CATALOG_FILE_NAMES: dict[str, str] = {
@@ -14,10 +33,10 @@ CATALOG_FILE_NAMES: dict[str, str] = {
 }
 
 CATALOG_TITLES: dict[str, str] = {
-    "item": "Items",
-    "pal": "Pals",
-    "technology": "Technology",
-    "npc": "NPCs",
+    "item": "物品",
+    "pal": "帕鲁",
+    "technology": "科技",
+    "npc": "NPC",
 }
 
 ENTRY_PATTERN = re.compile(r'^\s*([A-Za-z0-9_]+)\s*=\s*"([^"]+)",?\s*$')
@@ -27,42 +46,51 @@ def get_catalog_kinds() -> list[str]:
     return list(CATALOG_FILE_NAMES)
 
 
-def normalize_catalog_kind(kind: str) -> str:
-    normalized = kind.strip().lower()
-    if normalized not in CATALOG_FILE_NAMES:
-        supported = ", ".join(get_catalog_kinds())
-        raise ValueError(f"Unsupported catalog kind '{kind}'. Supported kinds: {supported}")
-    return normalized
-
-
 def get_catalog_title(kind: str) -> str:
-    return CATALOG_TITLES[normalize_catalog_kind(kind)]
+    return CATALOG_TITLES[kind]
 
 
-def get_catalog_file_path(enum_dir: Path, kind: str) -> Path:
-    normalized = normalize_catalog_kind(kind)
-    return enum_dir / CATALOG_FILE_NAMES[normalized]
+def get_bundled_enum_dir() -> Path:
+    """Return the catalog directory bundled with the app.
+
+    Works both when running from source and from a PyInstaller one-file exe.
+    """
+
+    if getattr(sys, "frozen", False):
+        base = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+        return base / "palworld_trainer" / "data" / "enums"
+    return Path(__file__).resolve().parent / "data" / "enums"
+
+
+def pick_enum_dir(game_enum_dir: Path | None) -> Path:
+    """Prefer the game's live enum directory when available; fall back to bundled."""
+
+    if game_enum_dir and game_enum_dir.exists():
+        return game_enum_dir
+    return get_bundled_enum_dir()
 
 
 def parse_catalog_text(kind: str, content: str) -> list[CatalogEntry]:
-    normalized = normalize_catalog_kind(kind)
     entries: list[CatalogEntry] = []
-
     for line in content.splitlines():
         match = ENTRY_PATTERN.match(line)
         if not match:
             continue
-
         key, label = match.groups()
-        entries.append(CatalogEntry(kind=normalized, key=key, label=label))
+        entries.append(CatalogEntry(kind=kind, key=key, label=label))
 
     entries.sort(key=lambda entry: (entry.label.casefold(), entry.key.casefold()))
     return entries
 
 
 def load_catalog(enum_dir: Path, kind: str) -> list[CatalogEntry]:
-    path = get_catalog_file_path(enum_dir, kind)
-    content = path.read_text(encoding="utf-8")
+    path = enum_dir / CATALOG_FILE_NAMES[kind]
+    if not path.exists():
+        return []
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
     return parse_catalog_text(kind, content)
 
 
@@ -70,14 +98,12 @@ def load_all_catalogs(enum_dir: Path) -> dict[str, list[CatalogEntry]]:
     return {kind: load_catalog(enum_dir, kind) for kind in get_catalog_kinds()}
 
 
-def search_catalog(entries: list[CatalogEntry], query: str, limit: int = 50) -> list[CatalogEntry]:
-    normalized_query = query.strip().casefold()
-    safe_limit = max(limit, 1)
+def search_catalog(entries: list[CatalogEntry], query: str, limit: int = 200) -> list[CatalogEntry]:
+    normalized = query.strip().casefold()
+    if not normalized:
+        return entries[:limit]
 
-    if not normalized_query:
-        return entries[:safe_limit]
-
-    terms = [term for term in normalized_query.split() if term]
+    terms = [term for term in normalized.split() if term]
     ranked: list[tuple[tuple[int, int, str, str], CatalogEntry]] = []
 
     for entry in entries:
@@ -88,33 +114,28 @@ def search_catalog(entries: list[CatalogEntry], query: str, limit: int = 50) -> 
         if not all(term in combined for term in terms):
             continue
 
-        exact_match = key == normalized_query or label == normalized_query
-        starts_with = key.startswith(normalized_query) or label.startswith(normalized_query)
-        contains_whole_query = normalized_query in key or normalized_query in label
-
-        if exact_match:
+        if key == normalized or label == normalized:
             priority = 0
-        elif starts_with:
+        elif key.startswith(normalized) or label.startswith(normalized):
             priority = 1
-        elif contains_whole_query:
+        elif normalized in key or normalized in label:
             priority = 2
         else:
             priority = 3
 
-        positions = [position for position in (key.find(normalized_query), label.find(normalized_query)) if position >= 0]
+        positions = [
+            position
+            for position in (key.find(normalized), label.find(normalized))
+            if position >= 0
+        ]
         first_position = min(positions) if positions else 9999
 
         ranked.append(
             (
-                (
-                    priority,
-                    first_position,
-                    entry.label.casefold(),
-                    entry.key.casefold(),
-                ),
+                (priority, first_position, entry.label.casefold(), entry.key.casefold()),
                 entry,
             )
         )
 
     ranked.sort(key=lambda item: item[0])
-    return [entry for _, entry in ranked[:safe_limit]]
+    return [entry for _, entry in ranked[:limit]]

@@ -26,8 +26,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install .[build]
 
-      - name: Self check
-        run: python -m palworld_trainer --self-check
+      - name: Run unit tests
+        run: python -m unittest discover -s tests
 
       - name: Package release
         run: powershell -ExecutionPolicy Bypass -File .\scripts\package_release.ps1 -Clean
@@ -49,14 +49,16 @@ jobs:
           $notes = @"
           Palworld Trainer $tag
 
-          Included in this release:
-          - Desktop shell with environment detection
-          - UE4SS bridge deployment
-          - Runtime diagnostics command pack
-          - Host tools and command composer
-          - Runtime bookmark library and session explorer
-          - Packaged executable startup smoke tests
-          - Node 24-ready CI workflows
-          - Windows standalone packaging with direct exe assets
+          傻瓜版 Palworld 修改器 — 下载 exe，双击运行，进游戏点按钮。
+
+          Features:
+          - 7 tabs: 主页 / 玩家 / 物品 / 帕鲁 / 科技 / 世界 / 设置
+          - 1900+ items, 600+ pals, 500+ techs searchable and one-click give
+          - 7 quick gift presets (starter kit, advanced materials, top gear, ammo, food, capture, tech points)
+          - Auto-focus Palworld window and inject @! commands via Win32 SendInput
+          - Bundled ClientCheatCommands catalogs — works even before the mod is installed
+          - UE4SS bridge one-click deploy for optional diagnostics
+
+          Requirements: UE4SS Experimental (Palworld) + ClientCheatCommands installed in your Palworld folder.
           "@
           gh release create $tag .\release\* --title "Palworld Trainer $tag" --notes $notes

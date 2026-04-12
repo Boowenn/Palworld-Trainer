@@ -5,11 +5,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tests import _bootstrap  # noqa: F401
-from palworld_trainer.environment import _looks_like_game_root
+from palworld_trainer.environment import _looks_like_game_root, scan_environment
 
 
-class EnvironmentTests(unittest.TestCase):
-    def test_looks_like_game_root_when_required_files_exist(self) -> None:
+class LooksLikeGameRootTests(unittest.TestCase):
+    def test_true_when_required_files_exist(self) -> None:
         root = Path("D:/fake/Palworld")
 
         def fake_exists(path: Path) -> bool:
@@ -21,11 +21,19 @@ class EnvironmentTests(unittest.TestCase):
         with patch("pathlib.Path.exists", autospec=True, side_effect=fake_exists):
             self.assertTrue(_looks_like_game_root(root))
 
-    def test_looks_like_game_root_when_files_are_missing(self) -> None:
-        root = Path("D:/fake/Palworld")
-
+    def test_false_when_files_missing(self) -> None:
         with patch("pathlib.Path.exists", autospec=True, return_value=False):
-            self.assertFalse(_looks_like_game_root(root))
+            self.assertFalse(_looks_like_game_root(Path("D:/fake/Palworld")))
+
+
+class ScanEnvironmentTests(unittest.TestCase):
+    def test_missing_game_root_yields_helpful_note(self) -> None:
+        with patch(
+            "palworld_trainer.environment.resolve_game_root", return_value=None
+        ):
+            report = scan_environment(None)
+        self.assertFalse(report.game_root_exists)
+        self.assertTrue(any("Palworld" in note for note in report.notes))
 
 
 if __name__ == "__main__":

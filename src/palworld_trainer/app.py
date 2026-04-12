@@ -1,2384 +1,809 @@
+"""Palworld Trainer — 傻瓜版主界面.
+
+界面分七个 Tab：主页 / 玩家 / 物品 / 帕鲁 / 科技 / 世界 / 设置。
+每个按钮背后对应一条 ClientCheatCommands 的 @! 聊天命令，trainer 通过
+``game_control.send_chat_command`` 直接打到游戏聊天框里。
+"""
+
 from __future__ import annotations
 
-import argparse
-import json
 import os
 import subprocess
-import sys
+import threading
 import tkinter as tk
-from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+import webbrowser
+from tkinter import filedialog, ttk
+from typing import Callable
 
-from . import __version__
-from .catalog import get_catalog_kinds, load_all_catalogs, search_catalog
-from .config import load_settings, save_settings
-from .environment import build_module_statuses, scan_environment
-from .host_tools import (
-    compose_host_command,
-    get_host_command_template,
-    get_host_command_template_specs,
-    get_primary_entry_command,
-    render_host_commands_text,
-    render_host_entry_text,
-    render_host_search_text,
-    render_host_templates_text,
-)
-from .map_tools import (
-    COLLECTIBLE_STATUSES,
-    append_route_stop,
-    build_collectible_spec,
-    build_map_bookmark,
-    build_map_bookmark_from_location_text,
-    build_route_spec,
-    export_map_library,
-    format_coordinates,
-    import_map_library,
-    merge_collectible_specs,
-    merge_map_bookmarks,
-    merge_route_specs,
-    render_collectible_detail_text,
-    render_collectible_tracker_text,
-    render_map_bookmark_detail_text,
-    render_map_bookmarks_text,
-    render_map_tools_text,
-    render_route_detail_text,
-    render_route_library_text,
-)
-from .models import (
+from . import commands as cmd
+from . import game_control
+from .catalog import (
     CatalogEntry,
-    CollectibleSpec,
-    EnvironmentReport,
-    MapBookmarkSpec,
-    RouteSpec,
-    RuntimeBookmarkSpec,
-    SessionSummary,
-    TrainerSettings,
+    load_all_catalogs,
+    pick_enum_dir,
+    search_catalog,
 )
-from .runtime import (
-    build_saved_runtime_bookmark,
-    export_runtime_bookmarks,
-    export_session_events,
-    filter_session_events,
-    get_combined_runtime_bookmark_specs,
-    parse_session_log,
-    import_runtime_bookmarks,
-    merge_runtime_bookmarks,
-    render_runtime_bookmarks_text,
-    render_runtime_commands_text,
-    render_session_explorer_text,
-    render_runtime_presets_text,
-    render_saved_runtime_bookmarks_text,
-    render_session_summary_text,
-)
-from .ue4ss import deploy_bridge
+from .config import TrainerSettings, load_settings, save_settings
+from .environment import EnvironmentReport, deploy_bridge, scan_environment
+
+
+APP_TITLE = "Palworld 修改器"
+GITHUB_URL = "https://github.com/Boowenn/Palworld-Trainer"
+
+WINDOW_WIDTH = 960
+WINDOW_HEIGHT = 680
+
+RESULT_CLEAR_MS = 6000
+
+TAB_NAMES = ("home", "player", "items", "pals", "tech", "world", "settings")
 
 
 class TrainerApp:
-    def __init__(self, settings: TrainerSettings) -> None:
-        self.settings = settings
-        self.report = scan_environment(settings)
-        self.host_catalogs: dict[str, list[CatalogEntry]] = {}
-        self.host_search_results: list[CatalogEntry] = []
-        self.host_catalog_error: str | None = None
-        self.runtime_saved_bookmarks = list(settings.runtime_saved_bookmarks)
-        self.runtime_bookmarks = get_combined_runtime_bookmark_specs(self.runtime_saved_bookmarks)
-        self.runtime_summary: SessionSummary | None = None
-        self.map_saved_bookmarks = list(settings.map_saved_bookmarks)
-        self.map_saved_routes = list(settings.map_saved_routes)
-        self.tracked_collectibles = list(settings.tracked_collectibles)
-        self.host_template_specs = get_host_command_template_specs()
-        self.host_template_title_to_key = {spec.title: spec.key for spec in self.host_template_specs}
-        self.host_template_key_to_title = {spec.key: spec.title for spec in self.host_template_specs}
-        self.tab_titles = ["Overview", "Modules", "Runtime", "Host Tools", "Map Tools", "Notes"]
+    """The top-level tkinter application."""
 
-        self.root = tk.Tk()
-        self.root.title("Palworld Trainer")
-        self.root.geometry("980x720")
-        self.root.minsize(920, 660)
-        self.root.configure(bg="#11161f")
+    def __init__(self, root: tk.Tk, version: str) -> None:
+        self.root = root
+        self.version = version
+        self.settings: TrainerSettings = load_settings()
+        self.report: EnvironmentReport = scan_environment(self.settings.game_root)
 
-        self.status_var = tk.StringVar(value="Ready")
-        self.game_root_var = tk.StringVar(value=str(self.report.game_root) if self.report.game_root else "")
-        self.host_kind_var = tk.StringVar(value="item")
-        self.host_query_var = tk.StringVar(value="")
-        self.host_result_count_var = tk.StringVar(value="Catalog results will appear here.")
-        self.host_template_var = tk.StringVar(value=self.host_template_key_to_title["self_item"])
-        self.host_template_summary_var = tk.StringVar(value="")
-        self.host_composer_vars = [tk.StringVar() for _ in range(4)]
-        self.runtime_saved_summary_var = tk.StringVar(value="")
-        self.runtime_editor_title_var = tk.StringVar(value="")
-        self.runtime_editor_command_var = tk.StringVar(value="")
-        self.runtime_editor_description_var = tk.StringVar(value="")
-        self.runtime_session_filter_var = tk.StringVar(value="")
-        self.runtime_session_state_var = tk.StringVar(value="No session events loaded yet.")
-        self.map_overview_var = tk.StringVar(value="Map tools overview will appear here.")
-        self.map_bookmark_summary_var = tk.StringVar(value="")
-        self.map_bookmark_title_var = tk.StringVar(value="")
-        self.map_bookmark_category_var = tk.StringVar(value="note")
-        self.map_bookmark_x_var = tk.StringVar(value="")
-        self.map_bookmark_y_var = tk.StringVar(value="")
-        self.map_bookmark_z_var = tk.StringVar(value="")
-        self.map_bookmark_notes_var = tk.StringVar(value="")
-        self.map_route_summary_var = tk.StringVar(value="")
-        self.map_route_title_var = tk.StringVar(value="")
-        self.map_route_stops_var = tk.StringVar(value="")
-        self.map_route_description_var = tk.StringVar(value="")
-        self.collectible_summary_var = tk.StringVar(value="")
-        self.collectible_title_var = tk.StringVar(value="")
-        self.collectible_bookmark_key_var = tk.StringVar(value="")
-        self.collectible_category_var = tk.StringVar(value="collectible")
-        self.collectible_status_var = tk.StringVar(value="planned")
-        self.collectible_notes_var = tk.StringVar(value="")
+        enum_dir = pick_enum_dir(self.report.client_cheat_commands_enum_dir)
+        self.catalogs = load_all_catalogs(enum_dir)
 
+        self.item_entries = self.catalogs.get("item", [])
+        self.pal_entries = self.catalogs.get("pal", [])
+        self.tech_entries = self.catalogs.get("technology", [])
+
+        self._current_item_results: list[CatalogEntry] = []
+        self._current_pal_results: list[CatalogEntry] = []
+        self._current_tech_results: list[CatalogEntry] = []
+        self._result_clear_job: str | None = None
+
+        self._configure_root()
         self._build_style()
         self._build_layout()
-        self.refresh_environment(save_after=False)
+        self._refresh_status()
+
+    # ------------------------------------------------------------------
+    # Window setup
+    # ------------------------------------------------------------------
+
+    def _configure_root(self) -> None:
+        self.root.title(f"{APP_TITLE}  v{self.version}")
+        self.root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
+        self.root.minsize(820, 580)
+        try:
+            self.root.tk.call("tk", "scaling", 1.25)
+        except tk.TclError:
+            pass
 
     def _build_style(self) -> None:
         style = ttk.Style()
-        style.theme_use("clam")
+        for theme in ("vista", "clam", "default"):
+            try:
+                style.theme_use(theme)
+                break
+            except tk.TclError:
+                continue
 
-        style.configure(".", background="#11161f", foreground="#e8edf5", fieldbackground="#1a2330")
-        style.configure("Card.TFrame", background="#16202b")
-        style.configure("Header.TLabel", background="#11161f", foreground="#e8edf5", font=("Segoe UI Semibold", 22))
-        style.configure("Muted.TLabel", background="#11161f", foreground="#9db0c7", font=("Segoe UI", 10))
-        style.configure("CardTitle.TLabel", background="#16202b", foreground="#f4f7fb", font=("Segoe UI Semibold", 12))
-        style.configure("CardBody.TLabel", background="#16202b", foreground="#b9c9dc", font=("Segoe UI", 10))
-        style.configure("Accent.TButton", background="#2f8fef", foreground="#ffffff", padding=(12, 8))
-        style.map("Accent.TButton", background=[("active", "#4aa0f5")])
+        style.configure("Header.TLabel", font=("Microsoft YaHei UI", 18, "bold"))
+        style.configure("SubHeader.TLabel", font=("Microsoft YaHei UI", 11, "bold"))
+        style.configure("Status.TLabel", font=("Microsoft YaHei UI", 10))
+        style.configure("Good.TLabel", foreground="#16a34a", font=("Microsoft YaHei UI", 10, "bold"))
+        style.configure("Bad.TLabel", foreground="#dc2626", font=("Microsoft YaHei UI", 10, "bold"))
+        style.configure("Warn.TLabel", foreground="#d97706", font=("Microsoft YaHei UI", 10, "bold"))
+        style.configure("Result.TLabel", foreground="#2b6cb0", font=("Microsoft YaHei UI", 10, "bold"))
+        style.configure("Card.TFrame", relief="solid", borderwidth=1)
+        style.configure("Big.TButton", font=("Microsoft YaHei UI", 11, "bold"), padding=(10, 8))
+        style.configure("Quiet.TButton", padding=(8, 4))
 
     def _build_layout(self) -> None:
-        root_frame = ttk.Frame(self.root, padding=18)
-        root_frame.pack(fill=tk.BOTH, expand=True)
+        outer = ttk.Frame(self.root, padding=(16, 12, 16, 12))
+        outer.pack(fill="both", expand=True)
 
-        top_frame = ttk.Frame(root_frame)
-        top_frame.pack(fill=tk.X)
+        self._build_header(outer)
+        self._build_status_bar(outer)
+        self._build_notebook(outer)
+        self._build_result_bar(outer)
 
-        ttk.Label(top_frame, text="Palworld Trainer", style="Header.TLabel").pack(anchor=tk.W)
+    def _build_header(self, parent: ttk.Frame) -> None:
+        header = ttk.Frame(parent)
+        header.pack(fill="x", pady=(0, 10))
+
+        ttk.Label(header, text=APP_TITLE, style="Header.TLabel").pack(side="left")
+        ttk.Label(header, text=f"v{self.version}", style="Status.TLabel").pack(
+            side="left", padx=(10, 0)
+        )
+
+        link = ttk.Label(header, text="GitHub", foreground="#2563eb", cursor="hand2")
+        link.pack(side="right")
+        link.bind("<Button-1>", lambda _event: webbrowser.open(GITHUB_URL))
+
+    def _build_status_bar(self, parent: ttk.Frame) -> None:
+        bar = ttk.Frame(parent, style="Card.TFrame", padding=(12, 10))
+        bar.pack(fill="x")
+
+        self.status_game = ttk.Label(bar, text="游戏：检测中", style="Status.TLabel")
+        self.status_game.pack(side="left", padx=(0, 18))
+
+        self.status_bridge = ttk.Label(bar, text="UE4SS：检测中", style="Status.TLabel")
+        self.status_bridge.pack(side="left", padx=(0, 18))
+
+        self.status_cheats = ttk.Label(bar, text="Cheat：检测中", style="Status.TLabel")
+        self.status_cheats.pack(side="left")
+
+        ttk.Button(bar, text="刷新状态", style="Quiet.TButton", command=self._refresh_status).pack(
+            side="right"
+        )
+
+    def _build_notebook(self, parent: ttk.Frame) -> None:
+        self.notebook = ttk.Notebook(parent)
+        self.notebook.pack(fill="both", expand=True, pady=(10, 8))
+
+        self._build_home_tab()
+        self._build_player_tab()
+        self._build_items_tab()
+        self._build_pals_tab()
+        self._build_tech_tab()
+        self._build_world_tab()
+        self._build_settings_tab()
+
+        try:
+            self.notebook.select(TAB_NAMES.index(self.settings.last_tab))
+        except (ValueError, tk.TclError):
+            self.notebook.select(0)
+
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+
+    def _build_result_bar(self, parent: ttk.Frame) -> None:
+        self.result_label = ttk.Label(
+            parent,
+            text="就绪。先启动游戏并进入世界，再点击上方按钮。",
+            style="Status.TLabel",
+        )
+        self.result_label.pack(fill="x")
+
+    # ------------------------------------------------------------------
+    # Tabs
+    # ------------------------------------------------------------------
+
+    def _build_home_tab(self) -> None:
+        tab = ttk.Frame(self.notebook, padding=16)
+        self.notebook.add(tab, text="主页")
+
+        ttk.Label(tab, text="欢迎使用 Palworld 修改器", style="SubHeader.TLabel").pack(anchor="w")
         ttk.Label(
-            top_frame,
+            tab,
             text=(
-                "Modules 1-11 provide the desktop shell, UE4SS bridge deployment, runtime diagnostics, "
-                "preset scans, packaging support, host command catalogs, a command composer, a session monitor, "
-                "a persistent runtime bookmark library, a session explorer, and map-oriented scouting tools."
+                "使用流程：\n"
+                "  1) 先启动 Palworld 并进入世界。\n"
+                "  2) 切换到本程序，点任意功能按钮。\n"
+                "  3) 程序会自动把游戏窗口拉到前台，并把命令打进聊天框。\n\n"
+                "前提条件：\n"
+                "  • 已安装 UE4SS Experimental (Palworld)。\n"
+                "  • 已安装 ClientCheatCommands 并在 PalModSettings.ini 中启用。\n"
+                "  • 游戏内聊天默认打开键是回车。"
             ),
-            style="Muted.TLabel",
-        ).pack(anchor=tk.W, pady=(4, 12))
+            justify="left",
+            style="Status.TLabel",
+        ).pack(anchor="w", pady=(6, 16))
 
-        controls = ttk.Frame(root_frame)
-        controls.pack(fill=tk.X, pady=(0, 12))
+        ttk.Label(tab, text="一键操作", style="SubHeader.TLabel").pack(anchor="w")
 
-        ttk.Label(controls, text="Game Root", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
-        entry = ttk.Entry(controls, textvariable=self.game_root_var, width=90)
-        entry.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(4, 0), padx=(0, 8))
+        grid = ttk.Frame(tab)
+        grid.pack(fill="x", pady=(8, 0))
 
-        ttk.Button(controls, text="Browse", command=self.select_game_root).grid(row=1, column=3, sticky="ew", padx=(0, 8))
-        ttk.Button(controls, text="Rescan", command=self.refresh_environment).grid(row=1, column=4, sticky="ew")
-        controls.columnconfigure(0, weight=1)
+        buttons: list[tuple[str, Callable[[], None]]] = [
+            ("🚀 启动 Palworld", self._launch_game),
+            ("📦 部署 UE4SS Bridge", self._deploy_bridge),
+            ("📂 打开游戏目录", self._open_game_dir),
+            ("❓ 显示游戏内命令帮助", lambda: self._send(cmd.help_command())),
+        ]
+        for index, (label, callback) in enumerate(buttons):
+            ttk.Button(grid, text=label, style="Big.TButton", command=callback).grid(
+                row=index // 2, column=index % 2, padx=6, pady=6, sticky="ew"
+            )
+        grid.columnconfigure(0, weight=1)
+        grid.columnconfigure(1, weight=1)
 
-        notebook = ttk.Notebook(root_frame)
-        notebook.pack(fill=tk.BOTH, expand=True)
-        notebook.bind("<<NotebookTabChanged>>", self.on_tab_changed)
-        self.notebook = notebook
+    def _build_player_tab(self) -> None:
+        tab = ttk.Frame(self.notebook, padding=16)
+        self.notebook.add(tab, text="玩家")
 
-        self.overview_tab = ttk.Frame(notebook, padding=12)
-        self.modules_tab = ttk.Frame(notebook, padding=12)
-        self.runtime_tab = ttk.Frame(notebook, padding=12)
-        self.host_tab = ttk.Frame(notebook, padding=12)
-        self.map_tab = ttk.Frame(notebook, padding=12)
-        self.log_tab = ttk.Frame(notebook, padding=12)
-        notebook.add(self.overview_tab, text="Overview")
-        notebook.add(self.modules_tab, text="Modules")
-        notebook.add(self.runtime_tab, text="Runtime")
-        notebook.add(self.host_tab, text="Host Tools")
-        notebook.add(self.map_tab, text="Map Tools")
-        notebook.add(self.log_tab, text="Notes")
+        ttk.Label(tab, text="玩家操作", style="SubHeader.TLabel").pack(anchor="w")
 
-        self._build_overview_tab()
-        self._build_modules_tab()
-        self._build_runtime_tab()
-        self._build_host_tab()
-        self._build_map_tab()
-        self._build_log_tab()
-        self._restore_last_selected_tab()
+        quick = ttk.Frame(tab)
+        quick.pack(fill="x", pady=(8, 18))
 
-        status_bar = ttk.Frame(root_frame)
-        status_bar.pack(fill=tk.X, pady=(10, 0))
-        ttk.Label(status_bar, textvariable=self.status_var, style="Muted.TLabel").pack(side=tk.LEFT)
+        quick_buttons: list[tuple[str, Callable[[], None]]] = [
+            ("🦅 切换飞行 (开)", lambda: self._send(cmd.fly(True))),
+            ("🛬 切换飞行 (关)", lambda: self._send(cmd.fly(False))),
+            ("📍 打印坐标", lambda: self._send(cmd.get_position())),
+            ("🚨 脱困", lambda: self._send(cmd.unstuck())),
+            ("🗺 解锁所有传送点", lambda: self._send(cmd.unlock_fast_travel())),
+            ("🔬 解锁全部科技", lambda: self._send(cmd.unlock_all_tech())),
+        ]
+        for index, (label, callback) in enumerate(quick_buttons):
+            ttk.Button(quick, text=label, style="Big.TButton", command=callback).grid(
+                row=index // 3, column=index % 3, padx=6, pady=6, sticky="ew"
+            )
+        for col in range(3):
+            quick.columnconfigure(col, weight=1)
 
-    def _build_overview_tab(self) -> None:
-        self.summary_text = tk.Text(
-            self.overview_tab,
-            height=18,
-            bg="#16202b",
-            fg="#e8edf5",
-            relief=tk.FLAT,
-            wrap=tk.WORD,
-            font=("Consolas", 10),
-            padx=12,
-            pady=12,
+        ttk.Separator(tab).pack(fill="x", pady=(4, 12))
+        ttk.Label(tab, text="经验值", style="SubHeader.TLabel").pack(anchor="w")
+
+        exp_row = ttk.Frame(tab)
+        exp_row.pack(fill="x", pady=(8, 6))
+        ttk.Button(
+            exp_row,
+            text="+10,000 经验",
+            style="Big.TButton",
+            command=lambda: self._send(cmd.give_exp(10000)),
+        ).pack(side="left", padx=4)
+        ttk.Button(
+            exp_row,
+            text="+100,000 经验",
+            style="Big.TButton",
+            command=lambda: self._send(cmd.give_exp(100_000)),
+        ).pack(side="left", padx=4)
+        ttk.Button(
+            exp_row,
+            text="+1,000,000 经验",
+            style="Big.TButton",
+            command=lambda: self._send(cmd.give_exp(1_000_000)),
+        ).pack(side="left", padx=4)
+
+        custom_exp = ttk.Frame(tab)
+        custom_exp.pack(fill="x", pady=(4, 14))
+        ttk.Label(custom_exp, text="自定义经验：").pack(side="left")
+        self.exp_var = tk.StringVar(value=str(self.settings.custom_exp_amount))
+        ttk.Entry(custom_exp, textvariable=self.exp_var, width=12).pack(side="left", padx=(4, 8))
+        ttk.Button(
+            custom_exp,
+            text="给予",
+            style="Big.TButton",
+            command=self._on_give_custom_exp,
+        ).pack(side="left")
+
+        ttk.Separator(tab).pack(fill="x", pady=(4, 12))
+        ttk.Label(tab, text="传送", style="SubHeader.TLabel").pack(anchor="w")
+
+        tp_row = ttk.Frame(tab)
+        tp_row.pack(fill="x", pady=(8, 0))
+        ttk.Label(tp_row, text="X：").pack(side="left")
+        self.tp_x_var = tk.StringVar(value="0")
+        ttk.Entry(tp_row, textvariable=self.tp_x_var, width=10).pack(side="left", padx=(2, 8))
+        ttk.Label(tp_row, text="Y：").pack(side="left")
+        self.tp_y_var = tk.StringVar(value="0")
+        ttk.Entry(tp_row, textvariable=self.tp_y_var, width=10).pack(side="left", padx=(2, 8))
+        ttk.Label(tp_row, text="Z：").pack(side="left")
+        self.tp_z_var = tk.StringVar(value="0")
+        ttk.Entry(tp_row, textvariable=self.tp_z_var, width=10).pack(side="left", padx=(2, 8))
+        ttk.Button(
+            tp_row, text="传送到坐标", style="Big.TButton", command=self._on_teleport
+        ).pack(side="left", padx=(6, 0))
+
+    def _build_items_tab(self) -> None:
+        tab = ttk.Frame(self.notebook, padding=16)
+        self.notebook.add(tab, text="物品")
+
+        ttk.Label(tab, text="快捷礼包（点一下把整包物品发给自己）", style="SubHeader.TLabel").pack(
+            anchor="w"
         )
-        self.summary_text.pack(fill=tk.BOTH, expand=True)
+        preset_grid = ttk.Frame(tab)
+        preset_grid.pack(fill="x", pady=(8, 16))
+        for index, preset in enumerate(cmd.QUICK_PRESETS):
+            ttk.Button(
+                preset_grid,
+                text=f"🎁 {preset.title}",
+                style="Big.TButton",
+                command=lambda p=preset: self._on_give_preset(p),
+            ).grid(row=index // 3, column=index % 3, padx=6, pady=6, sticky="ew")
+        for col in range(3):
+            preset_grid.columnconfigure(col, weight=1)
 
-        actions = ttk.Frame(self.overview_tab)
-        actions.pack(fill=tk.X, pady=(12, 0))
+        ttk.Separator(tab).pack(fill="x", pady=(4, 10))
 
-        ttk.Button(actions, text="Open Repo Root", command=self.open_repo_root).pack(side=tk.LEFT)
-        ttk.Button(actions, text="Open Game Root", command=self.open_game_root).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(actions, text="Open UE4SS Mods", command=self.open_ue4ss_mods).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(actions, text="Deploy UE4SS Bridge", command=self.deploy_ue4ss_bridge).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Label(tab, text="单件物品查找", style="SubHeader.TLabel").pack(anchor="w")
+        ttk.Label(
+            tab,
+            text=f"当前物品目录共 {len(self.item_entries)} 条。支持模糊搜索。双击列表也会直接给予。",
+            style="Status.TLabel",
+        ).pack(anchor="w", pady=(2, 8))
 
-    def _build_modules_tab(self) -> None:
-        self.modules_container = ttk.Frame(self.modules_tab)
-        self.modules_container.pack(fill=tk.BOTH, expand=True)
+        search_row = ttk.Frame(tab)
+        search_row.pack(fill="x")
+        ttk.Label(search_row, text="搜索：").pack(side="left")
+        self.item_search_var = tk.StringVar()
+        self.item_search_var.trace_add("write", lambda *_: self._refresh_item_list())
+        ttk.Entry(search_row, textvariable=self.item_search_var).pack(
+            side="left", padx=(4, 8), fill="x", expand=True
+        )
+        ttk.Label(search_row, text="数量：").pack(side="left", padx=(10, 0))
+        self.item_count_var = tk.StringVar(value=str(self.settings.custom_item_count))
+        ttk.Entry(search_row, textvariable=self.item_count_var, width=6).pack(
+            side="left", padx=(4, 0)
+        )
 
-    def _build_runtime_tab(self) -> None:
-        actions = ttk.Frame(self.runtime_tab)
-        actions.pack(fill=tk.X, pady=(0, 12))
+        list_frame = ttk.Frame(tab)
+        list_frame.pack(fill="both", expand=True, pady=(8, 8))
+        self.item_listbox = tk.Listbox(list_frame, height=10, activestyle="dotbox")
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.item_listbox.yview)
+        self.item_listbox.configure(yscrollcommand=scrollbar.set)
+        self.item_listbox.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        self.item_listbox.bind("<Double-Button-1>", lambda _event: self._on_give_selected_item())
 
-        ttk.Button(actions, text="Open Deployed Bridge", command=self.open_bridge_target).pack(side=tk.LEFT)
-        ttk.Button(actions, text="Open Session Log", command=self.open_bridge_log).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(actions, text="Refresh Monitor", command=self.refresh_runtime_monitor).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(actions, text="Copy Bookmark", command=self.copy_selected_runtime_bookmark).pack(side=tk.LEFT, padx=(8, 0))
+        action_row = ttk.Frame(tab)
+        action_row.pack(fill="x")
+        ttk.Button(
+            action_row,
+            text="💾 给自己选中物品",
+            style="Big.TButton",
+            command=self._on_give_selected_item,
+        ).pack(side="left")
 
-        library_actions = ttk.Frame(self.runtime_tab)
-        library_actions.pack(fill=tk.X, pady=(0, 12))
+        self._refresh_item_list()
 
-        ttk.Button(library_actions, text="New Saved", command=self.new_runtime_saved_bookmark).pack(side=tk.LEFT)
-        ttk.Button(library_actions, text="Save Saved", command=self.save_runtime_saved_bookmark).pack(
-            side=tk.LEFT,
-            padx=(8, 0),
+    def _build_pals_tab(self) -> None:
+        tab = ttk.Frame(self.notebook, padding=16)
+        self.notebook.add(tab, text="帕鲁")
+
+        ttk.Label(tab, text="生成帕鲁（仅房主/单机有效）", style="SubHeader.TLabel").pack(anchor="w")
+        ttk.Label(
+            tab,
+            text=f"当前帕鲁目录共 {len(self.pal_entries)} 条。双击列表也会直接生成。",
+            style="Status.TLabel",
+        ).pack(anchor="w", pady=(2, 8))
+
+        search_row = ttk.Frame(tab)
+        search_row.pack(fill="x")
+        ttk.Label(search_row, text="搜索：").pack(side="left")
+        self.pal_search_var = tk.StringVar()
+        self.pal_search_var.trace_add("write", lambda *_: self._refresh_pal_list())
+        ttk.Entry(search_row, textvariable=self.pal_search_var).pack(
+            side="left", padx=(4, 8), fill="x", expand=True
+        )
+        ttk.Label(search_row, text="数量：").pack(side="left", padx=(10, 0))
+        self.pal_count_var = tk.StringVar(value=str(self.settings.custom_pal_count))
+        ttk.Entry(search_row, textvariable=self.pal_count_var, width=6).pack(
+            side="left", padx=(4, 0)
+        )
+
+        list_frame = ttk.Frame(tab)
+        list_frame.pack(fill="both", expand=True, pady=(8, 8))
+        self.pal_listbox = tk.Listbox(list_frame, height=12, activestyle="dotbox")
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.pal_listbox.yview)
+        self.pal_listbox.configure(yscrollcommand=scrollbar.set)
+        self.pal_listbox.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        self.pal_listbox.bind("<Double-Button-1>", lambda _event: self._on_spawn_selected_pal())
+
+        action_row = ttk.Frame(tab)
+        action_row.pack(fill="x")
+        ttk.Button(
+            action_row,
+            text="🐉 生成选中帕鲁",
+            style="Big.TButton",
+            command=self._on_spawn_selected_pal,
+        ).pack(side="left")
+
+        self._refresh_pal_list()
+
+    def _build_tech_tab(self) -> None:
+        tab = ttk.Frame(self.notebook, padding=16)
+        self.notebook.add(tab, text="科技")
+
+        ttk.Label(tab, text="科技解锁", style="SubHeader.TLabel").pack(anchor="w")
+
+        big_row = ttk.Frame(tab)
+        big_row.pack(fill="x", pady=(8, 14))
+        ttk.Button(
+            big_row,
+            text="🔓 解锁全部科技",
+            style="Big.TButton",
+            command=lambda: self._send(cmd.unlock_all_tech()),
+        ).pack(side="left", padx=4)
+        ttk.Button(
+            big_row,
+            text="🗺 解锁全部传送点",
+            style="Big.TButton",
+            command=lambda: self._send(cmd.unlock_fast_travel()),
+        ).pack(side="left", padx=4)
+
+        ttk.Separator(tab).pack(fill="x", pady=(4, 10))
+        ttk.Label(tab, text="单项科技解锁", style="SubHeader.TLabel").pack(anchor="w")
+        ttk.Label(
+            tab,
+            text=f"当前科技目录共 {len(self.tech_entries)} 条。",
+            style="Status.TLabel",
+        ).pack(anchor="w", pady=(2, 8))
+
+        search_row = ttk.Frame(tab)
+        search_row.pack(fill="x")
+        ttk.Label(search_row, text="搜索：").pack(side="left")
+        self.tech_search_var = tk.StringVar()
+        self.tech_search_var.trace_add("write", lambda *_: self._refresh_tech_list())
+        ttk.Entry(search_row, textvariable=self.tech_search_var).pack(
+            side="left", padx=(4, 8), fill="x", expand=True
+        )
+
+        list_frame = ttk.Frame(tab)
+        list_frame.pack(fill="both", expand=True, pady=(8, 8))
+        self.tech_listbox = tk.Listbox(list_frame, height=12, activestyle="dotbox")
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.tech_listbox.yview)
+        self.tech_listbox.configure(yscrollcommand=scrollbar.set)
+        self.tech_listbox.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        self.tech_listbox.bind(
+            "<Double-Button-1>", lambda _event: self._on_unlock_selected_tech()
+        )
+
+        action_row = ttk.Frame(tab)
+        action_row.pack(fill="x")
+        ttk.Button(
+            action_row,
+            text="🔓 解锁选中科技",
+            style="Big.TButton",
+            command=self._on_unlock_selected_tech,
+        ).pack(side="left")
+
+        self._refresh_tech_list()
+
+    def _build_world_tab(self) -> None:
+        tab = ttk.Frame(self.notebook, padding=16)
+        self.notebook.add(tab, text="世界")
+
+        ttk.Label(tab, text="世界时间", style="SubHeader.TLabel").pack(anchor="w")
+        ttk.Label(
+            tab,
+            text="拖动滑块选小时数，再点「设置时间」。0=午夜，6=清晨，12=正午，18=黄昏。",
+            style="Status.TLabel",
+        ).pack(anchor="w", pady=(2, 8))
+
+        slider_row = ttk.Frame(tab)
+        slider_row.pack(fill="x", pady=(4, 14))
+        self.time_var = tk.IntVar(value=12)
+        ttk.Scale(
+            slider_row,
+            from_=0,
+            to=23,
+            orient="horizontal",
+            variable=self.time_var,
+            command=lambda _value: self._refresh_time_label(),
+        ).pack(side="left", fill="x", expand=True)
+        self.time_label = ttk.Label(slider_row, text="12 时", width=8, anchor="e")
+        self.time_label.pack(side="left", padx=(10, 0))
+        ttk.Button(
+            slider_row,
+            text="设置时间",
+            style="Big.TButton",
+            command=lambda: self._send(cmd.set_time(self.time_var.get())),
+        ).pack(side="left", padx=(10, 0))
+
+        quick = ttk.Frame(tab)
+        quick.pack(fill="x", pady=(4, 0))
+        for label, hour in (("🌅 清晨 6:00", 6), ("☀️ 正午 12:00", 12), ("🌆 黄昏 18:00", 18), ("🌙 午夜 0:00", 0)):
+            ttk.Button(
+                quick,
+                text=label,
+                style="Big.TButton",
+                command=lambda h=hour: self._send(cmd.set_time(h)),
+            ).pack(side="left", padx=4)
+
+    def _build_settings_tab(self) -> None:
+        tab = ttk.Frame(self.notebook, padding=16)
+        self.notebook.add(tab, text="设置")
+
+        ttk.Label(tab, text="游戏目录", style="SubHeader.TLabel").pack(anchor="w")
+        path_row = ttk.Frame(tab)
+        path_row.pack(fill="x", pady=(6, 14))
+        self.game_root_var = tk.StringVar(
+            value=str(self.report.game_root) if self.report.game_root else ""
+        )
+        ttk.Entry(path_row, textvariable=self.game_root_var).pack(
+            side="left", fill="x", expand=True
         )
         ttk.Button(
-            library_actions,
-            text="Delete Saved",
-            command=self.delete_selected_runtime_saved_bookmark,
-        ).pack(side=tk.LEFT, padx=(8, 0))
+            path_row, text="浏览…", style="Quiet.TButton", command=self._browse_game_root
+        ).pack(side="left", padx=(6, 0))
         ttk.Button(
-            library_actions,
-            text="Import Saved",
-            command=self.import_runtime_saved_bookmarks_from_file,
-        ).pack(side=tk.LEFT, padx=(8, 0))
+            path_row, text="保存并刷新", style="Big.TButton", command=self._apply_game_root
+        ).pack(side="left", padx=(6, 0))
+
+        ttk.Separator(tab).pack(fill="x", pady=(0, 10))
+        ttk.Label(tab, text="环境报告", style="SubHeader.TLabel").pack(anchor="w")
+
+        self.env_text = tk.Text(tab, height=14, wrap="word", state="disabled")
+        self.env_text.pack(fill="both", expand=True, pady=(6, 10))
+
+        bottom = ttk.Frame(tab)
+        bottom.pack(fill="x")
         ttk.Button(
-            library_actions,
-            text="Export Saved",
-            command=self.export_runtime_saved_bookmarks_to_file,
-        ).pack(side=tk.LEFT, padx=(8, 0))
-
-        self.runtime_text = tk.Text(
-            self.runtime_tab,
-            height=10,
-            bg="#16202b",
-            fg="#d7e2ef",
-            relief=tk.FLAT,
-            wrap=tk.WORD,
-            font=("Consolas", 10),
-            padx=12,
-            pady=12,
-        )
-        self.runtime_text.pack(fill=tk.BOTH, expand=True)
-
-        runtime_lower = ttk.Frame(self.runtime_tab)
-        runtime_lower.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
-
-        runtime_left = ttk.Frame(runtime_lower)
-        runtime_left.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(0, 10))
-
-        ttk.Label(
-            runtime_left,
-            text="Runtime bookmarks",
-            style="Muted.TLabel",
-        ).pack(anchor=tk.W, pady=(0, 6))
-
-        runtime_list_container = ttk.Frame(runtime_left)
-        runtime_list_container.pack(fill=tk.BOTH, expand=True)
-
-        self.runtime_bookmarks_listbox = tk.Listbox(
-            runtime_list_container,
-            width=34,
-            bg="#16202b",
-            fg="#e8edf5",
-            selectbackground="#2f8fef",
-            selectforeground="#ffffff",
-            relief=tk.FLAT,
-            font=("Consolas", 10),
-        )
-        self.runtime_bookmarks_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.runtime_bookmarks_listbox.bind("<<ListboxSelect>>", self.on_runtime_bookmark_selection_changed)
-
-        runtime_scrollbar = ttk.Scrollbar(
-            runtime_list_container,
-            orient=tk.VERTICAL,
-            command=self.runtime_bookmarks_listbox.yview,
-        )
-        runtime_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.runtime_bookmarks_listbox.configure(yscrollcommand=runtime_scrollbar.set)
-
-        ttk.Label(
-            runtime_left,
-            textvariable=self.runtime_saved_summary_var,
-            style="Muted.TLabel",
-            wraplength=260,
-        ).pack(anchor=tk.W, pady=(10, 0))
-
-        runtime_right = ttk.Frame(runtime_lower)
-        runtime_right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        ttk.Label(runtime_right, text="Bookmark detail", style="Muted.TLabel").pack(anchor=tk.W, pady=(0, 6))
-
-        self.runtime_bookmark_text = tk.Text(
-            runtime_right,
-            height=7,
-            bg="#16202b",
-            fg="#d7e2ef",
-            relief=tk.FLAT,
-            wrap=tk.WORD,
-            font=("Consolas", 10),
-            padx=12,
-            pady=12,
-        )
-        self.runtime_bookmark_text.pack(fill=tk.X, expand=False)
-
-        ttk.Label(runtime_right, text="Saved bookmark editor", style="Muted.TLabel").pack(anchor=tk.W, pady=(10, 6))
-
-        runtime_editor = ttk.Frame(runtime_right)
-        runtime_editor.pack(fill=tk.X, expand=False, pady=(0, 10))
-
-        ttk.Label(runtime_editor, text="Title", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Entry(runtime_editor, textvariable=self.runtime_editor_title_var).grid(
-            row=1,
-            column=0,
-            sticky="ew",
-            padx=(0, 8),
-        )
-
-        ttk.Label(runtime_editor, text="Command", style="Muted.TLabel").grid(row=0, column=1, sticky="w")
-        ttk.Entry(runtime_editor, textvariable=self.runtime_editor_command_var).grid(
-            row=1,
-            column=1,
-            sticky="ew",
-            padx=(0, 8),
-        )
-
-        ttk.Label(runtime_editor, text="Description", style="Muted.TLabel").grid(row=2, column=0, sticky="w", pady=(8, 0))
-        ttk.Entry(runtime_editor, textvariable=self.runtime_editor_description_var).grid(
-            row=3,
-            column=0,
-            columnspan=2,
-            sticky="ew",
-            padx=(0, 8),
-        )
-        runtime_editor.columnconfigure(0, weight=1)
-        runtime_editor.columnconfigure(1, weight=1)
-
-        ttk.Label(runtime_right, text="Session explorer", style="Muted.TLabel").pack(anchor=tk.W, pady=(4, 6))
-
-        session_controls = ttk.Frame(runtime_right)
-        session_controls.pack(fill=tk.X, expand=False, pady=(0, 8))
-
-        ttk.Label(session_controls, text="Filter", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
-        session_filter_entry = ttk.Entry(session_controls, textvariable=self.runtime_session_filter_var)
-        session_filter_entry.grid(row=0, column=1, sticky="ew", padx=(8, 8))
-        session_filter_entry.bind("<KeyRelease>", self.on_runtime_session_filter_changed)
-        session_filter_entry.bind("<Return>", self.on_runtime_session_filter_changed)
+            bottom, text="重新扫描", style="Quiet.TButton", command=self._refresh_status
+        ).pack(side="left")
         ttk.Button(
-            session_controls,
-            text="Copy Explorer",
-            command=self.copy_runtime_session_explorer,
-        ).grid(row=0, column=2, sticky="ew", padx=(0, 8))
-        ttk.Button(
-            session_controls,
-            text="Export Events",
-            command=self.export_runtime_session_events_to_file,
-        ).grid(row=0, column=3, sticky="ew")
-        session_controls.columnconfigure(1, weight=1)
-
-        ttk.Label(
-            runtime_right,
-            textvariable=self.runtime_session_state_var,
-            style="Muted.TLabel",
-            wraplength=560,
-        ).pack(anchor=tk.W, pady=(0, 6))
-
-        self.runtime_session_text = tk.Text(
-            runtime_right,
-            height=12,
-            bg="#16202b",
-            fg="#d7e2ef",
-            relief=tk.FLAT,
-            wrap=tk.WORD,
-            font=("Consolas", 10),
-            padx=12,
-            pady=12,
-        )
-        self.runtime_session_text.pack(fill=tk.BOTH, expand=True)
-
-    def _build_host_tab(self) -> None:
-        ttk.Label(
-            self.host_tab,
-            text=(
-                "Search the ClientCheatCommands enum catalogs and copy starter commands for "
-                "items, pals, and technology unlocks."
-            ),
-            style="Muted.TLabel",
-            wraplength=860,
-        ).pack(anchor=tk.W, pady=(0, 8))
-
-        self.host_commands_text = tk.Text(
-            self.host_tab,
-            height=12,
-            bg="#16202b",
-            fg="#d7e2ef",
-            relief=tk.FLAT,
-            wrap=tk.WORD,
-            font=("Consolas", 10),
-            padx=12,
-            pady=12,
-        )
-        self.host_commands_text.pack(fill=tk.X, expand=False)
-
-        composer = ttk.Frame(self.host_tab)
-        composer.pack(fill=tk.X, pady=(12, 10))
-
-        ttk.Label(composer, text="Command Composer", style="CardTitle.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(composer, text="Preset", style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(8, 0))
-
-        template_combo = ttk.Combobox(
-            composer,
-            textvariable=self.host_template_var,
-            values=list(self.host_template_title_to_key),
-            state="readonly",
-            width=28,
-        )
-        template_combo.grid(row=2, column=0, sticky="ew", padx=(0, 8))
-        template_combo.bind("<<ComboboxSelected>>", self.on_host_template_changed)
-
-        ttk.Button(composer, text="Use Selected Asset", command=self.apply_selected_asset_to_template).grid(
-            row=2,
-            column=1,
-            sticky="ew",
-            padx=(0, 8),
-        )
-        ttk.Button(composer, text="Copy Preview", command=self.copy_host_preview_command).grid(row=2, column=2, sticky="ew")
-
-        ttk.Label(
-            composer,
-            textvariable=self.host_template_summary_var,
-            style="Muted.TLabel",
-            wraplength=820,
-        ).grid(row=3, column=0, columnspan=4, sticky="w", pady=(8, 6))
-
-        self.host_arg_labels: list[ttk.Label] = []
-        self.host_arg_entries: list[ttk.Entry] = []
-        for index, var in enumerate(self.host_composer_vars):
-            label = ttk.Label(composer, text="", style="Muted.TLabel")
-            label.grid(row=4, column=index, sticky="w", padx=(0, 8))
-            entry = ttk.Entry(composer, textvariable=var, width=18)
-            entry.grid(row=5, column=index, sticky="ew", padx=(0, 8))
-            entry.bind("<KeyRelease>", self.on_host_composer_input_changed)
-            entry.bind("<Return>", self.on_host_composer_input_changed)
-            self.host_arg_labels.append(label)
-            self.host_arg_entries.append(entry)
-            composer.columnconfigure(index, weight=1)
-
-        ttk.Label(composer, text="Preview", style="Muted.TLabel").grid(row=6, column=0, sticky="w", pady=(8, 0))
-
-        self.host_preview_text = tk.Text(
-            composer,
-            height=3,
-            bg="#16202b",
-            fg="#e8edf5",
-            relief=tk.FLAT,
-            wrap=tk.WORD,
-            font=("Consolas", 10),
-            padx=12,
-            pady=12,
-        )
-        self.host_preview_text.grid(row=7, column=0, columnspan=4, sticky="ew", pady=(4, 0))
-
-        controls = ttk.Frame(self.host_tab)
-        controls.pack(fill=tk.X, pady=(12, 8))
-
-        ttk.Label(controls, text="Catalog", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(controls, text="Search", style="Muted.TLabel").grid(row=0, column=1, sticky="w", padx=(8, 0))
-
-        kind_combo = ttk.Combobox(
-            controls,
-            textvariable=self.host_kind_var,
-            values=get_catalog_kinds(),
-            state="readonly",
-            width=18,
-        )
-        kind_combo.grid(row=1, column=0, sticky="ew", padx=(0, 8))
-        kind_combo.bind("<<ComboboxSelected>>", self.on_host_filters_changed)
-
-        query_entry = ttk.Entry(controls, textvariable=self.host_query_var, width=40)
-        query_entry.grid(row=1, column=1, sticky="ew", padx=(0, 8))
-        query_entry.bind("<KeyRelease>", self.on_host_filters_changed)
-        query_entry.bind("<Return>", self.on_host_filters_changed)
-
-        ttk.Button(controls, text="Search", command=self.refresh_host_results).grid(row=1, column=2, sticky="ew", padx=(0, 8))
-        ttk.Button(controls, text="Open Enum Folder", command=self.open_client_cheat_commands_enums).grid(
-            row=1,
-            column=3,
-            sticky="ew",
-            padx=(0, 8),
-        )
-        ttk.Button(controls, text="Copy Asset Key", command=self.copy_selected_asset_key).grid(row=1, column=4, sticky="ew", padx=(0, 8))
-        ttk.Button(controls, text="Copy Suggested Command", command=self.copy_selected_host_command).grid(
-            row=1,
-            column=5,
-            sticky="ew",
-        )
-        controls.columnconfigure(1, weight=1)
-
-        results_frame = ttk.Frame(self.host_tab)
-        results_frame.pack(fill=tk.BOTH, expand=True)
-
-        left = ttk.Frame(results_frame)
-        left.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(0, 10))
-
-        ttk.Label(left, textvariable=self.host_result_count_var, style="Muted.TLabel").pack(anchor=tk.W, pady=(0, 6))
-
-        list_container = ttk.Frame(left)
-        list_container.pack(fill=tk.BOTH, expand=True)
-
-        self.host_results_listbox = tk.Listbox(
-            list_container,
-            width=38,
-            bg="#16202b",
-            fg="#e8edf5",
-            selectbackground="#2f8fef",
-            selectforeground="#ffffff",
-            relief=tk.FLAT,
-            font=("Consolas", 10),
-        )
-        self.host_results_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.host_results_listbox.bind("<<ListboxSelect>>", self.on_host_selection_changed)
-
-        scrollbar = ttk.Scrollbar(list_container, orient=tk.VERTICAL, command=self.host_results_listbox.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.host_results_listbox.configure(yscrollcommand=scrollbar.set)
-
-        right = ttk.Frame(results_frame)
-        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        self.host_detail_text = tk.Text(
-            right,
-            bg="#16202b",
-            fg="#d7e2ef",
-            relief=tk.FLAT,
-            wrap=tk.WORD,
-            font=("Consolas", 10),
-            padx=12,
-            pady=12,
-        )
-        self.host_detail_text.pack(fill=tk.BOTH, expand=True)
-
-    def _build_map_tab(self) -> None:
-        ttk.Label(
-            self.map_tab,
-            text=(
-                "Build a local scouting library from session coordinates: save map bookmarks, chain them into routes, "
-                "and track collectibles or custom objectives without depending on host-only powers."
-            ),
-            style="Muted.TLabel",
-            wraplength=860,
-        ).pack(anchor=tk.W, pady=(0, 8))
-
-        actions = ttk.Frame(self.map_tab)
-        actions.pack(fill=tk.X, pady=(0, 10))
-
-        ttk.Button(actions, text="Use Latest Session Pos", command=self.use_latest_session_position_for_bookmark).pack(
-            side=tk.LEFT
-        )
-        ttk.Button(actions, text="Copy Selected Coords", command=self.copy_selected_map_coordinates).pack(
-            side=tk.LEFT,
-            padx=(8, 0),
-        )
-        ttk.Button(actions, text="Import Library", command=self.import_map_library_from_file).pack(
-            side=tk.LEFT,
-            padx=(8, 0),
-        )
-        ttk.Button(actions, text="Export Library", command=self.export_map_library_to_file).pack(
-            side=tk.LEFT,
-            padx=(8, 0),
-        )
-
-        self.map_overview_text = tk.Text(
-            self.map_tab,
-            height=8,
-            bg="#16202b",
-            fg="#d7e2ef",
-            relief=tk.FLAT,
-            wrap=tk.WORD,
-            font=("Consolas", 10),
-            padx=12,
-            pady=12,
-        )
-        self.map_overview_text.pack(fill=tk.X, expand=False)
-
-        notebook = ttk.Notebook(self.map_tab)
-        notebook.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
-        self.map_notebook = notebook
-
-        self.map_bookmarks_tab = ttk.Frame(notebook, padding=8)
-        self.map_routes_tab = ttk.Frame(notebook, padding=8)
-        self.map_collectibles_tab = ttk.Frame(notebook, padding=8)
-        notebook.add(self.map_bookmarks_tab, text="Bookmarks")
-        notebook.add(self.map_routes_tab, text="Routes")
-        notebook.add(self.map_collectibles_tab, text="Tracker")
-
-        self._build_map_bookmarks_subtab()
-        self._build_map_routes_subtab()
-        self._build_map_collectibles_subtab()
-
-    def _build_map_bookmarks_subtab(self) -> None:
-        actions = ttk.Frame(self.map_bookmarks_tab)
-        actions.pack(fill=tk.X, pady=(0, 8))
-
-        ttk.Button(actions, text="New Bookmark", command=self.new_map_bookmark).pack(side=tk.LEFT)
-        ttk.Button(actions, text="Save Bookmark", command=self.save_map_bookmark).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(actions, text="Delete Bookmark", command=self.delete_selected_map_bookmark).pack(
-            side=tk.LEFT,
-            padx=(8, 0),
-        )
-
-        frame = ttk.Frame(self.map_bookmarks_tab)
-        frame.pack(fill=tk.BOTH, expand=True)
-
-        left = ttk.Frame(frame)
-        left.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(0, 10))
-
-        ttk.Label(left, textvariable=self.map_bookmark_summary_var, style="Muted.TLabel").pack(anchor=tk.W, pady=(0, 6))
-
-        list_container = ttk.Frame(left)
-        list_container.pack(fill=tk.BOTH, expand=True)
-
-        self.map_bookmarks_listbox = tk.Listbox(
-            list_container,
-            width=34,
-            bg="#16202b",
-            fg="#e8edf5",
-            selectbackground="#2f8fef",
-            selectforeground="#ffffff",
-            relief=tk.FLAT,
-            font=("Consolas", 10),
-        )
-        self.map_bookmarks_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.map_bookmarks_listbox.bind("<<ListboxSelect>>", self.on_map_bookmark_selection_changed)
-
-        scrollbar = ttk.Scrollbar(list_container, orient=tk.VERTICAL, command=self.map_bookmarks_listbox.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.map_bookmarks_listbox.configure(yscrollcommand=scrollbar.set)
-
-        right = ttk.Frame(frame)
-        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        ttk.Label(right, text="Bookmark detail", style="Muted.TLabel").pack(anchor=tk.W, pady=(0, 6))
-
-        self.map_bookmark_detail_text = tk.Text(
-            right,
-            height=8,
-            bg="#16202b",
-            fg="#d7e2ef",
-            relief=tk.FLAT,
-            wrap=tk.WORD,
-            font=("Consolas", 10),
-            padx=12,
-            pady=12,
-        )
-        self.map_bookmark_detail_text.pack(fill=tk.X, expand=False)
-
-        ttk.Label(right, text="Bookmark editor", style="Muted.TLabel").pack(anchor=tk.W, pady=(10, 6))
-
-        editor = ttk.Frame(right)
-        editor.pack(fill=tk.X, expand=False)
-
-        ttk.Label(editor, text="Title", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Entry(editor, textvariable=self.map_bookmark_title_var).grid(row=1, column=0, sticky="ew", padx=(0, 8))
-        ttk.Label(editor, text="Category", style="Muted.TLabel").grid(row=0, column=1, sticky="w")
-        ttk.Entry(editor, textvariable=self.map_bookmark_category_var).grid(row=1, column=1, sticky="ew", padx=(0, 8))
-
-        ttk.Label(editor, text="X", style="Muted.TLabel").grid(row=2, column=0, sticky="w", pady=(8, 0))
-        ttk.Entry(editor, textvariable=self.map_bookmark_x_var).grid(row=3, column=0, sticky="ew", padx=(0, 8))
-        ttk.Label(editor, text="Y", style="Muted.TLabel").grid(row=2, column=1, sticky="w", pady=(8, 0))
-        ttk.Entry(editor, textvariable=self.map_bookmark_y_var).grid(row=3, column=1, sticky="ew", padx=(0, 8))
-        ttk.Label(editor, text="Z", style="Muted.TLabel").grid(row=2, column=2, sticky="w", pady=(8, 0))
-        ttk.Entry(editor, textvariable=self.map_bookmark_z_var).grid(row=3, column=2, sticky="ew")
-
-        ttk.Label(editor, text="Notes", style="Muted.TLabel").grid(row=4, column=0, sticky="w", pady=(8, 0))
-        ttk.Entry(editor, textvariable=self.map_bookmark_notes_var).grid(
-            row=5,
-            column=0,
-            columnspan=3,
-            sticky="ew",
-        )
-
-        editor.columnconfigure(0, weight=1)
-        editor.columnconfigure(1, weight=1)
-        editor.columnconfigure(2, weight=1)
-
-    def _build_map_routes_subtab(self) -> None:
-        actions = ttk.Frame(self.map_routes_tab)
-        actions.pack(fill=tk.X, pady=(0, 8))
-
-        ttk.Button(actions, text="New Route", command=self.new_map_route).pack(side=tk.LEFT)
-        ttk.Button(actions, text="Save Route", command=self.save_map_route).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(actions, text="Delete Route", command=self.delete_selected_map_route).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(actions, text="Use Selected Bookmark", command=self.append_selected_bookmark_to_route).pack(
-            side=tk.LEFT,
-            padx=(8, 0),
-        )
-
-        frame = ttk.Frame(self.map_routes_tab)
-        frame.pack(fill=tk.BOTH, expand=True)
-
-        left = ttk.Frame(frame)
-        left.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(0, 10))
-
-        ttk.Label(left, textvariable=self.map_route_summary_var, style="Muted.TLabel").pack(anchor=tk.W, pady=(0, 6))
-
-        list_container = ttk.Frame(left)
-        list_container.pack(fill=tk.BOTH, expand=True)
-
-        self.map_routes_listbox = tk.Listbox(
-            list_container,
-            width=34,
-            bg="#16202b",
-            fg="#e8edf5",
-            selectbackground="#2f8fef",
-            selectforeground="#ffffff",
-            relief=tk.FLAT,
-            font=("Consolas", 10),
-        )
-        self.map_routes_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.map_routes_listbox.bind("<<ListboxSelect>>", self.on_map_route_selection_changed)
-
-        scrollbar = ttk.Scrollbar(list_container, orient=tk.VERTICAL, command=self.map_routes_listbox.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.map_routes_listbox.configure(yscrollcommand=scrollbar.set)
-
-        right = ttk.Frame(frame)
-        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        ttk.Label(right, text="Route detail", style="Muted.TLabel").pack(anchor=tk.W, pady=(0, 6))
-
-        self.map_route_detail_text = tk.Text(
-            right,
-            height=8,
-            bg="#16202b",
-            fg="#d7e2ef",
-            relief=tk.FLAT,
-            wrap=tk.WORD,
-            font=("Consolas", 10),
-            padx=12,
-            pady=12,
-        )
-        self.map_route_detail_text.pack(fill=tk.X, expand=False)
-
-        ttk.Label(right, text="Route editor", style="Muted.TLabel").pack(anchor=tk.W, pady=(10, 6))
-
-        editor = ttk.Frame(right)
-        editor.pack(fill=tk.X, expand=False)
-
-        ttk.Label(editor, text="Title", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Entry(editor, textvariable=self.map_route_title_var).grid(row=1, column=0, sticky="ew", padx=(0, 8))
-        ttk.Label(editor, text="Stops (bookmark keys)", style="Muted.TLabel").grid(row=0, column=1, sticky="w")
-        ttk.Entry(editor, textvariable=self.map_route_stops_var).grid(row=1, column=1, sticky="ew")
-        ttk.Label(editor, text="Description", style="Muted.TLabel").grid(row=2, column=0, sticky="w", pady=(8, 0))
-        ttk.Entry(editor, textvariable=self.map_route_description_var).grid(
-            row=3,
-            column=0,
-            columnspan=2,
-            sticky="ew",
-        )
-        editor.columnconfigure(0, weight=1)
-        editor.columnconfigure(1, weight=1)
-
-    def _build_map_collectibles_subtab(self) -> None:
-        actions = ttk.Frame(self.map_collectibles_tab)
-        actions.pack(fill=tk.X, pady=(0, 8))
-
-        ttk.Button(actions, text="New Tracker", command=self.new_collectible_entry).pack(side=tk.LEFT)
-        ttk.Button(actions, text="Save Tracker", command=self.save_collectible_entry).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(actions, text="Delete Tracker", command=self.delete_selected_collectible_entry).pack(
-            side=tk.LEFT,
-            padx=(8, 0),
-        )
-        ttk.Button(actions, text="Use Selected Bookmark", command=self.use_selected_bookmark_for_collectible).pack(
-            side=tk.LEFT,
-            padx=(8, 0),
-        )
-        ttk.Button(actions, text="Mark Found", command=self.mark_selected_collectible_found).pack(
-            side=tk.LEFT,
-            padx=(8, 0),
-        )
-
-        frame = ttk.Frame(self.map_collectibles_tab)
-        frame.pack(fill=tk.BOTH, expand=True)
-
-        left = ttk.Frame(frame)
-        left.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(0, 10))
-
-        ttk.Label(left, textvariable=self.collectible_summary_var, style="Muted.TLabel").pack(anchor=tk.W, pady=(0, 6))
-
-        list_container = ttk.Frame(left)
-        list_container.pack(fill=tk.BOTH, expand=True)
-
-        self.collectibles_listbox = tk.Listbox(
-            list_container,
-            width=34,
-            bg="#16202b",
-            fg="#e8edf5",
-            selectbackground="#2f8fef",
-            selectforeground="#ffffff",
-            relief=tk.FLAT,
-            font=("Consolas", 10),
-        )
-        self.collectibles_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.collectibles_listbox.bind("<<ListboxSelect>>", self.on_collectible_selection_changed)
-
-        scrollbar = ttk.Scrollbar(list_container, orient=tk.VERTICAL, command=self.collectibles_listbox.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.collectibles_listbox.configure(yscrollcommand=scrollbar.set)
-
-        right = ttk.Frame(frame)
-        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        ttk.Label(right, text="Tracker detail", style="Muted.TLabel").pack(anchor=tk.W, pady=(0, 6))
-
-        self.collectible_detail_text = tk.Text(
-            right,
-            height=8,
-            bg="#16202b",
-            fg="#d7e2ef",
-            relief=tk.FLAT,
-            wrap=tk.WORD,
-            font=("Consolas", 10),
-            padx=12,
-            pady=12,
-        )
-        self.collectible_detail_text.pack(fill=tk.X, expand=False)
-
-        ttk.Label(right, text="Tracker editor", style="Muted.TLabel").pack(anchor=tk.W, pady=(10, 6))
-
-        editor = ttk.Frame(right)
-        editor.pack(fill=tk.X, expand=False)
-
-        ttk.Label(editor, text="Title", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Entry(editor, textvariable=self.collectible_title_var).grid(row=1, column=0, sticky="ew", padx=(0, 8))
-        ttk.Label(editor, text="Bookmark Key", style="Muted.TLabel").grid(row=0, column=1, sticky="w")
-        ttk.Entry(editor, textvariable=self.collectible_bookmark_key_var).grid(
-            row=1,
-            column=1,
-            sticky="ew",
-            padx=(0, 8),
-        )
-        ttk.Label(editor, text="Category", style="Muted.TLabel").grid(row=0, column=2, sticky="w")
-        ttk.Entry(editor, textvariable=self.collectible_category_var).grid(row=1, column=2, sticky="ew", padx=(0, 8))
-
-        ttk.Label(editor, text="Status", style="Muted.TLabel").grid(row=2, column=0, sticky="w", pady=(8, 0))
-        ttk.Combobox(
-            editor,
-            textvariable=self.collectible_status_var,
-            values=list(COLLECTIBLE_STATUSES),
-            state="readonly",
-        ).grid(row=3, column=0, sticky="ew", padx=(0, 8))
-        ttk.Label(editor, text="Notes", style="Muted.TLabel").grid(row=2, column=1, sticky="w", pady=(8, 0))
-        ttk.Entry(editor, textvariable=self.collectible_notes_var).grid(
-            row=3,
-            column=1,
-            columnspan=2,
-            sticky="ew",
-        )
-        editor.columnconfigure(0, weight=1)
-        editor.columnconfigure(1, weight=1)
-        editor.columnconfigure(2, weight=1)
-
-    def _build_log_tab(self) -> None:
-        self.notes_text = tk.Text(
-            self.log_tab,
-            height=18,
-            bg="#16202b",
-            fg="#d7e2ef",
-            relief=tk.FLAT,
-            wrap=tk.WORD,
-            font=("Consolas", 10),
-            padx=12,
-            pady=12,
-        )
-        self.notes_text.pack(fill=tk.BOTH, expand=True)
-
-    def _restore_last_selected_tab(self) -> None:
-        if self.settings.last_selected_tab not in self.tab_titles:
+            bottom,
+            text="访问 GitHub",
+            style="Quiet.TButton",
+            command=lambda: webbrowser.open(GITHUB_URL),
+        ).pack(side="right")
+
+    # ------------------------------------------------------------------
+    # List refreshers
+    # ------------------------------------------------------------------
+
+    def _refresh_item_list(self) -> None:
+        query = self.item_search_var.get()
+        results = search_catalog(self.item_entries, query, limit=400)
+        self.item_listbox.delete(0, "end")
+        for entry in results:
+            self.item_listbox.insert("end", f"{entry.label}   [{entry.key}]")
+        self._current_item_results = results
+
+    def _refresh_pal_list(self) -> None:
+        query = self.pal_search_var.get()
+        results = search_catalog(self.pal_entries, query, limit=400)
+        self.pal_listbox.delete(0, "end")
+        for entry in results:
+            self.pal_listbox.insert("end", f"{entry.label}   [{entry.key}]")
+        self._current_pal_results = results
+
+    def _refresh_tech_list(self) -> None:
+        query = self.tech_search_var.get()
+        results = search_catalog(self.tech_entries, query, limit=400)
+        self.tech_listbox.delete(0, "end")
+        for entry in results:
+            self.tech_listbox.insert("end", f"{entry.label}   [{entry.key}]")
+        self._current_tech_results = results
+
+    def _refresh_time_label(self) -> None:
+        self.time_label.configure(text=f"{self.time_var.get()} 时")
+
+    # ------------------------------------------------------------------
+    # Button handlers
+    # ------------------------------------------------------------------
+
+    def _on_give_custom_exp(self) -> None:
+        try:
+            amount = int(self.exp_var.get())
+        except ValueError:
+            self._show_result("经验值必须是整数。", ok=False)
             return
-
-        target_index = self.tab_titles.index(self.settings.last_selected_tab)
-        self.notebook.select(target_index)
-
-    def on_tab_changed(self, _event: object | None = None) -> None:
-        current = self.notebook.tab(self.notebook.select(), "text")
-        self.settings.last_selected_tab = current
+        if amount <= 0:
+            self._show_result("经验值要大于 0。", ok=False)
+            return
+        self.settings.custom_exp_amount = amount
         save_settings(self.settings)
+        self._send(cmd.give_exp(amount))
 
-    def refresh_environment(self, save_after: bool = True) -> None:
-        self.settings.game_root = self.game_root_var.get().strip() or None
-        self.report = scan_environment(self.settings)
-        self._load_host_catalogs()
+    def _on_teleport(self) -> None:
+        try:
+            x = float(self.tp_x_var.get())
+            y = float(self.tp_y_var.get())
+            z = float(self.tp_z_var.get())
+        except ValueError:
+            self._show_result("坐标必须是数字。", ok=False)
+            return
+        self._send(cmd.teleport(x, y, z))
 
-        if save_after:
+    def _on_give_preset(self, preset: cmd.QuickPreset) -> None:
+        commands = cmd.preset_commands(preset)
+        if not commands:
+            self._show_result(f"{preset.title} 是空包。", ok=False)
+            return
+        self._send_many(commands, label=f"{preset.title}（共 {len(commands)} 条）")
+
+    def _parse_count(self, raw: str, default: int = 1) -> int:
+        try:
+            value = int(raw)
+            return max(1, value)
+        except ValueError:
+            return default
+
+    def _on_give_selected_item(self) -> None:
+        selection = self.item_listbox.curselection()
+        if not selection:
+            self._show_result("先在列表里选一项物品。", ok=False)
+            return
+        entry = self._current_item_results[selection[0]]
+        count = self._parse_count(self.item_count_var.get())
+        self.settings.custom_item_count = count
+        self._remember_recent(self.settings.recent_item_ids, entry.key)
+        save_settings(self.settings)
+        self._send(cmd.giveme(entry.key, count))
+
+    def _on_spawn_selected_pal(self) -> None:
+        selection = self.pal_listbox.curselection()
+        if not selection:
+            self._show_result("先在列表里选一只帕鲁。", ok=False)
+            return
+        entry = self._current_pal_results[selection[0]]
+        count = self._parse_count(self.pal_count_var.get())
+        self.settings.custom_pal_count = count
+        self._remember_recent(self.settings.recent_pal_ids, entry.key)
+        save_settings(self.settings)
+        self._send(cmd.spawn_pal(entry.key, count))
+
+    def _on_unlock_selected_tech(self) -> None:
+        selection = self.tech_listbox.curselection()
+        if not selection:
+            self._show_result("先在列表里选一项科技。", ok=False)
+            return
+        entry = self._current_tech_results[selection[0]]
+        self._send(cmd.unlock_tech(entry.key))
+
+    def _remember_recent(self, bucket: list[str], key: str, limit: int = 10) -> None:
+        if key in bucket:
+            bucket.remove(key)
+        bucket.insert(0, key)
+        del bucket[limit:]
+
+    # ------------------------------------------------------------------
+    # Home tab helpers
+    # ------------------------------------------------------------------
+
+    def _launch_game(self) -> None:
+        if not self.report.game_root_exists or not self.report.game_root:
+            self._show_result("还没定位游戏目录，先去 设置 填一下。", ok=False)
+            return
+        launcher = self.report.game_root / "Palworld.exe"
+        if not launcher.exists():
+            self._show_result("找不到 Palworld.exe。", ok=False)
+            return
+        try:
+            subprocess.Popen([str(launcher)], cwd=str(self.report.game_root))
+        except OSError as error:
+            self._show_result(f"启动失败：{error}", ok=False)
+            return
+        self._show_result("已拉起 Palworld.exe。", ok=True)
+
+    def _deploy_bridge(self) -> None:
+        ok, message = deploy_bridge(self.report)
+        self._show_result(message, ok=ok)
+        self._refresh_status()
+
+    def _open_game_dir(self) -> None:
+        if not self.report.game_root_exists or not self.report.game_root:
+            self._show_result("还没定位游戏目录。", ok=False)
+            return
+        try:
+            os.startfile(str(self.report.game_root))  # type: ignore[attr-defined]
+        except OSError as error:
+            self._show_result(f"打开失败：{error}", ok=False)
+
+    def _browse_game_root(self) -> None:
+        chosen = filedialog.askdirectory(title="选择 Palworld 安装目录")
+        if chosen:
+            self.game_root_var.set(chosen)
+
+    def _apply_game_root(self) -> None:
+        path = self.game_root_var.get().strip() or None
+        self.settings.game_root = path
+        save_settings(self.settings)
+        self._refresh_status()
+
+    # ------------------------------------------------------------------
+    # Command dispatch
+    # ------------------------------------------------------------------
+
+    def _send(self, command: str) -> None:
+        if not command:
+            return
+        self._show_result(f"发送中：{command}", ok=True, pending=True)
+        threading.Thread(target=self._send_worker, args=(command,), daemon=True).start()
+
+    def _send_worker(self, command: str) -> None:
+        result = game_control.send_chat_command(command)
+        self.root.after(0, lambda: self._show_result(result.message, ok=result.ok))
+
+    def _send_many(self, commands: list[str], *, label: str) -> None:
+        self._show_result(f"正在发送 {label}…", ok=True, pending=True)
+
+        def worker() -> None:
+            results = game_control.send_chat_commands(commands)
+            successes = sum(1 for item in results if item.ok)
+            ok = successes == len(commands)
+            message = (
+                f"{label} 发送完成：{successes}/{len(commands)} 成功"
+                if successes
+                else (results[0].message if results else "未发送。")
+            )
+            self.root.after(0, lambda: self._show_result(message, ok=ok))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    # ------------------------------------------------------------------
+    # Status + feedback
+    # ------------------------------------------------------------------
+
+    def _refresh_status(self) -> None:
+        self.report = scan_environment(self.settings.game_root)
+        self._rebuild_env_text()
+
+        if game_control.is_game_running():
+            self.status_game.configure(text="游戏：运行中 ✔", style="Good.TLabel")
+        else:
+            self.status_game.configure(text="游戏：未运行 ✘", style="Bad.TLabel")
+
+        if self.report.ue4ss_root_exists:
+            self.status_bridge.configure(text="UE4SS：已安装 ✔", style="Good.TLabel")
+        else:
+            self.status_bridge.configure(text="UE4SS：未安装 ✘", style="Bad.TLabel")
+
+        if self.report.client_cheat_commands_active:
+            self.status_cheats.configure(text="Cheat 命令：已启用 ✔", style="Good.TLabel")
+        elif self.report.client_cheat_commands_present:
+            self.status_cheats.configure(text="Cheat 命令：未启用 ⚠", style="Warn.TLabel")
+        else:
+            self.status_cheats.configure(text="Cheat 命令：未安装 ✘", style="Bad.TLabel")
+
+    def _rebuild_env_text(self) -> None:
+        self.env_text.configure(state="normal")
+        self.env_text.delete("1.0", "end")
+
+        lines: list[str] = []
+        lines.append(f"游戏根目录: {self.report.game_root or '<未检测到>'}")
+        lines.append(f"  Palworld.exe 存在: {'是' if self.report.launcher_exists else '否'}")
+        lines.append(f"  Shipping.exe 存在: {'是' if self.report.shipping_exists else '否'}")
+        lines.append("")
+        lines.append(f"UE4SS 根目录存在: {'是' if self.report.ue4ss_root_exists else '否'}")
+        lines.append(
+            f"ClientCheatCommands 安装: {'是' if self.report.client_cheat_commands_present else '否'}"
+        )
+        lines.append(
+            f"ClientCheatCommands 启用: {'是' if self.report.client_cheat_commands_active else '否'}"
+        )
+        lines.append(f"Bridge 已部署: {'是' if self.report.trainer_bridge_deployed else '否'}")
+        if self.report.notes:
+            lines.append("")
+            lines.append("说明：")
+            for note in self.report.notes:
+                lines.append(f"  • {note}")
+
+        self.env_text.insert("1.0", "\n".join(lines))
+        self.env_text.configure(state="disabled")
+
+    def _show_result(self, message: str, *, ok: bool, pending: bool = False) -> None:
+        if pending:
+            style = "Result.TLabel"
+            prefix = "⏳ "
+        elif ok:
+            style = "Good.TLabel"
+            prefix = "✔ "
+        else:
+            style = "Bad.TLabel"
+            prefix = "✘ "
+        self.result_label.configure(text=f"{prefix}{message}", style=style)
+
+        if self._result_clear_job is not None:
+            try:
+                self.root.after_cancel(self._result_clear_job)
+            except tk.TclError:
+                pass
+            self._result_clear_job = None
+
+        if not pending:
+            self._result_clear_job = self.root.after(
+                RESULT_CLEAR_MS,
+                lambda: self.result_label.configure(text="就绪。", style="Status.TLabel"),
+            )
+
+    def _on_tab_changed(self, _event: tk.Event) -> None:
+        try:
+            index = self.notebook.index("current")
+        except tk.TclError:
+            return
+        if 0 <= index < len(TAB_NAMES):
+            self.settings.last_tab = TAB_NAMES[index]
             save_settings(self.settings)
 
-        self._render_summary(self.report)
-        self._render_modules(self.report)
-        self._render_runtime_commands()
-        self._render_runtime_bookmarks()
-        self.refresh_runtime_monitor()
-        self._render_host_commands()
-        self.refresh_host_results()
-        self.refresh_host_template_form()
-        self._render_map_tools()
-        self._render_notes(self.report)
 
-        detected = str(self.report.game_root) if self.report.game_root else "Not detected"
-        self.game_root_var.set(detected if detected != "Not detected" else self.game_root_var.get())
-        self.status_var.set(f"Environment scan completed. Game root: {detected}")
+def run() -> int:
+    from . import __version__
 
-    def _load_host_catalogs(self) -> None:
-        self.host_catalogs = {}
-        self.host_catalog_error = None
-
-        if not self.report.client_cheat_commands_enum_dir_exists or not self.report.client_cheat_commands_enum_dir:
-            return
-
-        try:
-            self.host_catalogs = load_all_catalogs(self.report.client_cheat_commands_enum_dir)
-        except OSError as exc:
-            self.host_catalog_error = str(exc)
-
-    def _render_summary(self, report: EnvironmentReport) -> None:
-        lines = [
-            "Trainer shell status",
-            "--------------------",
-            f"Repository root        : {report.repo_root}",
-            f"Game root              : {report.game_root or 'Not detected'}",
-            f"Palworld.exe           : {'OK' if report.launcher_exists else 'Missing'}",
-            f"Shipping executable    : {'OK' if report.shipping_exists else 'Missing'}",
-            f"Mods folder            : {'OK' if report.mods_root_exists else 'Missing'}",
-            f"UE4SS runtime          : {'OK' if report.ue4ss_root_exists else 'Missing'}",
-            f"UE4SS mods folder      : {'OK' if report.ue4ss_mods_exists else 'Missing'}",
-            f"ClientCheatCommands    : {'Enabled' if report.active_client_cheat_commands else 'Not enabled'}",
-            f"CCC mod files          : {'OK' if report.client_cheat_commands_mod_exists else 'Missing'}",
-            f"CCC enum catalogs      : {'OK' if report.client_cheat_commands_enum_dir_exists else 'Missing'}",
-            f"CCC enum dir           : {report.client_cheat_commands_enum_dir or 'Not detected'}",
-            f"UE4SSExperimentalPW    : {'Enabled' if report.active_ue4ss_experimental else 'Not enabled'}",
-            f"Bridge source          : {'OK' if report.trainer_bridge_source_exists else 'Missing'}",
-            f"Bridge deployed        : {'Yes' if report.trainer_bridge_deployed else 'No'}",
-            f"Bridge session log     : {'Present' if report.trainer_bridge_log_exists else 'Not found yet'}",
-        ]
-
-        self.summary_text.configure(state=tk.NORMAL)
-        self.summary_text.delete("1.0", tk.END)
-        self.summary_text.insert("1.0", "\n".join(lines))
-        self.summary_text.configure(state=tk.DISABLED)
-
-    def _render_modules(self, report: EnvironmentReport) -> None:
-        for child in self.modules_container.winfo_children():
-            child.destroy()
-
-        for module in build_module_statuses(report):
-            card = ttk.Frame(self.modules_container, style="Card.TFrame", padding=12)
-            card.pack(fill=tk.X, pady=(0, 10))
-
-            ttk.Label(card, text=module.title, style="CardTitle.TLabel").pack(anchor=tk.W)
-            ttk.Label(card, text=module.description, style="CardBody.TLabel", wraplength=780).pack(anchor=tk.W, pady=(6, 0))
-            ttk.Label(card, text=f"Status: {module.status}", style="CardBody.TLabel").pack(anchor=tk.W, pady=(8, 0))
-
-    def _render_notes(self, report: EnvironmentReport) -> None:
-        payload = {
-            "notes": report.notes,
-            "next_steps": [
-                "Keep growing the client-facing panels and map-oriented route tools on top of the existing runtime bridge.",
-                "Add more curated Palworld-specific helper views while keeping host and client-safe flows separate.",
-                "Use the saved runtime bookmark deck plus map tools to support repeatable non-host multiplayer scouting routes.",
-                "Keep packaging and release automation ready for the next tagged build.",
-            ],
-        }
-
-        self.notes_text.configure(state=tk.NORMAL)
-        self.notes_text.delete("1.0", tk.END)
-        self.notes_text.insert("1.0", json.dumps(payload, indent=2, ensure_ascii=False))
-        self.notes_text.configure(state=tk.DISABLED)
-
-    def _render_runtime_commands(self) -> None:
-        self.runtime_text.configure(state=tk.NORMAL)
-        self.runtime_text.delete("1.0", tk.END)
-        self.runtime_text.insert("1.0", render_runtime_commands_text())
-        self.runtime_text.configure(state=tk.DISABLED)
-
-    def _render_map_tools(self) -> None:
-        self.map_overview_text.configure(state=tk.NORMAL)
-        self.map_overview_text.delete("1.0", tk.END)
-        self.map_overview_text.insert(
-            "1.0",
-            render_map_tools_text(
-                self.map_saved_bookmarks,
-                self.map_saved_routes,
-                self.tracked_collectibles,
-            ),
-        )
-        self.map_overview_text.configure(state=tk.DISABLED)
-
-        self._render_map_bookmarks()
-        self._render_map_routes()
-        self._render_collectible_entries()
-
-    def _refresh_runtime_bookmark_cache(self) -> None:
-        self.runtime_bookmarks = get_combined_runtime_bookmark_specs(self.runtime_saved_bookmarks)
-        self.runtime_saved_summary_var.set(
-            f"{len(self.runtime_saved_bookmarks)} saved bookmark(s) in your personal runtime library."
-        )
-
-    def _render_runtime_bookmarks(self, selected_key: str | None = None) -> None:
-        self._refresh_runtime_bookmark_cache()
-        current = self.get_selected_runtime_bookmark()
-        target_key = selected_key or (current.key if current else None)
-
-        self.runtime_bookmarks_listbox.delete(0, tk.END)
-        selected_index = 0
-        for index, bookmark in enumerate(self.runtime_bookmarks):
-            self.runtime_bookmarks_listbox.insert(tk.END, f"[{bookmark.origin}] {bookmark.title} [{bookmark.command}]")
-            if target_key and bookmark.key == target_key:
-                selected_index = index
-
-        if not self.runtime_bookmarks:
-            self._clear_runtime_editor()
-            self._render_runtime_bookmark_detail_message("Runtime bookmark list is empty.")
-            return
-
-        self.runtime_bookmarks_listbox.selection_set(selected_index)
-        self.runtime_bookmarks_listbox.activate(selected_index)
-        self.runtime_bookmarks_listbox.see(selected_index)
-        self._render_selected_runtime_bookmark(selected_index)
-
-    def refresh_runtime_monitor(self) -> None:
-        summary = parse_session_log(self.report.trainer_bridge_log_path)
-        self.runtime_summary = summary
-        filter_text = self.runtime_session_filter_var.get().strip()
-        matched_events = filter_session_events(summary.events, filter_text)
-        category_count = len(summary.category_counts)
-        category_label = "category" if category_count == 1 else "categories"
-        self.runtime_session_state_var.set(
-            f"Showing {len(matched_events)} event(s) from {len(summary.events)} captured event(s) across {category_count} {category_label}."
-        )
-
-        self.runtime_session_text.configure(state=tk.NORMAL)
-        self.runtime_session_text.delete("1.0", tk.END)
-        self.runtime_session_text.insert(
-            "1.0",
-            render_session_explorer_text(
-                summary,
-                filter_text=filter_text,
-                saved_bookmark_count=len(self.runtime_saved_bookmarks),
-            ),
-        )
-        self.runtime_session_text.configure(state=tk.DISABLED)
-
-    def on_runtime_bookmark_selection_changed(self, _event: object | None = None) -> None:
-        selection = self.runtime_bookmarks_listbox.curselection()
-        if not selection:
-            return
-        self._render_selected_runtime_bookmark(selection[0])
-
-    def _render_selected_runtime_bookmark(self, index: int) -> None:
-        if index >= len(self.runtime_bookmarks):
-            return
-
-        bookmark = self.runtime_bookmarks[index]
-        lines = [
-            bookmark.title,
-            "-" * len(bookmark.title),
-            f"Command    : {bookmark.command}",
-            f"Mode       : {bookmark.mode}",
-            f"Origin     : {bookmark.origin}",
-            f"Editable   : {'Yes' if bookmark.editable else 'No'}",
-            f"Description: {bookmark.description}",
-            "",
-            "Usage",
-            "-----",
-            "Built-ins can be cloned into your saved library, while saved bookmarks can be edited, imported, and exported.",
-        ]
-        self._render_runtime_bookmark_detail_message("\n".join(lines))
-        self._populate_runtime_editor(bookmark)
-
-    def _render_runtime_bookmark_detail_message(self, text: str) -> None:
-        self.runtime_bookmark_text.configure(state=tk.NORMAL)
-        self.runtime_bookmark_text.delete("1.0", tk.END)
-        self.runtime_bookmark_text.insert("1.0", text)
-        self.runtime_bookmark_text.configure(state=tk.DISABLED)
-
-    def _populate_runtime_editor(self, bookmark: RuntimeBookmarkSpec | None) -> None:
-        if not bookmark:
-            self._clear_runtime_editor()
-            return
-
-        self.runtime_editor_title_var.set(bookmark.title)
-        self.runtime_editor_command_var.set(bookmark.command)
-        self.runtime_editor_description_var.set(bookmark.description)
-
-    def _clear_runtime_editor(self) -> None:
-        self.runtime_editor_title_var.set("")
-        self.runtime_editor_command_var.set("")
-        self.runtime_editor_description_var.set("Saved runtime bookmark.")
-
-    def get_selected_runtime_bookmark(self) -> RuntimeBookmarkSpec | None:
-        selection = self.runtime_bookmarks_listbox.curselection()
-        if not selection:
-            return None
-
-        index = selection[0]
-        if index >= len(self.runtime_bookmarks):
-            return None
-
-        return self.runtime_bookmarks[index]
-
-    def copy_selected_runtime_bookmark(self) -> None:
-        bookmark = self.get_selected_runtime_bookmark()
-        if not bookmark:
-            messagebox.showwarning("Palworld Trainer", "Select a runtime bookmark first.")
-            return
-
-        self._copy_to_clipboard(bookmark.command, f"Copied runtime bookmark: {bookmark.command}")
-
-    def on_runtime_session_filter_changed(self, _event: object | None = None) -> None:
-        self.refresh_runtime_monitor()
-
-    def copy_runtime_session_explorer(self) -> None:
-        text = self.runtime_session_text.get("1.0", tk.END).strip()
-        if not text:
-            messagebox.showwarning("Palworld Trainer", "There is no session explorer output to copy yet.")
-            return
-
-        self._copy_to_clipboard(text, "Copied the current session explorer output.")
-
-    def export_runtime_session_events_to_file(self) -> None:
-        summary = self.runtime_summary or parse_session_log(self.report.trainer_bridge_log_path)
-        filter_text = self.runtime_session_filter_var.get().strip()
-        target = filedialog.asksaveasfilename(
-            title="Export filtered session events",
-            defaultextension=".json",
-            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
-            initialfile="palworld-session-events.json",
-        )
-        if not target:
-            return
-
-        try:
-            Path(target).write_text(export_session_events(summary, filter_text=filter_text), encoding="utf-8")
-        except OSError as exc:
-            messagebox.showerror("Palworld Trainer", f"Failed to export filtered session events.\n\n{exc}")
-            return
-
-        self.status_var.set(f"Exported filtered session events to {target}")
-
-    def new_runtime_saved_bookmark(self) -> None:
-        self.runtime_bookmarks_listbox.selection_clear(0, tk.END)
-        self._clear_runtime_editor()
-        self._render_runtime_bookmark_detail_message(
-            "Saved bookmark editor\n---------------------\n"
-            "Fill in a title, command, and description, then click Save Saved.\n"
-            "You can also select a built-in bookmark first and use it as a starting point."
-        )
-        self.status_var.set("Ready to create a new saved runtime bookmark.")
-
-    def save_runtime_saved_bookmark(self) -> None:
-        selected = self.get_selected_runtime_bookmark()
-        existing_key = selected.key if selected and selected.editable else None
-
-        try:
-            bookmark = build_saved_runtime_bookmark(
-                self.runtime_editor_title_var.get(),
-                self.runtime_editor_command_var.get(),
-                self.runtime_editor_description_var.get(),
-                key=existing_key,
-            )
-        except ValueError as exc:
-            messagebox.showwarning("Palworld Trainer", str(exc))
-            return
-
-        action = "Saved"
-        if existing_key:
-            for index, saved_bookmark in enumerate(self.runtime_saved_bookmarks):
-                if saved_bookmark.key == existing_key:
-                    self.runtime_saved_bookmarks[index] = bookmark
-                    action = "Updated"
-                    break
-        else:
-            self.runtime_saved_bookmarks = merge_runtime_bookmarks(self.runtime_saved_bookmarks, [bookmark])
-            for saved_bookmark in self.runtime_saved_bookmarks:
-                if saved_bookmark.title == bookmark.title and saved_bookmark.command == bookmark.command:
-                    bookmark = saved_bookmark
-                    break
-
-        self._persist_runtime_saved_bookmarks()
-        self._render_runtime_bookmarks(selected_key=bookmark.key)
-        self.refresh_runtime_monitor()
-        self.status_var.set(f"{action} runtime bookmark: {bookmark.title}")
-
-    def delete_selected_runtime_saved_bookmark(self) -> None:
-        selected = self.get_selected_runtime_bookmark()
-        if not selected or not selected.editable:
-            messagebox.showwarning("Palworld Trainer", "Select a saved runtime bookmark first.")
-            return
-
-        self.runtime_saved_bookmarks = [
-            bookmark for bookmark in self.runtime_saved_bookmarks if bookmark.key != selected.key
-        ]
-        self._persist_runtime_saved_bookmarks()
-        self._render_runtime_bookmarks()
-        self.refresh_runtime_monitor()
-        self.status_var.set(f"Deleted saved runtime bookmark: {selected.title}")
-
-    def export_runtime_saved_bookmarks_to_file(self) -> None:
-        if not self.runtime_saved_bookmarks:
-            messagebox.showwarning("Palworld Trainer", "There are no saved runtime bookmarks to export yet.")
-            return
-
-        target = filedialog.asksaveasfilename(
-            title="Export saved runtime bookmarks",
-            defaultextension=".json",
-            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
-            initialfile="palworld-runtime-bookmarks.json",
-        )
-        if not target:
-            return
-
-        try:
-            Path(target).write_text(export_runtime_bookmarks(self.runtime_saved_bookmarks), encoding="utf-8")
-        except OSError as exc:
-            messagebox.showerror("Palworld Trainer", f"Failed to export saved runtime bookmarks.\n\n{exc}")
-            return
-
-        self.status_var.set(f"Exported saved runtime bookmarks to {target}")
-
-    def import_runtime_saved_bookmarks_from_file(self) -> None:
-        source = filedialog.askopenfilename(
-            title="Import saved runtime bookmarks",
-            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
-        )
-        if not source:
-            return
-
-        try:
-            imported = import_runtime_bookmarks(Path(source).read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            messagebox.showerror("Palworld Trainer", f"Failed to import saved runtime bookmarks.\n\n{exc}")
-            return
-
-        self.runtime_saved_bookmarks = merge_runtime_bookmarks(self.runtime_saved_bookmarks, imported)
-        self._persist_runtime_saved_bookmarks()
-        self._render_runtime_bookmarks(selected_key=imported[0].key if imported else None)
-        self.refresh_runtime_monitor()
-        self.status_var.set(f"Imported {len(imported)} saved runtime bookmark(s) from {source}")
-
-    def _persist_runtime_saved_bookmarks(self) -> None:
-        self.settings.runtime_saved_bookmarks = list(self.runtime_saved_bookmarks)
-        save_settings(self.settings)
-
-    def _render_map_bookmarks(self, selected_key: str | None = None) -> None:
-        current = self.get_selected_map_bookmark()
-        target_key = selected_key or (current.key if current else None)
-        self.map_bookmark_summary_var.set(f"{len(self.map_saved_bookmarks)} saved map bookmark(s) in your scouting library.")
-
-        self.map_bookmarks_listbox.delete(0, tk.END)
-        selected_index = 0
-        for index, bookmark in enumerate(self.map_saved_bookmarks):
-            self.map_bookmarks_listbox.insert(tk.END, f"[{bookmark.category}] {bookmark.title} [{format_coordinates(bookmark)}]")
-            if target_key and bookmark.key == target_key:
-                selected_index = index
-
-        if not self.map_saved_bookmarks:
-            self._clear_map_bookmark_editor()
-            self._render_map_bookmark_detail_message("Map bookmark list is empty.")
-            return
-
-        self.map_bookmarks_listbox.selection_set(selected_index)
-        self.map_bookmarks_listbox.activate(selected_index)
-        self.map_bookmarks_listbox.see(selected_index)
-        self._render_selected_map_bookmark(selected_index)
-
-    def on_map_bookmark_selection_changed(self, _event: object | None = None) -> None:
-        selection = self.map_bookmarks_listbox.curselection()
-        if not selection:
-            return
-        self._render_selected_map_bookmark(selection[0])
-
-    def _render_selected_map_bookmark(self, index: int) -> None:
-        if index >= len(self.map_saved_bookmarks):
-            return
-
-        bookmark = self.map_saved_bookmarks[index]
-        tracked_count = len(
-            [collectible for collectible in self.tracked_collectibles if collectible.bookmark_key == bookmark.key]
-        )
-        self._render_map_bookmark_detail_message(
-            render_map_bookmark_detail_text(bookmark, tracked_count=tracked_count)
-        )
-        self._populate_map_bookmark_editor(bookmark)
-
-    def _render_map_bookmark_detail_message(self, text: str) -> None:
-        self.map_bookmark_detail_text.configure(state=tk.NORMAL)
-        self.map_bookmark_detail_text.delete("1.0", tk.END)
-        self.map_bookmark_detail_text.insert("1.0", text)
-        self.map_bookmark_detail_text.configure(state=tk.DISABLED)
-
-    def _populate_map_bookmark_editor(self, bookmark: MapBookmarkSpec | None) -> None:
-        if not bookmark:
-            self._clear_map_bookmark_editor()
-            return
-
-        self.map_bookmark_title_var.set(bookmark.title)
-        self.map_bookmark_category_var.set(bookmark.category)
-        self.map_bookmark_x_var.set(f"{bookmark.x:.1f}")
-        self.map_bookmark_y_var.set(f"{bookmark.y:.1f}")
-        self.map_bookmark_z_var.set(f"{bookmark.z:.1f}")
-        self.map_bookmark_notes_var.set(bookmark.notes)
-
-    def _clear_map_bookmark_editor(self) -> None:
-        self.map_bookmark_title_var.set("")
-        self.map_bookmark_category_var.set("note")
-        self.map_bookmark_x_var.set("")
-        self.map_bookmark_y_var.set("")
-        self.map_bookmark_z_var.set("")
-        self.map_bookmark_notes_var.set("Saved map bookmark.")
-
-    def get_selected_map_bookmark(self) -> MapBookmarkSpec | None:
-        selection = self.map_bookmarks_listbox.curselection()
-        if not selection:
-            return None
-
-        index = selection[0]
-        if index >= len(self.map_saved_bookmarks):
-            return None
-
-        return self.map_saved_bookmarks[index]
-
-    def _latest_location_text(self) -> str | None:
-        summary = self.runtime_summary or parse_session_log(self.report.trainer_bridge_log_path)
-        self.runtime_summary = summary
-        return summary.latest_player_location or summary.latest_world_location
-
-    def use_latest_session_position_for_bookmark(self) -> None:
-        location_text = self._latest_location_text()
-        if not location_text:
-            messagebox.showwarning(
-                "Palworld Trainer",
-                "No session coordinates are available yet. Refresh the Runtime monitor after loading into the game first.",
-            )
-            return
-
-        try:
-            bookmark = build_map_bookmark_from_location_text(
-                self.map_bookmark_title_var.get().strip() or "Captured Session Bookmark",
-                location_text,
-                self.map_bookmark_category_var.get(),
-                self.map_bookmark_notes_var.get(),
-            )
-        except ValueError as exc:
-            messagebox.showwarning("Palworld Trainer", str(exc))
-            return
-
-        self._populate_map_bookmark_editor(bookmark)
-        self.status_var.set(f"Loaded latest session coordinates into bookmark editor: {location_text}")
-
-    def copy_selected_map_coordinates(self) -> None:
-        bookmark = self.get_selected_map_bookmark()
-        if not bookmark:
-            messagebox.showwarning("Palworld Trainer", "Select a map bookmark first.")
-            return
-
-        self._copy_to_clipboard(format_coordinates(bookmark), f"Copied coordinates: {format_coordinates(bookmark)}")
-
-    def new_map_bookmark(self) -> None:
-        self.map_bookmarks_listbox.selection_clear(0, tk.END)
-        self._clear_map_bookmark_editor()
-        self._render_map_bookmark_detail_message(
-            "Map bookmark editor\n-------------------\n"
-            "Capture the latest session coordinates or enter X/Y/Z manually, then save the bookmark into your scouting library."
-        )
-        self.status_var.set("Ready to create a new map bookmark.")
-
-    def save_map_bookmark(self) -> None:
-        selected = self.get_selected_map_bookmark()
-        existing_key = selected.key if selected and selected.editable else None
-
-        try:
-            bookmark = build_map_bookmark(
-                self.map_bookmark_title_var.get(),
-                self.map_bookmark_x_var.get(),
-                self.map_bookmark_y_var.get(),
-                self.map_bookmark_z_var.get(),
-                self.map_bookmark_category_var.get(),
-                self.map_bookmark_notes_var.get(),
-                key=existing_key,
-            )
-        except ValueError as exc:
-            messagebox.showwarning("Palworld Trainer", str(exc))
-            return
-
-        action = "Saved"
-        if existing_key:
-            for index, saved_bookmark in enumerate(self.map_saved_bookmarks):
-                if saved_bookmark.key == existing_key:
-                    self.map_saved_bookmarks[index] = bookmark
-                    action = "Updated"
-                    break
-        else:
-            self.map_saved_bookmarks = merge_map_bookmarks(self.map_saved_bookmarks, [bookmark])
-            for saved_bookmark in self.map_saved_bookmarks:
-                if saved_bookmark.title == bookmark.title and saved_bookmark.key.startswith(bookmark.key):
-                    bookmark = saved_bookmark
-                    break
-
-        self._persist_map_tool_settings()
-        self._render_map_tools()
-        self._render_map_bookmarks(selected_key=bookmark.key)
-        self.status_var.set(f"{action} map bookmark: {bookmark.title}")
-
-    def delete_selected_map_bookmark(self) -> None:
-        selected = self.get_selected_map_bookmark()
-        if not selected or not selected.editable:
-            messagebox.showwarning("Palworld Trainer", "Select a saved map bookmark first.")
-            return
-
-        self.map_saved_bookmarks = [bookmark for bookmark in self.map_saved_bookmarks if bookmark.key != selected.key]
-        self._persist_map_tool_settings()
-        self._render_map_tools()
-        self.status_var.set(
-            f"Deleted map bookmark: {selected.title}. Routes or tracked spots referencing it will now show missing anchors."
-        )
-
-    def _render_map_routes(self, selected_key: str | None = None) -> None:
-        current = self.get_selected_map_route()
-        target_key = selected_key or (current.key if current else None)
-        self.map_route_summary_var.set(f"{len(self.map_saved_routes)} saved route(s) built from your map bookmark library.")
-
-        self.map_routes_listbox.delete(0, tk.END)
-        selected_index = 0
-        for index, route in enumerate(self.map_saved_routes):
-            self.map_routes_listbox.insert(tk.END, f"{route.title} [{len(route.bookmark_keys)} stops]")
-            if target_key and route.key == target_key:
-                selected_index = index
-
-        if not self.map_saved_routes:
-            self._clear_map_route_editor()
-            self._render_map_route_detail_message("Route library is empty.")
-            return
-
-        self.map_routes_listbox.selection_set(selected_index)
-        self.map_routes_listbox.activate(selected_index)
-        self.map_routes_listbox.see(selected_index)
-        self._render_selected_map_route(selected_index)
-
-    def on_map_route_selection_changed(self, _event: object | None = None) -> None:
-        selection = self.map_routes_listbox.curselection()
-        if not selection:
-            return
-        self._render_selected_map_route(selection[0])
-
-    def _render_selected_map_route(self, index: int) -> None:
-        if index >= len(self.map_saved_routes):
-            return
-
-        route = self.map_saved_routes[index]
-        self._render_map_route_detail_message(render_route_detail_text(route, self.map_saved_bookmarks))
-        self._populate_map_route_editor(route)
-
-    def _render_map_route_detail_message(self, text: str) -> None:
-        self.map_route_detail_text.configure(state=tk.NORMAL)
-        self.map_route_detail_text.delete("1.0", tk.END)
-        self.map_route_detail_text.insert("1.0", text)
-        self.map_route_detail_text.configure(state=tk.DISABLED)
-
-    def _populate_map_route_editor(self, route: RouteSpec | None) -> None:
-        if not route:
-            self._clear_map_route_editor()
-            return
-
-        self.map_route_title_var.set(route.title)
-        self.map_route_stops_var.set(", ".join(route.bookmark_keys))
-        self.map_route_description_var.set(route.description)
-
-    def _clear_map_route_editor(self) -> None:
-        self.map_route_title_var.set("")
-        self.map_route_stops_var.set("")
-        self.map_route_description_var.set("Saved route library entry.")
-
-    def get_selected_map_route(self) -> RouteSpec | None:
-        selection = self.map_routes_listbox.curselection()
-        if not selection:
-            return None
-
-        index = selection[0]
-        if index >= len(self.map_saved_routes):
-            return None
-
-        return self.map_saved_routes[index]
-
-    def append_selected_bookmark_to_route(self) -> None:
-        bookmark = self.get_selected_map_bookmark()
-        if not bookmark:
-            messagebox.showwarning("Palworld Trainer", "Select a map bookmark in the Bookmarks view first.")
-            return
-
-        self.map_route_stops_var.set(append_route_stop(self.map_route_stops_var.get(), bookmark.key))
-        self.status_var.set(f"Added bookmark to route editor: {bookmark.key}")
-
-    def new_map_route(self) -> None:
-        self.map_routes_listbox.selection_clear(0, tk.END)
-        self._clear_map_route_editor()
-        self._render_map_route_detail_message(
-            "Route editor\n------------\n"
-            "Enter a title plus one or more bookmark keys separated by commas, or append the selected bookmark from the Bookmarks subtab."
-        )
-        self.status_var.set("Ready to create a new route.")
-
-    def save_map_route(self) -> None:
-        selected = self.get_selected_map_route()
-        existing_key = selected.key if selected and selected.editable else None
-
-        try:
-            route = build_route_spec(
-                self.map_route_title_var.get(),
-                self.map_route_stops_var.get(),
-                self.map_route_description_var.get(),
-                key=existing_key,
-            )
-        except ValueError as exc:
-            messagebox.showwarning("Palworld Trainer", str(exc))
-            return
-
-        action = "Saved"
-        if existing_key:
-            for index, saved_route in enumerate(self.map_saved_routes):
-                if saved_route.key == existing_key:
-                    self.map_saved_routes[index] = route
-                    action = "Updated"
-                    break
-        else:
-            self.map_saved_routes = merge_route_specs(self.map_saved_routes, [route])
-            for saved_route in self.map_saved_routes:
-                if saved_route.title == route.title and saved_route.key.startswith(route.key):
-                    route = saved_route
-                    break
-
-        self._persist_map_tool_settings()
-        self._render_map_tools()
-        self._render_map_routes(selected_key=route.key)
-        self.status_var.set(f"{action} route: {route.title}")
-
-    def delete_selected_map_route(self) -> None:
-        selected = self.get_selected_map_route()
-        if not selected or not selected.editable:
-            messagebox.showwarning("Palworld Trainer", "Select a saved route first.")
-            return
-
-        self.map_saved_routes = [route for route in self.map_saved_routes if route.key != selected.key]
-        self._persist_map_tool_settings()
-        self._render_map_tools()
-        self.status_var.set(f"Deleted route: {selected.title}")
-
-    def _render_collectible_entries(self, selected_key: str | None = None) -> None:
-        current = self.get_selected_collectible_entry()
-        target_key = selected_key or (current.key if current else None)
-        self.collectible_summary_var.set(
-            f"{len(self.tracked_collectibles)} tracked spot(s) linked to your local bookmark library."
-        )
-
-        self.collectibles_listbox.delete(0, tk.END)
-        selected_index = 0
-        for index, collectible in enumerate(self.tracked_collectibles):
-            self.collectibles_listbox.insert(tk.END, f"[{collectible.status}] {collectible.title} [{collectible.bookmark_key}]")
-            if target_key and collectible.key == target_key:
-                selected_index = index
-
-        if not self.tracked_collectibles:
-            self._clear_collectible_editor()
-            self._render_collectible_detail_message("Collectible tracker is empty.")
-            return
-
-        self.collectibles_listbox.selection_set(selected_index)
-        self.collectibles_listbox.activate(selected_index)
-        self.collectibles_listbox.see(selected_index)
-        self._render_selected_collectible_entry(selected_index)
-
-    def on_collectible_selection_changed(self, _event: object | None = None) -> None:
-        selection = self.collectibles_listbox.curselection()
-        if not selection:
-            return
-        self._render_selected_collectible_entry(selection[0])
-
-    def _render_selected_collectible_entry(self, index: int) -> None:
-        if index >= len(self.tracked_collectibles):
-            return
-
-        collectible = self.tracked_collectibles[index]
-        self._render_collectible_detail_message(
-            render_collectible_detail_text(collectible, self.map_saved_bookmarks)
-        )
-        self._populate_collectible_editor(collectible)
-
-    def _render_collectible_detail_message(self, text: str) -> None:
-        self.collectible_detail_text.configure(state=tk.NORMAL)
-        self.collectible_detail_text.delete("1.0", tk.END)
-        self.collectible_detail_text.insert("1.0", text)
-        self.collectible_detail_text.configure(state=tk.DISABLED)
-
-    def _populate_collectible_editor(self, collectible: CollectibleSpec | None) -> None:
-        if not collectible:
-            self._clear_collectible_editor()
-            return
-
-        self.collectible_title_var.set(collectible.title)
-        self.collectible_bookmark_key_var.set(collectible.bookmark_key)
-        self.collectible_category_var.set(collectible.category)
-        self.collectible_status_var.set(collectible.status)
-        self.collectible_notes_var.set(collectible.notes)
-
-    def _clear_collectible_editor(self) -> None:
-        self.collectible_title_var.set("")
-        self.collectible_bookmark_key_var.set("")
-        self.collectible_category_var.set("collectible")
-        self.collectible_status_var.set("planned")
-        self.collectible_notes_var.set("Tracked collectible entry.")
-
-    def get_selected_collectible_entry(self) -> CollectibleSpec | None:
-        selection = self.collectibles_listbox.curselection()
-        if not selection:
-            return None
-
-        index = selection[0]
-        if index >= len(self.tracked_collectibles):
-            return None
-
-        return self.tracked_collectibles[index]
-
-    def use_selected_bookmark_for_collectible(self) -> None:
-        bookmark = self.get_selected_map_bookmark()
-        if not bookmark:
-            messagebox.showwarning("Palworld Trainer", "Select a map bookmark in the Bookmarks view first.")
-            return
-
-        self.collectible_bookmark_key_var.set(bookmark.key)
-        if not self.collectible_title_var.get().strip():
-            self.collectible_title_var.set(bookmark.title)
-        if self.collectible_category_var.get().strip() == "collectible":
-            self.collectible_category_var.set(bookmark.category)
-        self.status_var.set(f"Loaded bookmark into tracker editor: {bookmark.key}")
-
-    def new_collectible_entry(self) -> None:
-        self.collectibles_listbox.selection_clear(0, tk.END)
-        self._clear_collectible_editor()
-        self._render_collectible_detail_message(
-            "Tracker editor\n--------------\n"
-            "Link a tracked spot to one of your saved bookmark keys, then mark it as planned, tracking, or found."
-        )
-        self.status_var.set("Ready to create a new tracked spot.")
-
-    def save_collectible_entry(self) -> None:
-        selected = self.get_selected_collectible_entry()
-        existing_key = selected.key if selected and selected.editable else None
-
-        try:
-            collectible = build_collectible_spec(
-                self.collectible_title_var.get(),
-                self.collectible_bookmark_key_var.get(),
-                self.collectible_category_var.get(),
-                self.collectible_status_var.get(),
-                self.collectible_notes_var.get(),
-                key=existing_key,
-            )
-        except ValueError as exc:
-            messagebox.showwarning("Palworld Trainer", str(exc))
-            return
-
-        action = "Saved"
-        if existing_key:
-            for index, existing_collectible in enumerate(self.tracked_collectibles):
-                if existing_collectible.key == existing_key:
-                    self.tracked_collectibles[index] = collectible
-                    action = "Updated"
-                    break
-        else:
-            self.tracked_collectibles = merge_collectible_specs(self.tracked_collectibles, [collectible])
-            for existing_collectible in self.tracked_collectibles:
-                if existing_collectible.title == collectible.title and existing_collectible.key.startswith(collectible.key):
-                    collectible = existing_collectible
-                    break
-
-        self._persist_map_tool_settings()
-        self._render_map_tools()
-        self._render_collectible_entries(selected_key=collectible.key)
-        self.status_var.set(f"{action} tracked spot: {collectible.title}")
-
-    def delete_selected_collectible_entry(self) -> None:
-        selected = self.get_selected_collectible_entry()
-        if not selected or not selected.editable:
-            messagebox.showwarning("Palworld Trainer", "Select a tracked spot first.")
-            return
-
-        self.tracked_collectibles = [
-            collectible for collectible in self.tracked_collectibles if collectible.key != selected.key
-        ]
-        self._persist_map_tool_settings()
-        self._render_map_tools()
-        self.status_var.set(f"Deleted tracked spot: {selected.title}")
-
-    def mark_selected_collectible_found(self) -> None:
-        selected = self.get_selected_collectible_entry()
-        if not selected:
-            messagebox.showwarning("Palworld Trainer", "Select a tracked spot first.")
-            return
-
-        self.collectible_status_var.set("found")
-        self.save_collectible_entry()
-
-    def import_map_library_from_file(self) -> None:
-        source = filedialog.askopenfilename(
-            title="Import map tools library",
-            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
-        )
-        if not source:
-            return
-
-        try:
-            imported_bookmarks, imported_routes, imported_collectibles = import_map_library(
-                Path(source).read_text(encoding="utf-8")
-            )
-        except (OSError, ValueError) as exc:
-            messagebox.showerror("Palworld Trainer", f"Failed to import map tools library.\n\n{exc}")
-            return
-
-        self.map_saved_bookmarks = merge_map_bookmarks(self.map_saved_bookmarks, imported_bookmarks)
-        self.map_saved_routes = merge_route_specs(self.map_saved_routes, imported_routes)
-        self.tracked_collectibles = merge_collectible_specs(self.tracked_collectibles, imported_collectibles)
-        self._persist_map_tool_settings()
-        self._render_map_tools()
-        self.status_var.set(
-            f"Imported map library from {source}: {len(imported_bookmarks)} bookmark(s), {len(imported_routes)} route(s), {len(imported_collectibles)} tracked spot(s)."
-        )
-
-    def export_map_library_to_file(self) -> None:
-        if not self.map_saved_bookmarks and not self.map_saved_routes and not self.tracked_collectibles:
-            messagebox.showwarning("Palworld Trainer", "There is no map library data to export yet.")
-            return
-
-        target = filedialog.asksaveasfilename(
-            title="Export map tools library",
-            defaultextension=".json",
-            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
-            initialfile="palworld-map-library.json",
-        )
-        if not target:
-            return
-
-        try:
-            Path(target).write_text(
-                export_map_library(
-                    self.map_saved_bookmarks,
-                    self.map_saved_routes,
-                    self.tracked_collectibles,
-                ),
-                encoding="utf-8",
-            )
-        except OSError as exc:
-            messagebox.showerror("Palworld Trainer", f"Failed to export map tools library.\n\n{exc}")
-            return
-
-        self.status_var.set(f"Exported map tools library to {target}")
-
-    def _persist_map_tool_settings(self) -> None:
-        self.settings.map_saved_bookmarks = list(self.map_saved_bookmarks)
-        self.settings.map_saved_routes = list(self.map_saved_routes)
-        self.settings.tracked_collectibles = list(self.tracked_collectibles)
-        save_settings(self.settings)
-
-    def _render_host_commands(self) -> None:
-        self.host_commands_text.configure(state=tk.NORMAL)
-        self.host_commands_text.delete("1.0", tk.END)
-        self.host_commands_text.insert("1.0", render_host_commands_text())
-        self.host_commands_text.configure(state=tk.DISABLED)
-
-    def _get_selected_host_template_key(self) -> str:
-        return self.host_template_title_to_key[self.host_template_var.get()]
-
-    def refresh_host_template_form(self) -> None:
-        spec = get_host_command_template(self._get_selected_host_template_key())
-        self.host_template_summary_var.set(f"{spec.category}: {spec.description}")
-
-        for index, (label, entry, var) in enumerate(zip(self.host_arg_labels, self.host_arg_entries, self.host_composer_vars)):
-            if index < len(spec.arguments):
-                label.configure(text=spec.arguments[index])
-                label.grid()
-                entry.grid()
-            else:
-                var.set("")
-                label.grid_remove()
-                entry.grid_remove()
-
-        self._render_host_command_preview()
-
-    def on_host_filters_changed(self, _event: object | None = None) -> None:
-        self.refresh_host_results()
-
-    def on_host_template_changed(self, _event: object | None = None) -> None:
-        self.refresh_host_template_form()
-
-    def on_host_composer_input_changed(self, _event: object | None = None) -> None:
-        self._render_host_command_preview()
-
-    def refresh_host_results(self) -> None:
-        kind = self.host_kind_var.get().strip() or "item"
-        query = self.host_query_var.get().strip()
-        all_entries = self.host_catalogs.get(kind, [])
-
-        self.host_results_listbox.delete(0, tk.END)
-        self.host_search_results = []
-
-        if self.host_catalog_error:
-            self.host_result_count_var.set("Catalog load failed.")
-            self._render_host_detail_message(
-                "Host catalog error\n------------------\n"
-                f"{self.host_catalog_error}"
-            )
-            return
-
-        if not self.report.client_cheat_commands_enum_dir_exists:
-            self.host_result_count_var.set("ClientCheatCommands enum catalogs not detected.")
-            self._render_host_detail_message(
-                render_host_search_text(self.report.client_cheat_commands_enum_dir, kind, query, limit=20)
-            )
-            return
-
-        self.host_search_results = search_catalog(all_entries, query, limit=120)
-        self.host_result_count_var.set(
-            f"{len(self.host_search_results)} shown / {len(all_entries)} available in {kind}."
-        )
-
-        for entry in self.host_search_results:
-            self.host_results_listbox.insert(tk.END, f"{entry.label} [{entry.key}]")
-
-        if not self.host_search_results:
-            self._render_host_detail_message(
-                render_host_search_text(self.report.client_cheat_commands_enum_dir, kind, query, limit=20)
-            )
-            return
-
-        self.host_results_listbox.selection_set(0)
-        self.host_results_listbox.activate(0)
-        self.host_results_listbox.see(0)
-        self._render_selected_host_entry(self.host_search_results[0])
-        self._render_host_command_preview()
-
-    def on_host_selection_changed(self, _event: object | None = None) -> None:
-        entry = self.get_selected_host_entry()
-        if not entry:
-            return
-        self._render_selected_host_entry(entry)
-        self._render_host_command_preview()
-
-    def _render_selected_host_entry(self, entry: CatalogEntry) -> None:
-        self._render_host_detail_message(render_host_entry_text(entry))
-
-    def _render_host_detail_message(self, text: str) -> None:
-        self.host_detail_text.configure(state=tk.NORMAL)
-        self.host_detail_text.delete("1.0", tk.END)
-        self.host_detail_text.insert("1.0", text)
-        self.host_detail_text.configure(state=tk.DISABLED)
-
-    def _get_selected_asset_key_for_template(self) -> str | None:
-        spec = get_host_command_template(self._get_selected_host_template_key())
-        if not spec.asset_kind:
-            return None
-
-        entry = self.get_selected_host_entry()
-        if not entry or entry.kind != spec.asset_kind:
-            return None
-
-        return entry.key
-
-    def _render_host_command_preview(self) -> None:
-        spec = get_host_command_template(self._get_selected_host_template_key())
-        values = [var.get() for var in self.host_composer_vars]
-        selected_asset_key = self._get_selected_asset_key_for_template()
-        preview = compose_host_command(spec.key, values, selected_asset_key=selected_asset_key)
-
-        lines = [preview]
-        if selected_asset_key and spec.asset_argument_index is not None:
-            asset_value = values[spec.asset_argument_index].strip() if spec.asset_argument_index < len(values) else ""
-            if not asset_value:
-                lines.extend(["", f"Using selected {spec.asset_kind} asset: {selected_asset_key}"])
-
-        self.host_preview_text.configure(state=tk.NORMAL)
-        self.host_preview_text.delete("1.0", tk.END)
-        self.host_preview_text.insert("1.0", "\n".join(lines))
-        self.host_preview_text.configure(state=tk.DISABLED)
-
-    def get_selected_host_entry(self) -> CatalogEntry | None:
-        selection = self.host_results_listbox.curselection()
-        if not selection:
-            return None
-
-        index = selection[0]
-        if index >= len(self.host_search_results):
-            return None
-
-        return self.host_search_results[index]
-
-    def select_game_root(self) -> None:
-        initial = self.game_root_var.get() or str(self.report.repo_root.parent)
-        selected = filedialog.askdirectory(initialdir=initial, title="Select the Palworld game folder")
-        if not selected:
-            return
-        self.game_root_var.set(selected)
-        self.refresh_environment()
-
-    def open_repo_root(self) -> None:
-        self._open_path(self.report.repo_root)
-
-    def open_game_root(self) -> None:
-        if not self.report.game_root:
-            messagebox.showwarning("Palworld Trainer", "The game root has not been configured yet.")
-            return
-        self._open_path(self.report.game_root)
-
-    def open_ue4ss_mods(self) -> None:
-        if not self.report.game_root:
-            messagebox.showwarning("Palworld Trainer", "The game root has not been configured yet.")
-            return
-
-        mods_path = self.report.game_root / "Mods" / "NativeMods" / "UE4SS" / "Mods"
-        if not mods_path.exists():
-            messagebox.showwarning("Palworld Trainer", "UE4SS Mods folder was not found under the selected game root.")
-            return
-        self._open_path(mods_path)
-
-    def open_client_cheat_commands_enums(self) -> None:
-        if not self.report.client_cheat_commands_enum_dir:
-            messagebox.showwarning("Palworld Trainer", "ClientCheatCommands enum directory is not available yet.")
-            return
-
-        if not self.report.client_cheat_commands_enum_dir.exists():
-            messagebox.showwarning("Palworld Trainer", "ClientCheatCommands enum directory was not found.")
-            return
-
-        self._open_path(self.report.client_cheat_commands_enum_dir)
-
-    def deploy_ue4ss_bridge(self) -> None:
-        try:
-            message = deploy_bridge(self.report)
-        except Exception as exc:  # noqa: BLE001 - surface to the UI
-            messagebox.showerror("Palworld Trainer", f"Failed to deploy the UE4SS bridge.\n\n{exc}")
-            return
-
-        self.refresh_environment()
-        messagebox.showinfo("Palworld Trainer", message)
-
-    def open_bridge_target(self) -> None:
-        if not self.report.trainer_bridge_target:
-            messagebox.showwarning("Palworld Trainer", "Bridge target path is not available yet.")
-            return
-
-        if not self.report.trainer_bridge_target.exists():
-            messagebox.showwarning("Palworld Trainer", "The bridge has not been deployed yet.")
-            return
-
-        self._open_path(self.report.trainer_bridge_target)
-
-    def open_bridge_log(self) -> None:
-        if not self.report.trainer_bridge_log_path:
-            messagebox.showwarning("Palworld Trainer", "Bridge session log path is not available yet.")
-            return
-
-        if not self.report.trainer_bridge_log_path.exists():
-            messagebox.showwarning("Palworld Trainer", "The bridge session log has not been created yet.")
-            return
-
-        self._open_path(self.report.trainer_bridge_log_path)
-
-    def copy_selected_asset_key(self) -> None:
-        entry = self.get_selected_host_entry()
-        if not entry:
-            messagebox.showwarning("Palworld Trainer", "Select a catalog entry first.")
-            return
-
-        self._copy_to_clipboard(entry.key, f"Copied asset key: {entry.key}")
-
-    def copy_selected_host_command(self) -> None:
-        entry = self.get_selected_host_entry()
-        if not entry:
-            messagebox.showwarning("Palworld Trainer", "Select a catalog entry first.")
-            return
-
-        command = get_primary_entry_command(entry)
-        if not command:
-            messagebox.showwarning(
-                "Palworld Trainer",
-                "No ready-made command template is available for this catalog kind yet.",
-            )
-            return
-
-        self._copy_to_clipboard(command, f"Copied command template: {command}")
-
-    def apply_selected_asset_to_template(self) -> None:
-        spec = get_host_command_template(self._get_selected_host_template_key())
-        entry = self.get_selected_host_entry()
-
-        if not entry:
-            messagebox.showwarning("Palworld Trainer", "Select a catalog entry first.")
-            return
-
-        if spec.asset_kind is None or spec.asset_argument_index is None:
-            messagebox.showwarning("Palworld Trainer", "The current template does not accept asset input.")
-            return
-
-        if entry.kind != spec.asset_kind:
-            messagebox.showwarning(
-                "Palworld Trainer",
-                f"The current template expects a {spec.asset_kind} entry, but the selection is {entry.kind}.",
-            )
-            return
-
-        self.host_composer_vars[spec.asset_argument_index].set(entry.key)
-        self._render_host_command_preview()
-
-    def copy_host_preview_command(self) -> None:
-        spec = get_host_command_template(self._get_selected_host_template_key())
-        values = [var.get() for var in self.host_composer_vars]
-        selected_asset_key = self._get_selected_asset_key_for_template()
-        command = compose_host_command(spec.key, values, selected_asset_key=selected_asset_key)
-        self._copy_to_clipboard(command, f"Copied composed command: {command}")
-
-    def _copy_to_clipboard(self, text: str, status: str) -> None:
-        self.root.clipboard_clear()
-        self.root.clipboard_append(text)
-        self.root.update()
-        self.status_var.set(status)
-
-    def _open_path(self, path: Path) -> None:
-        try:
-            os.startfile(path)  # type: ignore[attr-defined]
-        except OSError as exc:
-            messagebox.showerror("Palworld Trainer", f"Failed to open path:\n{path}\n\n{exc}")
-
-    def run(self) -> None:
-        self.root.mainloop()
-
-
-def build_self_check_payload(settings: TrainerSettings) -> dict[str, object]:
-    report = scan_environment(settings)
-    return {
-        "repo_root": str(report.repo_root),
-        "game_root": str(report.game_root) if report.game_root else None,
-        "launcher_exists": report.launcher_exists,
-        "shipping_exists": report.shipping_exists,
-        "ue4ss_root_exists": report.ue4ss_root_exists,
-        "active_client_cheat_commands": report.active_client_cheat_commands,
-        "active_ue4ss_experimental": report.active_ue4ss_experimental,
-        "client_cheat_commands_mod_exists": report.client_cheat_commands_mod_exists,
-        "client_cheat_commands_enum_dir_exists": report.client_cheat_commands_enum_dir_exists,
-        "client_cheat_commands_enum_dir": (
-            str(report.client_cheat_commands_enum_dir) if report.client_cheat_commands_enum_dir else None
-        ),
-        "trainer_bridge_source_exists": report.trainer_bridge_source_exists,
-        "trainer_bridge_deployed": report.trainer_bridge_deployed,
-        "trainer_bridge_target": str(report.trainer_bridge_target) if report.trainer_bridge_target else None,
-        "trainer_bridge_log_exists": report.trainer_bridge_log_exists,
-        "trainer_bridge_log_path": str(report.trainer_bridge_log_path) if report.trainer_bridge_log_path else None,
-        "notes": report.notes,
-    }
-
-
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Palworld desktop trainer shell")
-    parser.add_argument("--version", action="version", version=f"Palworld Trainer {__version__}")
-    parser.add_argument("--self-check", action="store_true", help="Print the environment report as JSON and exit.")
-    parser.add_argument("--smoke-test", action="store_true", help="Exit immediately with success for packaged executable smoke tests.")
-    parser.add_argument("--build", action="store_true", help="Invoke the PowerShell build script and exit.")
-    parser.add_argument(
-        "--list-runtime-commands",
-        action="store_true",
-        help="Print the runtime command catalog and exit.",
-    )
-    parser.add_argument(
-        "--list-runtime-presets",
-        action="store_true",
-        help="Print the runtime preset catalog and exit.",
-    )
-    parser.add_argument(
-        "--list-runtime-bookmarks",
-        action="store_true",
-        help="Print the runtime bookmark catalog and exit.",
-    )
-    parser.add_argument(
-        "--list-saved-runtime-bookmarks",
-        action="store_true",
-        help="Print only the saved runtime bookmark library and exit.",
-    )
-    parser.add_argument(
-        "--session-summary",
-        action="store_true",
-        help="Parse the current bridge session log and print a summary.",
-    )
-    parser.add_argument(
-        "--session-events",
-        action="store_true",
-        help="Print the session explorer view with optional filtering.",
-    )
-    parser.add_argument(
-        "--session-filter",
-        metavar="TEXT",
-        default="",
-        help="Optional text filter for --session-events or --export-session-events.",
-    )
-    parser.add_argument(
-        "--export-runtime-bookmarks",
-        metavar="PATH",
-        help="Export the saved runtime bookmark library to a JSON file.",
-    )
-    parser.add_argument(
-        "--import-runtime-bookmarks",
-        metavar="PATH",
-        help="Import saved runtime bookmarks from a JSON file and merge them into settings.",
-    )
-    parser.add_argument(
-        "--export-session-events",
-        metavar="PATH",
-        help="Export filtered session events to a JSON file.",
-    )
-    parser.add_argument(
-        "--list-map-bookmarks",
-        action="store_true",
-        help="Print the saved map bookmark library and exit.",
-    )
-    parser.add_argument(
-        "--list-routes",
-        action="store_true",
-        help="Print the saved route library and exit.",
-    )
-    parser.add_argument(
-        "--list-collectibles",
-        action="store_true",
-        help="Print the tracked collectible library and exit.",
-    )
-    parser.add_argument(
-        "--export-map-library",
-        metavar="PATH",
-        help="Export the map bookmark, route, and collectible library to a JSON file.",
-    )
-    parser.add_argument(
-        "--import-map-library",
-        metavar="PATH",
-        help="Import map bookmarks, routes, and collectibles from a JSON file and merge them into settings.",
-    )
-    parser.add_argument(
-        "--list-host-commands",
-        action="store_true",
-        help="Print the host command catalog and exit.",
-    )
-    parser.add_argument(
-        "--list-host-templates",
-        action="store_true",
-        help="Print the host command composer templates and exit.",
-    )
-    parser.add_argument(
-        "--search-assets",
-        nargs=2,
-        metavar=("KIND", "QUERY"),
-        help="Search a ClientCheatCommands asset catalog such as item, pal, technology, or npc.",
-    )
-    parser.add_argument(
-        "--compose-host-command",
-        nargs="+",
-        metavar="PART",
-        help="Compose a host command from a named template and optional argument values.",
-    )
-    parser.add_argument(
-        "--search-limit",
-        type=int,
-        default=20,
-        help="Maximum number of asset search results to print with --search-assets.",
-    )
-    parser.add_argument(
-        "--deploy-ue4ss-bridge",
-        action="store_true",
-        help="Copy the repository UE4SS bridge mod into the configured game root.",
-    )
-    return parser.parse_args(argv)
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
-
-    if args.smoke_test:
-        return 0
-
-    settings = load_settings()
-
-    if args.self_check:
-        print(json.dumps(build_self_check_payload(settings), indent=2, ensure_ascii=False))
-        return 0
-
-    if args.build:
-        repo_root = scan_environment(settings).repo_root
-        build_script = repo_root / "scripts" / "build.ps1"
-        subprocess.run(
-            ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(build_script), "-Clean"],
-            check=True,
-        )
-        return 0
-
-    if args.list_runtime_commands:
-        print(render_runtime_commands_text())
-        return 0
-
-    if args.list_runtime_presets:
-        print(render_runtime_presets_text())
-        return 0
-
-    if args.list_runtime_bookmarks:
-        print(render_runtime_bookmarks_text(settings.runtime_saved_bookmarks))
-        return 0
-
-    if args.list_saved_runtime_bookmarks:
-        print(render_saved_runtime_bookmarks_text(settings.runtime_saved_bookmarks))
-        return 0
-
-    if args.session_summary:
-        report = scan_environment(settings)
-        summary = parse_session_log(report.trainer_bridge_log_path)
-        print(render_session_summary_text(summary, saved_bookmark_count=len(settings.runtime_saved_bookmarks)))
-        return 0
-
-    if args.session_events:
-        report = scan_environment(settings)
-        summary = parse_session_log(report.trainer_bridge_log_path)
-        print(
-            render_session_explorer_text(
-                summary,
-                filter_text=args.session_filter,
-                saved_bookmark_count=len(settings.runtime_saved_bookmarks),
-            )
-        )
-        return 0
-
-    if args.export_runtime_bookmarks:
-        export_path = Path(args.export_runtime_bookmarks)
-        export_path.write_text(export_runtime_bookmarks(settings.runtime_saved_bookmarks), encoding="utf-8")
-        print(f"Exported {len(settings.runtime_saved_bookmarks)} runtime bookmark(s) to {export_path}")
-        return 0
-
-    if args.import_runtime_bookmarks:
-        import_path = Path(args.import_runtime_bookmarks)
-        imported = import_runtime_bookmarks(import_path.read_text(encoding="utf-8"))
-        settings.runtime_saved_bookmarks = merge_runtime_bookmarks(settings.runtime_saved_bookmarks, imported)
-        save_settings(settings)
-        print(f"Imported {len(imported)} runtime bookmark(s) from {import_path}")
-        return 0
-
-    if args.export_session_events:
-        report = scan_environment(settings)
-        summary = parse_session_log(report.trainer_bridge_log_path)
-        export_path = Path(args.export_session_events)
-        export_path.write_text(export_session_events(summary, filter_text=args.session_filter), encoding="utf-8")
-        print(f"Exported filtered session events to {export_path}")
-        return 0
-
-    if args.list_map_bookmarks:
-        print(render_map_bookmarks_text(settings.map_saved_bookmarks))
-        return 0
-
-    if args.list_routes:
-        print(render_route_library_text(settings.map_saved_routes, settings.map_saved_bookmarks))
-        return 0
-
-    if args.list_collectibles:
-        print(render_collectible_tracker_text(settings.tracked_collectibles, settings.map_saved_bookmarks))
-        return 0
-
-    if args.export_map_library:
-        export_path = Path(args.export_map_library)
-        export_path.write_text(
-            export_map_library(
-                settings.map_saved_bookmarks,
-                settings.map_saved_routes,
-                settings.tracked_collectibles,
-            ),
-            encoding="utf-8",
-        )
-        print(
-            "Exported map tools library "
-            f"({len(settings.map_saved_bookmarks)} bookmark(s), {len(settings.map_saved_routes)} route(s), "
-            f"{len(settings.tracked_collectibles)} tracked spot(s)) to {export_path}"
-        )
-        return 0
-
-    if args.import_map_library:
-        import_path = Path(args.import_map_library)
-        imported_bookmarks, imported_routes, imported_collectibles = import_map_library(
-            import_path.read_text(encoding="utf-8")
-        )
-        settings.map_saved_bookmarks = merge_map_bookmarks(settings.map_saved_bookmarks, imported_bookmarks)
-        settings.map_saved_routes = merge_route_specs(settings.map_saved_routes, imported_routes)
-        settings.tracked_collectibles = merge_collectible_specs(
-            settings.tracked_collectibles,
-            imported_collectibles,
-        )
-        save_settings(settings)
-        print(
-            "Imported map tools library "
-            f"from {import_path}: {len(imported_bookmarks)} bookmark(s), "
-            f"{len(imported_routes)} route(s), {len(imported_collectibles)} tracked spot(s)"
-        )
-        return 0
-
-    if args.list_host_commands:
-        print(render_host_commands_text())
-        return 0
-
-    if args.list_host_templates:
-        print(render_host_templates_text())
-        return 0
-
-    if args.search_assets:
-        kind, query = args.search_assets
-        report = scan_environment(settings)
-        try:
-            print(render_host_search_text(report.client_cheat_commands_enum_dir, kind, query, limit=args.search_limit))
-        except ValueError as exc:
-            print(exc, file=sys.stderr)
-            return 2
-        return 0
-
-    if args.compose_host_command:
-        template, *values = args.compose_host_command
-        try:
-            print(compose_host_command(template, values))
-        except ValueError as exc:
-            print(exc, file=sys.stderr)
-            return 2
-        return 0
-
-    if args.deploy_ue4ss_bridge:
-        report = scan_environment(settings)
-        print(deploy_bridge(report))
-        return 0
-
-    app = TrainerApp(settings)
-    app.run()
+    root = tk.Tk()
+    TrainerApp(root, __version__)
+    root.mainloop()
     return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
