@@ -84,6 +84,106 @@ def help_command() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Experimental commands — supported by ClientCheatCommands v2+ (and forks).
+# Not all installations will have these. If the mod doesn't recognize the
+# command, the game just prints "unknown command" in chat; nothing breaks.
+# Names here come from the public chenstack-referenced command set and the
+# trainer community docs; trainer sends them as-is without validation.
+# ---------------------------------------------------------------------------
+
+
+def sanitize_command(raw: str) -> str:
+    """Normalize a free-form user-typed command.
+
+    - strips whitespace
+    - prepends ``@!`` if the user forgot
+    - collapses multiple leading ``@!`` / ``/`` tokens
+    """
+
+    text = raw.strip()
+    if not text:
+        return ""
+    while text.startswith("/"):
+        text = text[1:].lstrip()
+    if text.startswith("@!"):
+        return text
+    if text.startswith("!"):
+        return "@" + text
+    return "@!" + text
+
+
+@dataclass(frozen=True)
+class ExperimentalCommand:
+    """Metadata for a community-documented @! command.
+
+    The trainer bundles a canonical button for it, but explicitly marks
+    them as experimental because the installed ClientCheatCommands build
+    may or may not recognize them.
+    """
+
+    key: str
+    title: str
+    command: str
+    description: str
+
+
+EXPERIMENTAL_COMMANDS: tuple[ExperimentalCommand, ...] = (
+    ExperimentalCommand(
+        "godmode", "🛡 无敌 (God Mode)", "@!godmode",
+        "切换无敌状态，所有伤害免疫。",
+    ),
+    ExperimentalCommand(
+        "infstam", "⚡ 无限体力", "@!infstam",
+        "切换无限体力（不消耗 SP）。",
+    ),
+    ExperimentalCommand(
+        "infammo", "🔫 无限弹药", "@!infammo",
+        "切换无限弹药（背包和武器都不扣）。",
+    ),
+    ExperimentalCommand(
+        "nodur", "🛠 无耐久消耗", "@!nodur",
+        "切换装备/武器/工具耐久不减少。",
+    ),
+    ExperimentalCommand(
+        "noclip", "👻 穿墙 (Noclip)", "@!noclip",
+        "切换穿墙模式，可无视碰撞穿过建筑和地形。",
+    ),
+    ExperimentalCommand(
+        "unlockmap", "🗺 一键开图", "@!unlockmap",
+        "清除迷雾、解锁整张世界地图。",
+    ),
+    ExperimentalCommand(
+        "unlockrecipes", "📜 解锁所有配方", "@!unlockrecipes",
+        "解锁所有建造与制作配方（不消耗科技点）。",
+    ),
+    ExperimentalCommand(
+        "healfull", "❤ 全额治疗", "@!healfull",
+        "把玩家 HP/SP/饱食度/饮水度/体温全部补满。",
+    ),
+    ExperimentalCommand(
+        "fillstatus", "💊 清除负面状态", "@!fillstatus",
+        "清除中毒/冰冻/燃烧等所有负面状态。",
+    ),
+    ExperimentalCommand(
+        "homepoint", "🏠 回家", "@!homepoint",
+        "传送回上一次记录的家/营地。",
+    ),
+    ExperimentalCommand(
+        "duplast", "🔁 复制上次物品", "@!duplast",
+        "复制一份上次拖动/给予的物品（部分 mod 版本支持）。",
+    ),
+    ExperimentalCommand(
+        "giveallstatues", "🗿 全部翠叶鼠雕像", "@!giveallstatues",
+        "一次给予全部翠叶鼠（Lifmunk）雕像。",
+    ),
+    ExperimentalCommand(
+        "giveallnotes", "📖 全部手记", "@!giveallnotes",
+        "一次给予全部地图手记收集品。",
+    ),
+)
+
+
+# ---------------------------------------------------------------------------
 # Quick preset bundles
 #
 # The item keys used here come straight from the ClientCheatCommands

@@ -33,14 +33,24 @@ def _settings_dir_candidates() -> list[Path]:
     return candidates
 
 
-def get_settings_path() -> Path:
+def config_dir() -> Path:
+    """Return the writable config directory for the trainer.
+
+    Used both for ``settings.json`` and for sidecar files the engine wants
+    to keep across runs (``calibration.json``).
+    """
+
     for root in _settings_dir_candidates():
         try:
             root.mkdir(parents=True, exist_ok=True)
         except OSError:
             continue
-        return root / SETTINGS_FILE_NAME
-    return _settings_dir_candidates()[-1] / SETTINGS_FILE_NAME
+        return root
+    return _settings_dir_candidates()[-1]
+
+
+def get_settings_path() -> Path:
+    return config_dir() / SETTINGS_FILE_NAME
 
 
 def load_settings() -> TrainerSettings:
