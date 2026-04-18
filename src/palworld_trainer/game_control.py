@@ -185,7 +185,16 @@ def find_palworld_window(title_hints: tuple[str, ...] = DEFAULT_WINDOW_TITLES) -
 
 
 def is_game_running() -> bool:
-    return find_palworld_window() is not None
+    """Check whether Palworld is actually running by looking for its process.
+
+    Using the process name (Palworld-Win64-Shipping.exe) instead of the
+    window title avoids false positives from windows whose title happens
+    to contain "Palworld" (like this trainer itself).
+    """
+
+    from . import memory
+
+    return memory.find_process_id() is not None
 
 
 # ---------------------------------------------------------------------------

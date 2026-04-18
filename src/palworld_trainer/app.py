@@ -240,7 +240,6 @@ class TrainerApp:
             ("🚀 启动 Palworld", self._launch_game),
             ("🎮 连接游戏（外挂）", self._on_mem_attach),
             ("📂 打开游戏目录", self._open_game_dir),
-            ("❓ 显示游戏内命令帮助", lambda: self._send(cmd.help_command())),
         ]
         for index, (label, callback) in enumerate(buttons):
             ttk.Button(grid, text=label, style="Big.TButton", command=callback).grid(
