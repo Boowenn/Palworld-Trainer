@@ -1,6 +1,6 @@
 """Palworld Trainer — 傻瓜版主界面.
 
-界面分六个 Tab：常用 / 角色 / 物品 / 帕鲁 / 坐标 / 设置。
+界面分六个 Tab：常用功能 / 角色 / 物品 / 帕鲁 / 坐标 / 设置。
 每个按钮背后对应一条 ClientCheatCommands 的 @! 聊天命令，trainer 通过
 ``game_control.send_chat_command`` 直接打到游戏聊天框里。
 """
@@ -65,7 +65,7 @@ APP_TITLE = "Palworld 修改器"
 GITHUB_URL = "https://github.com/Boowenn/Palworld-Trainer"
 
 WINDOW_WIDTH = 960
-WINDOW_HEIGHT = 680
+WINDOW_HEIGHT = 720
 
 RESULT_CLEAR_MS = 6000
 
@@ -96,6 +96,8 @@ class TrainerApp:
         self.item_entries = self.catalogs.get("item", [])
         self.pal_entries = self.catalogs.get("pal", [])
         self.tech_entries = self.catalogs.get("technology", [])
+        self._item_entry_by_key = {entry.key: entry for entry in self.item_entries}
+        self._pal_entry_by_key = {entry.key: entry for entry in self.pal_entries}
         self.boss_points: tuple[BossTeleportPoint, ...] = BOSS_TELEPORT_POINTS
         self._boss_point_by_label: dict[str, BossTeleportPoint] = {
             point.label: point for point in self.boss_points
@@ -111,6 +113,7 @@ class TrainerApp:
             group.name: group for group in self.coord_groups if group.items
         }
         self._coord_entries = flatten_coord_groups(self.coord_groups)
+        self._coord_entry_by_label = {entry.label: entry for entry in self._coord_entries}
         self._current_coord_results: list[CoordPreset] = []
         self._result_clear_job: str | None = None
 
@@ -135,7 +138,6 @@ class TrainerApp:
         self._build_style()
         self._build_layout()
         self._refresh_status()
-        self._schedule_mem_refresh()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ------------------------------------------------------------------
@@ -242,7 +244,7 @@ class TrainerApp:
 
     def _build_common_tab(self) -> None:
         tab = ttk.Frame(self.notebook, padding=16)
-        self.notebook.add(tab, text="常用")
+        self.notebook.add(tab, text="常用功能")
 
         ttk.Label(tab, text="常用功能", style="SubHeader.TLabel").pack(anchor="w")
         ttk.Label(
@@ -488,6 +490,66 @@ class TrainerApp:
             wraplength=860,
         ).pack(anchor="w", pady=(4, 10))
 
+        favorite_frame = ttk.LabelFrame(tab, text="收藏夹", padding=(12, 8))
+        favorite_frame.pack(fill="x", pady=(0, 10))
+        ttk.Label(
+            favorite_frame,
+            text="把常用 Boss、商人、洞窟、传送点或基地点位收进这里，下次直接传，不用重新翻分类。",
+            style="Status.TLabel",
+            wraplength=840,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 6))
+
+        favorite_row = ttk.Frame(favorite_frame)
+        favorite_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(favorite_row, text="收藏点位:").pack(side="left")
+        self.coord_favorite_var = tk.StringVar()
+        self.coord_favorite_box = ttk.Combobox(
+            favorite_row,
+            textvariable=self.coord_favorite_var,
+            values=[],
+            state="readonly",
+            width=56,
+        )
+        self.coord_favorite_box.pack(side="left", padx=(6, 10), fill="x", expand=True)
+        self.coord_favorite_box.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self._update_coord_favorite_hint(),
+        )
+        ttk.Button(
+            favorite_row,
+            text="载入坐标",
+            style="Quiet.TButton",
+            command=self._load_selected_coord_favorite,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            favorite_row,
+            text="直接传过去",
+            style="Big.TButton",
+            command=self._teleport_selected_coord_favorite,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            favorite_row,
+            text="追加到路径",
+            style="Quiet.TButton",
+            command=self._append_selected_coord_favorite_to_route,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            favorite_row,
+            text="移除收藏",
+            style="Quiet.TButton",
+            command=self._remove_selected_coord_favorite,
+        ).pack(side="left")
+
+        self.coord_favorite_hint_label = ttk.Label(
+            favorite_frame,
+            text="",
+            style="Status.TLabel",
+            wraplength=840,
+            justify="left",
+        )
+        self.coord_favorite_hint_label.pack(anchor="w")
+
         preset_frame = ttk.LabelFrame(tab, text="通用坐标库", padding=(12, 8))
         preset_frame.pack(fill="x", pady=(0, 10))
 
@@ -570,6 +632,12 @@ class TrainerApp:
             text="追加到路径",
             style="Quiet.TButton",
             command=self._append_selected_coord_preset_to_route,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            preset_pick_row,
+            text="加入收藏",
+            style="Quiet.TButton",
+            command=self._add_selected_coord_preset_to_favorites,
         ).pack(side="left")
 
         self.coord_preset_hint_label = ttk.Label(
@@ -614,6 +682,12 @@ class TrainerApp:
             text="直接传过去",
             style="Big.TButton",
             command=self._teleport_selected_boss_preset,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            boss_row,
+            text="加入收藏",
+            style="Quiet.TButton",
+            command=self._add_selected_boss_preset_to_favorites,
         ).pack(side="left")
 
         self.boss_preset_hint_label = ttk.Label(
@@ -720,6 +794,7 @@ class TrainerApp:
             "# -280000, 85000, 12000\n",
         )
 
+        self._refresh_coord_favorites()
         self._refresh_coord_presets()
         self._update_boss_preset_hint()
 
@@ -836,9 +911,7 @@ class TrainerApp:
         if entry is None:
             self._show_result("先从坐标库里选一个点位。", ok=False)
             return
-        self.tp_x_var.set(f"{entry.x:g}")
-        self.tp_y_var.set(f"{entry.y:g}")
-        self.tp_z_var.set(f"{entry.z:g}")
+        self._set_coord_fields(entry.x, entry.y, entry.z)
         self._update_coord_preset_hint()
         self._show_result(f"已载入 {entry.label} 坐标。", ok=True)
 
@@ -847,26 +920,24 @@ class TrainerApp:
         if entry is None:
             self._show_result("先从坐标库里选一个点位。", ok=False)
             return
-        self.tp_x_var.set(f"{entry.x:g}")
-        self.tp_y_var.set(f"{entry.y:g}")
-        self.tp_z_var.set(f"{entry.z:g}")
-        ok, message = self._write_bridge_teleport_request(entry.x, entry.y, entry.z)
-        if ok:
-            self._show_result(f"已发送 {entry.label} 传送请求。", ok=True)
-        else:
-            self._show_result(message, ok=False)
+        self._teleport_to_coords(entry.x, entry.y, entry.z, entry.label)
 
     def _append_selected_coord_preset_to_route(self) -> None:
         entry = self._selected_coord_preset()
         if entry is None:
             self._show_result("先从坐标库里选一个点位。", ok=False)
             return
-        if not hasattr(self, "route_text"):
-            self._show_result("路径传送框还没初始化完成。", ok=False)
+        self._append_coords_to_route(entry.x, entry.y, entry.z, entry.label)
+
+    def _add_selected_coord_preset_to_favorites(self) -> None:
+        entry = self._selected_coord_preset()
+        if entry is None:
+            self._show_result("先从坐标库里选一个点位。", ok=False)
             return
-        self.route_text.insert("end", f"{entry.x:g} {entry.y:g} {entry.z:g}\n")
-        self.route_text.see("end")
-        self._show_result(f"已把 {entry.label} 追加到路径列表。", ok=True)
+        self._remember_value(self.settings.favorite_coord_labels, entry.label, limit=80)
+        save_settings(self.settings)
+        self._refresh_coord_favorites()
+        self._show_result(f"已把 {entry.label} 加入收藏夹。", ok=True)
 
     def _selected_boss_point(self) -> BossTeleportPoint | None:
         if not hasattr(self, "boss_preset_var"):
@@ -907,9 +978,7 @@ class TrainerApp:
             return
 
         safe_z = self._boss_point_safe_z(point)
-        self.tp_x_var.set(str(point.world_x))
-        self.tp_y_var.set(str(point.world_y))
-        self.tp_z_var.set(f"{safe_z:.0f}")
+        self._set_coord_fields(float(point.world_x), float(point.world_y), float(safe_z))
         self._update_boss_preset_hint()
         self._show_result(f"已载入 {point.label} 坐标。", ok=True)
 
@@ -920,18 +989,61 @@ class TrainerApp:
             return
 
         safe_z = self._boss_point_safe_z(point)
-        self.tp_x_var.set(str(point.world_x))
-        self.tp_y_var.set(str(point.world_y))
-        self.tp_z_var.set(f"{safe_z:.0f}")
-        ok, message = self._write_bridge_teleport_request(
+        self._teleport_to_coords(
             float(point.world_x),
             float(point.world_y),
             float(safe_z),
+            point.label,
         )
-        if ok:
-            self._show_result(f"已发送 {point.label} 传送请求。", ok=True)
-        else:
-            self._show_result(message, ok=False)
+
+    def _add_selected_boss_preset_to_favorites(self) -> None:
+        point = self._selected_boss_point()
+        if point is None:
+            self._show_result("先选一个 Boss。", ok=False)
+            return
+        self._remember_value(self.settings.favorite_coord_labels, point.label, limit=80)
+        save_settings(self.settings)
+        self._refresh_coord_favorites()
+        self._show_result(f"已把 {point.label} 加入收藏夹。", ok=True)
+
+    def _load_selected_coord_favorite(self) -> None:
+        entry = self._selected_coord_favorite()
+        if entry is None:
+            self._show_result("先选一个收藏点位。", ok=False)
+            return
+        label, x, y, z = entry
+        self._set_coord_fields(x, y, z)
+        self._update_coord_favorite_hint()
+        self._show_result(f"已载入 {label} 坐标。", ok=True)
+
+    def _teleport_selected_coord_favorite(self) -> None:
+        entry = self._selected_coord_favorite()
+        if entry is None:
+            self._show_result("先选一个收藏点位。", ok=False)
+            return
+        label, x, y, z = entry
+        self._teleport_to_coords(x, y, z, label)
+
+    def _append_selected_coord_favorite_to_route(self) -> None:
+        entry = self._selected_coord_favorite()
+        if entry is None:
+            self._show_result("先选一个收藏点位。", ok=False)
+            return
+        label, x, y, z = entry
+        self._append_coords_to_route(x, y, z, label)
+
+    def _remove_selected_coord_favorite(self) -> None:
+        label = self.coord_favorite_var.get().strip() if hasattr(self, "coord_favorite_var") else ""
+        if not label:
+            self._show_result("先选一个收藏点位。", ok=False)
+            return
+        if label not in self.settings.favorite_coord_labels:
+            self._show_result("这个点位不在收藏夹里。", ok=False)
+            return
+        self.settings.favorite_coord_labels.remove(label)
+        save_settings(self.settings)
+        self._refresh_coord_favorites()
+        self._show_result(f"已移除收藏：{label}。", ok=True)
 
     def _refresh_player_bridge_status(self) -> None:
         if not hasattr(self, "player_bridge_status_label"):
@@ -1091,23 +1203,94 @@ class TrainerApp:
 
         ttk.Separator(tab).pack(fill="x", pady=(4, 10))
 
+        shortcuts = ttk.LabelFrame(tab, text="常用物品", padding=(12, 8))
+        shortcuts.pack(fill="x", pady=(0, 10))
+        ttk.Label(
+            shortcuts,
+            text="桌面版那种常用逻辑补进来了：最近用过的和手动收藏的物品都会留在这里，后面可直接一键再发。",
+            style="Status.TLabel",
+            wraplength=840,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 6))
+
+        count_row = ttk.Frame(shortcuts)
+        count_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(count_row, text="数量快捷:").pack(side="left")
+        self.item_count_var = tk.StringVar(value=str(self.settings.custom_item_count))
+        for amount in (1, 10, 100, 999):
+            ttk.Button(
+                count_row,
+                text=str(amount),
+                style="Quiet.TButton",
+                command=lambda value=amount: self._set_numeric_var(self.item_count_var, value),
+            ).pack(side="left", padx=(6, 0))
+
+        recent_row = ttk.Frame(shortcuts)
+        recent_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(recent_row, text="最近给予:").pack(side="left")
+        self.item_recent_var = tk.StringVar()
+        self.item_recent_box = ttk.Combobox(
+            recent_row,
+            textvariable=self.item_recent_var,
+            values=[],
+            state="readonly",
+            width=42,
+        )
+        self.item_recent_box.pack(side="left", padx=(6, 10), fill="x", expand=True)
+        ttk.Button(
+            recent_row,
+            text="填入搜索",
+            style="Quiet.TButton",
+            command=self._load_recent_item_into_search,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            recent_row,
+            text="直接给予",
+            style="Quiet.TButton",
+            command=self._give_recent_item,
+        ).pack(side="left")
+
+        favorite_row = ttk.Frame(shortcuts)
+        favorite_row.pack(fill="x")
+        ttk.Label(favorite_row, text="收藏物品:").pack(side="left")
+        self.item_favorite_var = tk.StringVar()
+        self.item_favorite_box = ttk.Combobox(
+            favorite_row,
+            textvariable=self.item_favorite_var,
+            values=[],
+            state="readonly",
+            width=42,
+        )
+        self.item_favorite_box.pack(side="left", padx=(6, 10), fill="x", expand=True)
+        ttk.Button(
+            favorite_row,
+            text="直接给予",
+            style="Quiet.TButton",
+            command=self._give_favorite_item,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            favorite_row,
+            text="移除收藏",
+            style="Quiet.TButton",
+            command=self._remove_selected_item_favorite,
+        ).pack(side="left")
+
         ttk.Label(tab, text="单件物品查找", style="SubHeader.TLabel").pack(anchor="w")
         ttk.Label(
             tab,
-            text=f"当前物品目录共 {len(self.item_entries)} 条。支持模糊搜索。双击列表也会直接给予。",
+            text=f"当前物品目录共 {len(self.item_entries)} 条。支持按名称或内部 ID 搜索，双击列表也会直接给予。",
             style="Status.TLabel",
         ).pack(anchor="w", pady=(2, 8))
 
         search_row = ttk.Frame(tab)
         search_row.pack(fill="x")
-        ttk.Label(search_row, text="搜索：").pack(side="left")
+        ttk.Label(search_row, text="搜索名称 / ID：").pack(side="left")
         self.item_search_var = tk.StringVar()
         self.item_search_var.trace_add("write", lambda *_: self._refresh_item_list())
         ttk.Entry(search_row, textvariable=self.item_search_var).pack(
             side="left", padx=(4, 8), fill="x", expand=True
         )
         ttk.Label(search_row, text="数量：").pack(side="left", padx=(10, 0))
-        self.item_count_var = tk.StringVar(value=str(self.settings.custom_item_count))
         ttk.Entry(search_row, textvariable=self.item_count_var, width=6).pack(
             side="left", padx=(4, 0)
         )
@@ -1128,9 +1311,16 @@ class TrainerApp:
             text="💾 给自己选中物品",
             style="Big.TButton",
             command=self._on_give_selected_item,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            action_row,
+            text="⭐ 收藏选中物品",
+            style="Quiet.TButton",
+            command=self._add_selected_item_favorite,
         ).pack(side="left")
 
         self._refresh_item_list()
+        self._refresh_item_shortcuts()
 
     def _build_pals_tab(self) -> None:
         tab = ttk.Frame(self.notebook, padding=16)
@@ -1139,20 +1329,91 @@ class TrainerApp:
         ttk.Label(tab, text="生成帕鲁（仅房主/单机有效）", style="SubHeader.TLabel").pack(anchor="w")
         ttk.Label(
             tab,
-            text=f"当前帕鲁目录共 {len(self.pal_entries)} 条。双击列表也会直接生成。",
+            text=f"当前帕鲁目录共 {len(self.pal_entries)} 条。支持按名称或内部 ID 搜索，双击列表也会直接生成。",
             style="Status.TLabel",
         ).pack(anchor="w", pady=(2, 8))
 
+        shortcuts = ttk.LabelFrame(tab, text="常用帕鲁", padding=(12, 8))
+        shortcuts.pack(fill="x", pady=(0, 10))
+        ttk.Label(
+            shortcuts,
+            text="把常召的帕鲁留在这里，后面直接挑最近或收藏就能再生成。",
+            style="Status.TLabel",
+            wraplength=840,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 6))
+
+        count_row = ttk.Frame(shortcuts)
+        count_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(count_row, text="数量快捷:").pack(side="left")
+        self.pal_count_var = tk.StringVar(value=str(self.settings.custom_pal_count))
+        for amount in (1, 5, 10, 20):
+            ttk.Button(
+                count_row,
+                text=str(amount),
+                style="Quiet.TButton",
+                command=lambda value=amount: self._set_numeric_var(self.pal_count_var, value),
+            ).pack(side="left", padx=(6, 0))
+
+        recent_row = ttk.Frame(shortcuts)
+        recent_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(recent_row, text="最近生成:").pack(side="left")
+        self.pal_recent_var = tk.StringVar()
+        self.pal_recent_box = ttk.Combobox(
+            recent_row,
+            textvariable=self.pal_recent_var,
+            values=[],
+            state="readonly",
+            width=42,
+        )
+        self.pal_recent_box.pack(side="left", padx=(6, 10), fill="x", expand=True)
+        ttk.Button(
+            recent_row,
+            text="填入搜索",
+            style="Quiet.TButton",
+            command=self._load_recent_pal_into_search,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            recent_row,
+            text="直接生成",
+            style="Quiet.TButton",
+            command=self._spawn_recent_pal,
+        ).pack(side="left")
+
+        favorite_row = ttk.Frame(shortcuts)
+        favorite_row.pack(fill="x")
+        ttk.Label(favorite_row, text="收藏帕鲁:").pack(side="left")
+        self.pal_favorite_var = tk.StringVar()
+        self.pal_favorite_box = ttk.Combobox(
+            favorite_row,
+            textvariable=self.pal_favorite_var,
+            values=[],
+            state="readonly",
+            width=42,
+        )
+        self.pal_favorite_box.pack(side="left", padx=(6, 10), fill="x", expand=True)
+        ttk.Button(
+            favorite_row,
+            text="直接生成",
+            style="Quiet.TButton",
+            command=self._spawn_favorite_pal,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            favorite_row,
+            text="移除收藏",
+            style="Quiet.TButton",
+            command=self._remove_selected_pal_favorite,
+        ).pack(side="left")
+
         search_row = ttk.Frame(tab)
         search_row.pack(fill="x")
-        ttk.Label(search_row, text="搜索：").pack(side="left")
+        ttk.Label(search_row, text="搜索名称 / ID：").pack(side="left")
         self.pal_search_var = tk.StringVar()
         self.pal_search_var.trace_add("write", lambda *_: self._refresh_pal_list())
         ttk.Entry(search_row, textvariable=self.pal_search_var).pack(
             side="left", padx=(4, 8), fill="x", expand=True
         )
         ttk.Label(search_row, text="数量：").pack(side="left", padx=(10, 0))
-        self.pal_count_var = tk.StringVar(value=str(self.settings.custom_pal_count))
         ttk.Entry(search_row, textvariable=self.pal_count_var, width=6).pack(
             side="left", padx=(4, 0)
         )
@@ -1173,9 +1434,16 @@ class TrainerApp:
             text="🐉 生成选中帕鲁",
             style="Big.TButton",
             command=self._on_spawn_selected_pal,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            action_row,
+            text="⭐ 收藏选中帕鲁",
+            style="Quiet.TButton",
+            command=self._add_selected_pal_favorite,
         ).pack(side="left")
 
         self._refresh_pal_list()
+        self._refresh_pal_shortcuts()
 
     def _build_tech_tab(self) -> None:
         tab = ttk.Frame(self.notebook, padding=16)
@@ -1641,12 +1909,168 @@ class TrainerApp:
     # List refreshers
     # ------------------------------------------------------------------
 
+    def _set_numeric_var(self, variable: tk.StringVar, value: int) -> None:
+        variable.set(str(value))
+
+    def _catalog_display(self, entry: CatalogEntry) -> str:
+        return f"{entry.label} [{entry.key}]"
+
+    def _catalog_entry_from_display(
+        self,
+        display: str,
+        mapping: dict[str, CatalogEntry],
+    ) -> CatalogEntry | None:
+        text = display.strip()
+        if not text or not text.endswith("]") or "[" not in text:
+            return None
+        key = text.rsplit("[", 1)[1].removesuffix("]").strip()
+        return mapping.get(key)
+
+    def _refresh_combo_values(
+        self,
+        box: ttk.Combobox,
+        variable: tk.StringVar,
+        values: list[str],
+    ) -> None:
+        box.configure(values=values)
+        current = variable.get().strip()
+        if current not in values:
+            variable.set(values[0] if values else "")
+
+    def _remember_value(self, bucket: list[str], value: str, limit: int = 10) -> None:
+        if value in bucket:
+            bucket.remove(value)
+        bucket.insert(0, value)
+        del bucket[limit:]
+
+    def _catalog_values_for_keys(
+        self,
+        keys: list[str],
+        mapping: dict[str, CatalogEntry],
+    ) -> list[str]:
+        return [
+            self._catalog_display(entry)
+            for key in keys
+            if (entry := mapping.get(key)) is not None
+        ]
+
+    def _refresh_item_shortcuts(self) -> None:
+        if hasattr(self, "item_recent_box"):
+            self._refresh_combo_values(
+                self.item_recent_box,
+                self.item_recent_var,
+                self._catalog_values_for_keys(
+                    self.settings.recent_item_ids,
+                    self._item_entry_by_key,
+                ),
+            )
+        if hasattr(self, "item_favorite_box"):
+            self._refresh_combo_values(
+                self.item_favorite_box,
+                self.item_favorite_var,
+                self._catalog_values_for_keys(
+                    self.settings.favorite_item_ids,
+                    self._item_entry_by_key,
+                ),
+            )
+
+    def _refresh_pal_shortcuts(self) -> None:
+        if hasattr(self, "pal_recent_box"):
+            self._refresh_combo_values(
+                self.pal_recent_box,
+                self.pal_recent_var,
+                self._catalog_values_for_keys(
+                    self.settings.recent_pal_ids,
+                    self._pal_entry_by_key,
+                ),
+            )
+        if hasattr(self, "pal_favorite_box"):
+            self._refresh_combo_values(
+                self.pal_favorite_box,
+                self.pal_favorite_var,
+                self._catalog_values_for_keys(
+                    self.settings.favorite_pal_ids,
+                    self._pal_entry_by_key,
+                ),
+            )
+
+    def _saved_coord_labels(self) -> list[str]:
+        labels: list[str] = []
+        for label in self.settings.favorite_coord_labels:
+            if label in self._coord_entry_by_label or label in self._boss_point_by_label:
+                labels.append(label)
+        return labels
+
+    def _refresh_coord_favorites(self) -> None:
+        if not hasattr(self, "coord_favorite_box"):
+            return
+        self._refresh_combo_values(
+            self.coord_favorite_box,
+            self.coord_favorite_var,
+            self._saved_coord_labels(),
+        )
+        self._update_coord_favorite_hint()
+
+    def _resolve_saved_coord_label(
+        self,
+        label: str,
+    ) -> tuple[str, float, float, float] | None:
+        coord = self._coord_entry_by_label.get(label)
+        if coord is not None:
+            return coord.label, coord.x, coord.y, coord.z
+
+        boss = self._boss_point_by_label.get(label)
+        if boss is None:
+            return None
+        safe_z = self._boss_point_safe_z(boss)
+        return boss.label, float(boss.world_x), float(boss.world_y), float(safe_z)
+
+    def _selected_coord_favorite(self) -> tuple[str, float, float, float] | None:
+        if not hasattr(self, "coord_favorite_var"):
+            return None
+        return self._resolve_saved_coord_label(self.coord_favorite_var.get().strip())
+
+    def _update_coord_favorite_hint(self) -> None:
+        if not hasattr(self, "coord_favorite_hint_label"):
+            return
+        entry = self._selected_coord_favorite()
+        if entry is None:
+            self.coord_favorite_hint_label.configure(
+                text="还没有收藏点位；在下方通用坐标库或 Boss 直达里选中后点「加入收藏」。"
+            )
+            return
+        label, x, y, z = entry
+        self.coord_favorite_hint_label.configure(
+            text=f"{label} -> X={x:g}  Y={y:g}  Z={z:g}。可直接传送，也可塞进路径传送。"
+        )
+
+    def _set_coord_fields(self, x: float, y: float, z: float) -> None:
+        self.tp_x_var.set(f"{x:g}")
+        self.tp_y_var.set(f"{y:g}")
+        self.tp_z_var.set(f"{z:g}")
+
+    def _teleport_to_coords(self, x: float, y: float, z: float, label: str) -> None:
+        self._set_coord_fields(x, y, z)
+        ok, message = self._write_bridge_teleport_request(x, y, z)
+        if ok:
+            self._show_result(f"已发送 {label} 传送请求。", ok=True)
+        else:
+            self._show_result(message, ok=False)
+
+    def _append_coords_to_route(self, x: float, y: float, z: float, label: str) -> None:
+        if not hasattr(self, "route_text"):
+            self._show_result("路径传送框还没初始化完成。", ok=False)
+            return
+        self.route_text.insert("end", f"{x:g} {y:g} {z:g}\n")
+        self.route_text.see("end")
+        self._show_result(f"已把 {label} 追加到路径列表。", ok=True)
+
     def _refresh_item_list(self) -> None:
         query = self.item_search_var.get()
         results = search_catalog(self.item_entries, query, limit=400)
         self.item_listbox.delete(0, "end")
         for entry in results:
-            self.item_listbox.insert("end", f"{entry.label}   [{entry.key}]")
+            self.item_listbox.insert("end", self._catalog_display(entry))
         self._current_item_results = results
 
     def _refresh_pal_list(self) -> None:
@@ -1654,7 +2078,7 @@ class TrainerApp:
         results = search_catalog(self.pal_entries, query, limit=400)
         self.pal_listbox.delete(0, "end")
         for entry in results:
-            self.pal_listbox.insert("end", f"{entry.label}   [{entry.key}]")
+            self.pal_listbox.insert("end", self._catalog_display(entry))
         self._current_pal_results = results
 
     def _refresh_tech_list(self) -> None:
@@ -1693,41 +2117,7 @@ class TrainerApp:
         except ValueError:
             self._show_result("坐标必须是数字。", ok=False)
             return
-
-        ok, message = self._write_bridge_teleport_request(x, y, z)
-        if ok:
-            self._show_result(
-                f"已发送坐标传送请求：({x:g}, {y:g}, {z:g})。",
-                ok=True,
-            )
-        else:
-            self._show_result(message, ok=False)
-        return
-        try:
-            x = float(self.tp_x_var.get())
-            y = float(self.tp_y_var.get())
-            z = float(self.tp_z_var.get())
-        except ValueError:
-            self._show_result("坐标必须是数字。", ok=False)
-            return
-
-        self._send_with_label(cmd.teleport(x, y, z), f"传送到坐标 ({x:g}, {y:g}, {z:g})")
-        return
-        for slot in POSITION_SLOTS:
-            if not self.mem.is_locked(slot):
-                self._show_result("先锁定 pos_x/y/z 地址，才能传送。", ok=False)
-                return
-        try:
-            x = float(self.tp_x_var.get())
-            y = float(self.tp_y_var.get())
-            z = float(self.tp_z_var.get())
-        except ValueError:
-            self._show_result("坐标必须是数字。", ok=False)
-            return
-        self.mem.write_slot_value("pos_x", x)
-        self.mem.write_slot_value("pos_y", y)
-        self.mem.write_slot_value("pos_z", z)
-        self._show_result(f"已传送到 ({x:g}, {y:g}, {z:g})", ok=True)
+        self._teleport_to_coords(x, y, z, f"坐标 ({x:g}, {y:g}, {z:g})")
 
     def _on_mem_fly(self, enabled: bool) -> None:
         label = "开启飞行" if enabled else "关闭飞行"
@@ -1737,28 +2127,11 @@ class TrainerApp:
         if bridge_ok:
             label = f"{label}（bridge + 命令双保险）"
         self._send_with_label(cmd.fly(enabled), label)
-        return
-        if not self.mem.is_locked("move_mode"):
-            self._show_result("先锁定 move_mode 地址。", ok=False)
-            return
-        value = 5 if enabled else 1
-        self.mem.set_slot_target("move_mode", float(value))
-        self.mem.set_slot_freeze("move_mode", True)
-        var = self._mem_slot_vars.get("move_mode")
-        if var:
-            var.set(True)
-        entry = self._mem_target_entries.get("move_mode")
-        if entry:
-            entry.set(str(value))
-        label = "飞行" if enabled else "行走"
-        self._show_result(f"已切换到{label}模式（move_mode={value}）。", ok=True)
 
     def _on_mem_read_pos(self) -> None:
         status = self._read_bridge_status()
         if status.player_valid:
-            self.tp_x_var.set(f"{status.position_x:g}")
-            self.tp_y_var.set(f"{status.position_y:g}")
-            self.tp_z_var.set(f"{status.position_z:g}")
+            self._set_coord_fields(status.position_x, status.position_y, status.position_z)
             self._show_result("已从增强模块读取当前位置。", ok=True)
             return
 
@@ -1766,23 +2139,6 @@ class TrainerApp:
             cmd.get_position(),
             "读取当前位置（结果会显示在游戏聊天框）",
         )
-        return
-        self._send_with_label(
-            cmd.get_position(),
-            "读取当前位置（结果会显示在游戏聊天框）",
-        )
-        return
-        for slot, var in (
-            ("pos_x", self.tp_x_var),
-            ("pos_y", self.tp_y_var),
-            ("pos_z", self.tp_z_var),
-        ):
-            v = self.mem.read_current_value(slot)
-            if v is None:
-                self._show_result(f"无法读取 {slot}，先锁定地址。", ok=False)
-                return
-            var.set(f"{v:g}")
-        self._show_result("已读取当前坐标。", ok=True)
 
     # ------------------------------------------------------------------
     # Route teleport
@@ -1860,115 +2216,6 @@ class TrainerApp:
             )
 
         threading.Thread(target=worker, daemon=True).start()
-        return
-        coords = self._parse_route_coords()
-        if not coords:
-            self._show_result("请至少填写一行 X Y Z 坐标。", ok=False)
-            return
-        try:
-            delay = max(0.5, float(self.route_delay_var.get()))
-        except ValueError:
-            delay = 3.0
-
-        self._route_stop_event.clear()
-        self.route_start_btn.configure(state="disabled")
-        self.route_stop_btn.configure(state="normal")
-        self._show_result(
-            f"开始路径传送，共 {len(coords)} 个点，每点停留 {delay:.1f}s。",
-            ok=True,
-            pending=True,
-        )
-
-        def worker() -> None:
-            for idx, (x, y, z) in enumerate(coords, 1):
-                if self._route_stop_event.is_set():
-                    self.root.after(
-                        0,
-                        lambda done=idx - 1, total=len(coords): self._route_done(
-                            f"路径传送已停止（已发送 {done}/{total} 个点）。"
-                        ),
-                    )
-                    return
-
-                self.root.after(
-                    0,
-                    lambda i=idx, total=len(coords): self.route_progress_label.configure(
-                        text=f"[{i}/{total}]"
-                    ),
-                )
-                result = game_control.send_chat_command(cmd.teleport(x, y, z))
-                if not result.ok:
-                    self.root.after(
-                        0,
-                        lambda message=result.message: self._route_done(message, ok=False),
-                    )
-                    return
-                self._route_stop_event.wait(delay)
-
-            self.root.after(
-                0,
-                lambda total=len(coords): self._route_done(
-                    f"路径传送完成，共发送 {total} 个点。"
-                ),
-            )
-
-        threading.Thread(target=worker, daemon=True).start()
-        return
-        for slot in POSITION_SLOTS:
-            if not self.mem.is_locked(slot):
-                self._show_result("先锁定 pos_x/y/z 地址，才能路径传送。", ok=False)
-                return
-        coords = self._parse_route_coords()
-        if not coords:
-            self._show_result("没有有效坐标。每行一组 X Y Z。", ok=False)
-            return
-        try:
-            delay = max(0.5, float(self.route_delay_var.get()))
-        except ValueError:
-            delay = 3.0
-        self._route_stop_event.clear()
-        self.route_start_btn.configure(state="disabled")
-        self.route_stop_btn.configure(state="normal")
-        self._show_result(
-            f"路径传送启动：共 {len(coords)} 个点，每点停 {delay:.1f}s。",
-            ok=True,
-            pending=True,
-        )
-
-        def worker() -> None:
-            for idx, (x, y, z) in enumerate(coords, 1):
-                if self._route_stop_event.is_set():
-                    self.root.after(
-                        0, lambda: self._route_done(f"路径传送已手动停止（{idx-1}/{len(coords)}）。")
-                    )
-                    return
-                self.root.after(
-                    0,
-                    lambda i=idx, total=len(coords): self.route_progress_label.configure(
-                        text=f"[{i}/{total}]"
-                    ),
-                )
-                ok = (
-                    self.mem.write_slot_value("pos_x", x)
-                    and self.mem.write_slot_value("pos_y", y)
-                    and self.mem.write_slot_value("pos_z", z)
-                )
-                if not ok:
-                    self.root.after(
-                        0,
-                        lambda: self._route_done(
-                            "传送失败：坐标地址未锁定或进程已断开。"
-                        ),
-                    )
-                    return
-                # Wait between teleports so the game can trigger pickups
-                self._route_stop_event.wait(delay)
-            self.root.after(
-                0,
-                lambda: self._route_done(f"路径传送完成！共 {len(coords)} 个点。"),
-            )
-
-        threading.Thread(target=worker, daemon=True).start()
 
     def _on_route_stop(self) -> None:
         self._route_stop_event.set()
@@ -1993,17 +2240,127 @@ class TrainerApp:
         except ValueError:
             return default
 
+    def _give_item_entry(self, entry: CatalogEntry) -> None:
+        count = self._parse_count(self.item_count_var.get())
+        self.settings.custom_item_count = count
+        self._remember_recent(self.settings.recent_item_ids, entry.key)
+        save_settings(self.settings)
+        self._refresh_item_shortcuts()
+        self._send(cmd.giveme(entry.key, count))
+
+    def _spawn_pal_entry(self, entry: CatalogEntry) -> None:
+        count = self._parse_count(self.pal_count_var.get())
+        self.settings.custom_pal_count = count
+        self._remember_recent(self.settings.recent_pal_ids, entry.key)
+        save_settings(self.settings)
+        self._refresh_pal_shortcuts()
+        self._send(cmd.spawn_pal(entry.key, count))
+
+    def _load_recent_item_into_search(self) -> None:
+        entry = self._catalog_entry_from_display(self.item_recent_var.get(), self._item_entry_by_key)
+        if entry is None:
+            self._show_result("最近列表里还没有可用物品。", ok=False)
+            return
+        self.item_search_var.set(entry.key)
+        self._show_result(f"已把 {entry.label} 填入搜索框。", ok=True)
+
+    def _give_recent_item(self) -> None:
+        entry = self._catalog_entry_from_display(self.item_recent_var.get(), self._item_entry_by_key)
+        if entry is None:
+            self._show_result("最近列表里还没有可用物品。", ok=False)
+            return
+        self._give_item_entry(entry)
+
+    def _give_favorite_item(self) -> None:
+        entry = self._catalog_entry_from_display(
+            self.item_favorite_var.get(),
+            self._item_entry_by_key,
+        )
+        if entry is None:
+            self._show_result("先选一个收藏物品。", ok=False)
+            return
+        self._give_item_entry(entry)
+
+    def _add_selected_item_favorite(self) -> None:
+        selection = self.item_listbox.curselection()
+        if not selection:
+            self._show_result("先在列表里选一项物品。", ok=False)
+            return
+        entry = self._current_item_results[selection[0]]
+        self._remember_value(self.settings.favorite_item_ids, entry.key, limit=40)
+        save_settings(self.settings)
+        self._refresh_item_shortcuts()
+        self._show_result(f"已收藏物品：{entry.label}。", ok=True)
+
+    def _remove_selected_item_favorite(self) -> None:
+        entry = self._catalog_entry_from_display(
+            self.item_favorite_var.get(),
+            self._item_entry_by_key,
+        )
+        if entry is None:
+            self._show_result("先选一个收藏物品。", ok=False)
+            return
+        if entry.key not in self.settings.favorite_item_ids:
+            self._show_result("这个物品不在收藏里。", ok=False)
+            return
+        self.settings.favorite_item_ids.remove(entry.key)
+        save_settings(self.settings)
+        self._refresh_item_shortcuts()
+        self._show_result(f"已移除收藏：{entry.label}。", ok=True)
+
+    def _load_recent_pal_into_search(self) -> None:
+        entry = self._catalog_entry_from_display(self.pal_recent_var.get(), self._pal_entry_by_key)
+        if entry is None:
+            self._show_result("最近列表里还没有可用帕鲁。", ok=False)
+            return
+        self.pal_search_var.set(entry.key)
+        self._show_result(f"已把 {entry.label} 填入搜索框。", ok=True)
+
+    def _spawn_recent_pal(self) -> None:
+        entry = self._catalog_entry_from_display(self.pal_recent_var.get(), self._pal_entry_by_key)
+        if entry is None:
+            self._show_result("最近列表里还没有可用帕鲁。", ok=False)
+            return
+        self._spawn_pal_entry(entry)
+
+    def _spawn_favorite_pal(self) -> None:
+        entry = self._catalog_entry_from_display(self.pal_favorite_var.get(), self._pal_entry_by_key)
+        if entry is None:
+            self._show_result("先选一个收藏帕鲁。", ok=False)
+            return
+        self._spawn_pal_entry(entry)
+
+    def _add_selected_pal_favorite(self) -> None:
+        selection = self.pal_listbox.curselection()
+        if not selection:
+            self._show_result("先在列表里选一只帕鲁。", ok=False)
+            return
+        entry = self._current_pal_results[selection[0]]
+        self._remember_value(self.settings.favorite_pal_ids, entry.key, limit=40)
+        save_settings(self.settings)
+        self._refresh_pal_shortcuts()
+        self._show_result(f"已收藏帕鲁：{entry.label}。", ok=True)
+
+    def _remove_selected_pal_favorite(self) -> None:
+        entry = self._catalog_entry_from_display(self.pal_favorite_var.get(), self._pal_entry_by_key)
+        if entry is None:
+            self._show_result("先选一个收藏帕鲁。", ok=False)
+            return
+        if entry.key not in self.settings.favorite_pal_ids:
+            self._show_result("这只帕鲁不在收藏里。", ok=False)
+            return
+        self.settings.favorite_pal_ids.remove(entry.key)
+        save_settings(self.settings)
+        self._refresh_pal_shortcuts()
+        self._show_result(f"已移除收藏：{entry.label}。", ok=True)
+
     def _on_give_selected_item(self) -> None:
         selection = self.item_listbox.curselection()
         if not selection:
             self._show_result("先在列表里选一项物品。", ok=False)
             return
         entry = self._current_item_results[selection[0]]
-        count = self._parse_count(self.item_count_var.get())
-        self.settings.custom_item_count = count
-        self._remember_recent(self.settings.recent_item_ids, entry.key)
-        save_settings(self.settings)
-        self._send(cmd.giveme(entry.key, count))
+        self._give_item_entry(entry)
 
     def _on_spawn_selected_pal(self) -> None:
         selection = self.pal_listbox.curselection()
@@ -2011,11 +2368,7 @@ class TrainerApp:
             self._show_result("先在列表里选一只帕鲁。", ok=False)
             return
         entry = self._current_pal_results[selection[0]]
-        count = self._parse_count(self.pal_count_var.get())
-        self.settings.custom_pal_count = count
-        self._remember_recent(self.settings.recent_pal_ids, entry.key)
-        save_settings(self.settings)
-        self._send(cmd.spawn_pal(entry.key, count))
+        self._spawn_pal_entry(entry)
 
     def _on_unlock_selected_tech(self) -> None:
         selection = self.tech_listbox.curselection()
@@ -2026,10 +2379,7 @@ class TrainerApp:
         self._send(cmd.unlock_tech(entry.key))
 
     def _remember_recent(self, bucket: list[str], key: str, limit: int = 10) -> None:
-        if key in bucket:
-            bucket.remove(key)
-        bucket.insert(0, key)
-        del bucket[limit:]
+        self._remember_value(bucket, key, limit)
 
     # ------------------------------------------------------------------
     # Memory engine helpers
@@ -2547,7 +2897,7 @@ class TrainerApp:
             if self.report.ue4ss_loader_path is not None:
                 lines.append(f"载入模块: {self.report.ue4ss_loader_path}")
         lines.append("")
-        lines.append("主界面当前只保留傻瓜模式流程；内存调试页已从主流程里隐藏。")
+        lines.append("主界面当前只保留桌面版风格的傻瓜流程；旧的内存扫描/自由命令入口已从主流程移除。")
         if self.report.notes:
             lines.append("")
             lines.append("说明：")

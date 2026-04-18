@@ -21,6 +21,9 @@ class TrainerSettings:
     custom_exp_amount: int = 100000
     recent_item_ids: list[str] = field(default_factory=list)
     recent_pal_ids: list[str] = field(default_factory=list)
+    favorite_item_ids: list[str] = field(default_factory=list)
+    favorite_pal_ids: list[str] = field(default_factory=list)
+    favorite_coord_labels: list[str] = field(default_factory=list)
 
 
 def _settings_dir_candidates() -> list[Path]:
@@ -77,6 +80,9 @@ def load_settings() -> TrainerSettings:
         custom_exp_amount=int(data.get("custom_exp_amount", 100000) or 100000),
         recent_item_ids=_str_list(data.get("recent_item_ids", [])),
         recent_pal_ids=_str_list(data.get("recent_pal_ids", [])),
+        favorite_item_ids=_str_list(data.get("favorite_item_ids", [])),
+        favorite_pal_ids=_str_list(data.get("favorite_pal_ids", [])),
+        favorite_coord_labels=_str_list(data.get("favorite_coord_labels", [])),
     )
 
 

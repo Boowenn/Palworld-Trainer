@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "palworld-trainer"
-version = "1.6.1"
-description = "傻瓜版 Palworld 修改器 — 聊天命令 + 直连内存冻结 + 自定义字段扫描 + 自由命令。"
+version = "1.7.0"
+description = "桌面版风格的傻瓜 Palworld 修改器：常用功能、角色增强、物品/帕鲁常用收藏与坐标直传。"
 readme = "README.md"
 requires-python = ">=3.12"
 authors = [

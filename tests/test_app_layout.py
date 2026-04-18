@@ -16,8 +16,11 @@ class AppLayoutTests(unittest.TestCase):
             tab_labels = [app.notebook.tab(tab_id, "text") for tab_id in app.notebook.tabs()]
             self.assertEqual(
                 tab_labels,
-                ["常用", "角色", "物品", "帕鲁", "坐标", "设置"],
+                ["常用功能", "角色", "物品", "帕鲁", "坐标", "设置"],
             )
+            self.assertTrue(hasattr(app, "coord_favorite_box"))
+            self.assertTrue(hasattr(app, "item_favorite_box"))
+            self.assertTrue(hasattr(app, "pal_favorite_box"))
         finally:
             root.destroy()
 

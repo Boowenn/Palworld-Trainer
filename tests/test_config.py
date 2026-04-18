@@ -22,6 +22,9 @@ class ConfigTests(unittest.TestCase):
                 custom_exp_amount=250000,
                 recent_item_ids=["Shield_Ultra", "Bow"],
                 recent_pal_ids=["Anubis"],
+                favorite_item_ids=["Cake"],
+                favorite_pal_ids=["JetDragon"],
+                favorite_coord_labels=["[地图--商人] 沙漠商人"],
             )
 
             with patch("palworld_trainer.config.get_settings_path", return_value=path):
@@ -35,6 +38,9 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(250000, loaded.custom_exp_amount)
             self.assertEqual(["Shield_Ultra", "Bow"], loaded.recent_item_ids)
             self.assertEqual(["Anubis"], loaded.recent_pal_ids)
+            self.assertEqual(["Cake"], loaded.favorite_item_ids)
+            self.assertEqual(["JetDragon"], loaded.favorite_pal_ids)
+            self.assertEqual(["[地图--商人] 沙漠商人"], loaded.favorite_coord_labels)
 
     def test_missing_file_returns_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
