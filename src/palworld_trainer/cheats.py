@@ -187,6 +187,7 @@ def write_request(
     x: float | None = None,
     y: float | None = None,
     z: float | None = None,
+    **extra: object,
 ) -> tuple[bool, str]:
     payload: dict[str, object] = {
         "action": action,
@@ -198,6 +199,17 @@ def write_request(
         payload["y"] = float(y)
     if z is not None:
         payload["z"] = float(z)
+    for key, value in extra.items():
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            payload[key] = value
+        elif isinstance(value, int):
+            payload[key] = int(value)
+        elif isinstance(value, float):
+            payload[key] = float(value)
+        elif isinstance(value, str):
+            payload[key] = value
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)

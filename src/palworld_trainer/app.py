@@ -51,6 +51,7 @@ from .mem_engine import (
     CustomSlotTemplate,
     MemEngine,
 )
+from .teleport_points import BOSS_TELEPORT_POINTS, BossTeleportPoint
 
 
 APP_TITLE = "Palworld 修改器"
@@ -90,6 +91,10 @@ class TrainerApp:
         self.item_entries = self.catalogs.get("item", [])
         self.pal_entries = self.catalogs.get("pal", [])
         self.tech_entries = self.catalogs.get("technology", [])
+        self.boss_points: tuple[BossTeleportPoint, ...] = BOSS_TELEPORT_POINTS
+        self._boss_point_by_label: dict[str, BossTeleportPoint] = {
+            point.label: point for point in self.boss_points
+        }
 
         self._current_item_results: list[CatalogEntry] = []
         self._current_pal_results: list[CatalogEntry] = []
@@ -185,7 +190,7 @@ class TrainerApp:
         self.status_cheats = ttk.Label(bar, text="聊天命令：检测中", style="Status.TLabel")
         self.status_cheats.pack(side="left", padx=(0, 18))
 
-        self.status_mem = ttk.Label(bar, text="外挂：未连接", style="Status.TLabel")
+        self.status_mem = ttk.Label(bar, text="高级：未连接", style="Status.TLabel")
         self.status_mem.pack(side="left")
 
         ttk.Button(bar, text="刷新状态", style="Quiet.TButton", command=self._refresh_status).pack(
@@ -227,9 +232,6 @@ class TrainerApp:
 
     def _build_home_tab(self) -> None:
         tab = ttk.Frame(self.notebook, padding=16)
-        self.notebook.add(tab, text="玩家")
-        self._build_simple_player_tab(tab)
-        return
         self.notebook.add(tab, text="主页")
 
         ttk.Label(tab, text="欢迎使用 Palworld 修改器", style="SubHeader.TLabel").pack(anchor="w")
@@ -256,7 +258,7 @@ class TrainerApp:
 
         buttons: list[tuple[str, Callable[[], None]]] = [
             ("🚀 启动 Palworld", self._launch_game),
-            ("🎮 连接游戏（外挂）", self._on_mem_attach),
+            ("🎮 高级连接（内存）", self._on_mem_attach),
             ("📂 打开游戏目录", self._open_game_dir),
         ]
         for index, (label, callback) in enumerate(buttons):
@@ -269,6 +271,8 @@ class TrainerApp:
     def _build_player_tab(self) -> None:
         tab = ttk.Frame(self.notebook, padding=16)
         self.notebook.add(tab, text="玩家")
+        self._build_simple_player_tab(tab)
+        return
 
         ttk.Label(
             tab, text="玩家操作（纯内存注入，无需 mod）", style="SubHeader.TLabel"
@@ -417,7 +421,7 @@ class TrainerApp:
             tab,
             text=(
                 "这一页默认走聊天命令和玩家增强模块，不需要再手动搜索地址。"
-                " 原始内存扫描和手动锁值已经收回到“外挂”页，只给高级排障时使用。"
+                " 原始内存扫描和手动锁值已经收回到“高级”页，只给排障时使用。"
             ),
             justify="left",
             style="Status.TLabel",
@@ -461,6 +465,51 @@ class TrainerApp:
             wraplength=840,
         ).pack(anchor="w")
 
+        boss_frame = ttk.LabelFrame(tab, text="Boss 直达", padding=(12, 8))
+        boss_frame.pack(fill="x", pady=(0, 10))
+
+        boss_row = ttk.Frame(boss_frame)
+        boss_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(boss_row, text="目标 Boss:").pack(side="left")
+        self.boss_preset_var = tk.StringVar()
+        boss_labels = [point.label for point in self.boss_points]
+        if boss_labels:
+            self.boss_preset_var.set(boss_labels[0])
+        self.boss_preset_box = ttk.Combobox(
+            boss_row,
+            textvariable=self.boss_preset_var,
+            values=boss_labels,
+            state="readonly",
+            width=42,
+        )
+        self.boss_preset_box.pack(side="left", padx=(6, 10), fill="x", expand=True)
+        self.boss_preset_box.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self._update_boss_preset_hint(),
+        )
+        ttk.Button(
+            boss_row,
+            text="载入坐标",
+            style="Quiet.TButton",
+            command=self._load_selected_boss_preset,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            boss_row,
+            text="直接传过去",
+            style="Big.TButton",
+            command=self._teleport_selected_boss_preset,
+        ).pack(side="left")
+
+        self.boss_preset_hint_label = ttk.Label(
+            boss_frame,
+            text="",
+            style="Status.TLabel",
+            wraplength=840,
+            justify="left",
+        )
+        self.boss_preset_hint_label.pack(anchor="w")
+        self._update_boss_preset_hint()
+
         tp_frame = ttk.LabelFrame(tab, text="坐标传送", padding=(12, 8))
         tp_frame.pack(fill="x", pady=(0, 10))
 
@@ -500,7 +549,7 @@ class TrainerApp:
         ttk.Label(
             route_frame,
             text=(
-                "每行一个 X Y Z，支持空格或逗号分隔。修改器会按顺序逐点发送 @!teleport，"
+                "每行一个 X Y Z，支持空格或逗号分隔。修改器会按顺序逐点写入桥接传送请求，"
                 " 不再要求提前锁定 pos_x/y/z。"
             ),
             justify="left",
@@ -620,7 +669,7 @@ class TrainerApp:
 
         ttk.Label(
             tab,
-            text="需要旧版手动搜索地址、锁血、锁蓝等底层调试功能时，请切到“外挂”页。",
+            text="需要旧版手动搜索地址、锁血、锁蓝等底层调试功能时，请切到“高级”页。",
             style="Status.TLabel",
         ).pack(anchor="w", pady=(10, 0))
 
@@ -673,6 +722,71 @@ class TrainerApp:
         if hasattr(self, "bridge_jump_var"):
             self.bridge_jump_var.set(f"{self.cheat_state.jump_multiplier:g}")
 
+    def _selected_boss_point(self) -> BossTeleportPoint | None:
+        if not hasattr(self, "boss_preset_var"):
+            return None
+        label = self.boss_preset_var.get().strip()
+        if not label:
+            return None
+        return self._boss_point_by_label.get(label)
+
+    def _boss_point_safe_z(self, point: BossTeleportPoint) -> float:
+        status = self._read_bridge_status()
+        if status.player_valid:
+            return max(point.safe_z, status.position_z + 1500.0)
+        return point.safe_z
+
+    def _update_boss_preset_hint(self) -> None:
+        if not hasattr(self, "boss_preset_hint_label"):
+            return
+        point = self._selected_boss_point()
+        if point is None:
+            self.boss_preset_hint_label.configure(
+                text="选择一个 Boss 后，可直接把坐标填入下方传送栏，或一键传送到 Boss 上空。"
+            )
+            return
+
+        safe_z = self._boss_point_safe_z(point)
+        self.boss_preset_hint_label.configure(
+            text=(
+                f"{point.label} 预计传送坐标：X={point.world_x}  Y={point.world_y}  Z={safe_z:.0f}。"
+                " 默认会把你送到目标上空，减少卡进地形的概率。"
+            )
+        )
+
+    def _load_selected_boss_preset(self) -> None:
+        point = self._selected_boss_point()
+        if point is None:
+            self._show_result("先选一个 Boss。", ok=False)
+            return
+
+        safe_z = self._boss_point_safe_z(point)
+        self.tp_x_var.set(str(point.world_x))
+        self.tp_y_var.set(str(point.world_y))
+        self.tp_z_var.set(f"{safe_z:.0f}")
+        self._update_boss_preset_hint()
+        self._show_result(f"已载入 {point.label} 坐标。", ok=True)
+
+    def _teleport_selected_boss_preset(self) -> None:
+        point = self._selected_boss_point()
+        if point is None:
+            self._show_result("先选一个 Boss。", ok=False)
+            return
+
+        safe_z = self._boss_point_safe_z(point)
+        self.tp_x_var.set(str(point.world_x))
+        self.tp_y_var.set(str(point.world_y))
+        self.tp_z_var.set(f"{safe_z:.0f}")
+        ok, message = self._write_bridge_teleport_request(
+            float(point.world_x),
+            float(point.world_y),
+            float(safe_z),
+        )
+        if ok:
+            self._show_result(f"已发送 {point.label} 传送请求。", ok=True)
+        else:
+            self._show_result(message, ok=False)
+
     def _refresh_player_bridge_status(self) -> None:
         if not hasattr(self, "player_bridge_status_label"):
             return
@@ -709,16 +823,14 @@ class TrainerApp:
     def _collect_player_cheat_state(self) -> CheatState | None:
         return self._collect_player_cheat_state_impl()
 
-    def _write_bridge_teleport_request(
-        self, x: float, y: float, z: float
-    ) -> tuple[bool, str]:
+    def _write_bridge_request(self, action: str, **payload: object) -> tuple[bool, str]:
         ok, message = self._ensure_player_bridge()
         if not ok:
             return False, message
         if not self._bridge_runtime_ready():
             return (
                 False,
-                "当前这局还没载入玩家增强模块；请完全退出并重开游戏后，再使用坐标传送/路径传送。",
+                "当前这局还没载入玩家增强模块；请完全退出并重开游戏后，再使用这一键玩家功能。",
             )
 
         path = self._bridge_request_path()
@@ -727,12 +839,23 @@ class TrainerApp:
 
         return write_request(
             path,
-            action="teleport",
+            action=action,
             request_id=self._next_bridge_request_id(),
+            **payload,
+        )
+
+    def _write_bridge_teleport_request(
+        self, x: float, y: float, z: float
+    ) -> tuple[bool, str]:
+        return self._write_bridge_request(
+            "teleport",
             x=x,
             y=y,
             z=z,
         )
+
+    def _write_bridge_fly_request(self, enabled: bool) -> tuple[bool, str]:
+        return self._write_bridge_request("set_fly", enabled=enabled)
 
     def _collect_player_cheat_state_impl(self) -> CheatState | None:
         try:
@@ -1011,11 +1134,11 @@ class TrainerApp:
 
     def _build_enhance_tab(self) -> None:
         tab = ttk.Frame(self.notebook, padding=16)
-        self.notebook.add(tab, text="外挂")
+        self.notebook.add(tab, text="高级")
 
         ttk.Label(
             tab,
-            text="直接内存外挂（无需安装任何 mod）",
+            text="高级/调试（直接内存方式，无需安装任何 mod）",
             style="SubHeader.TLabel",
         ).pack(anchor="w")
         ttk.Label(
@@ -1462,6 +1585,11 @@ class TrainerApp:
 
     def _on_mem_fly(self, enabled: bool) -> None:
         label = "开启飞行" if enabled else "关闭飞行"
+        bridge_ok = False
+        if self._bridge_runtime_ready():
+            bridge_ok, _message = self._write_bridge_fly_request(enabled)
+        if bridge_ok:
+            label = f"{label}（bridge + 命令双保险）"
         self._send_with_label(cmd.fly(enabled), label)
         return
         if not self.mem.is_locked("move_mode"):
@@ -2241,9 +2369,9 @@ class TrainerApp:
 
         if self.mem.is_attached():
             pid = self.mem.pid()
-            self.status_mem.configure(text=f"外挂：已连接 PID={pid} ✔", style="Good.TLabel")
+            self.status_mem.configure(text=f"高级：已连接 PID={pid} ✔", style="Good.TLabel")
         else:
-            self.status_mem.configure(text="外挂：未连接", style="Warn.TLabel")
+            self.status_mem.configure(text="高级：未连接", style="Warn.TLabel")
 
     def _rebuild_env_text(self) -> None:
         self.env_text.configure(state="normal")
@@ -2269,7 +2397,7 @@ class TrainerApp:
             if self.report.ue4ss_loader_path is not None:
                 lines.append(f"载入模块: {self.report.ue4ss_loader_path}")
         lines.append("")
-        lines.append("外挂（内存）模块不依赖 UE4SS / mod，只要游戏运行就能在「外挂」Tab 连接。")
+        lines.append("高级（内存）模块不依赖 UE4SS / mod，只要游戏运行就能在「高级」Tab 连接。")
         if self.report.notes:
             lines.append("")
             lines.append("说明：")

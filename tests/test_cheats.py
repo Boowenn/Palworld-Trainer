@@ -202,6 +202,21 @@ class WriteRequestTests(unittest.TestCase):
             self.assertAlmostEqual(payload["y"], 200.25)
             self.assertAlmostEqual(payload["z"], 300.75)
 
+    def test_write_request_keeps_extra_bool_fields(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bridge" / "request.json"
+            ok, message = write_request(
+                path,
+                action="set_fly",
+                request_id=43,
+                enabled=True,
+            )
+            self.assertTrue(ok, message)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["action"], "set_fly")
+            self.assertEqual(payload["request_id"], 43)
+            self.assertIs(payload["enabled"], True)
+
 
 class DescribeStateTests(unittest.TestCase):
     def test_empty_state(self) -> None:

@@ -1,7 +1,7 @@
 local UEHelpers = require("UEHelpers")
 
 local ModName = "PalworldTrainerBridge"
-local Version = "1.1.1"
+local Version = "1.1.2"
 local LastFindQuery = nil
 local LogWriteHealthy = true
 local LastLogFailureShown = false
@@ -557,6 +557,7 @@ local function read_request()
         x = parse_number(text, "x"),
         y = parse_number(text, "y"),
         z = parse_number(text, "z"),
+        enabled = parse_bool(text, "enabled"),
     }
 end
 
@@ -605,6 +606,34 @@ local function process_request()
         else
             log(string.format("Teleport request #%d failed.", request.request_id))
         end
+    elseif request.action == "set_fly" then
+        local player = get_player()
+        if not player:IsValid() then
+            log(string.format("Fly request #%d ignored: local player not ready.", request.request_id))
+            return
+        end
+
+        local move = safe_get_prop(player, "CharacterMovement")
+        if not move or not move:IsValid() then
+            log(string.format("Fly request #%d ignored: CharacterMovement missing.", request.request_id))
+            return
+        end
+
+        local desired_mode = request.enabled and 5 or 1
+        local ok = pcall(function()
+            if move.SetMovementMode then
+                move:SetMovementMode(desired_mode, 0)
+            end
+        end)
+        safe_set_prop(move, "MovementMode", desired_mode)
+        safe_set_prop(move, "CustomMovementMode", 0)
+
+        if ok then
+            log(string.format("Fly request #%d => mode %d", request.request_id, desired_mode))
+        else
+            log(string.format("Fly request #%d => fallback mode %d", request.request_id, desired_mode))
+        end
+        pcall(write_status)
     end
 end
 
