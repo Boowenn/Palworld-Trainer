@@ -267,11 +267,17 @@ def send_chat_command(
     post_open_delay_ms: int = 140,
     per_char_delay_ms: int = 8,
     pre_send_delay_ms: int = 80,
+    restore_focus: bool = True,
 ) -> SendResult:
     """Focus Palworld and type ``command`` into the in-game chat box.
 
     The command is typed verbatim. Callers should already prefix it with
     ``@!`` or similar — this function does not validate command syntax.
+
+    When *restore_focus* is True (default), the function records the
+    currently active window before switching to Palworld and restores it
+    after the command has been sent. This prevents the trainer UI from
+    "jumping" back and forth on every button click.
     """
 
     stripped = command.strip()
@@ -285,6 +291,9 @@ def send_chat_command(
             "Palworld window not found. Start the game and load into a world first.",
             command,
         )
+
+    # Remember who had focus so we can give it back after typing.
+    prev_hwnd = user32.GetForegroundWindow() if restore_focus else None
 
     if not _focus_window(hwnd):
         return SendResult(
@@ -302,6 +311,11 @@ def send_chat_command(
 
     time.sleep(pre_send_delay_ms / 1000.0)
     _tap_vk(VK_RETURN)
+
+    # Restore focus to the previous window (usually the trainer itself).
+    if prev_hwnd and prev_hwnd != hwnd and user32.IsWindow(prev_hwnd):
+        time.sleep(0.15)
+        _focus_window(prev_hwnd)
 
     return SendResult(True, f"Sent: {stripped}", stripped)
 
