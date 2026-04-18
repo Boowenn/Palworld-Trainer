@@ -31,6 +31,9 @@ from .mem_engine import (
     DTYPE_LABELS_CN,
     SLOT_LABELS_CN,
     SLOTS,
+    CORE_SLOTS,
+    POSITION_SLOTS,
+    MODE_SLOTS,
     AttachResult,
     CustomSlot,
     CustomSlotTemplate,
@@ -250,91 +253,96 @@ class TrainerApp:
         tab = ttk.Frame(self.notebook, padding=16)
         self.notebook.add(tab, text="玩家")
 
-        ttk.Label(tab, text="玩家操作", style="SubHeader.TLabel").pack(anchor="w")
+        ttk.Label(
+            tab, text="玩家操作（纯内存注入，无需 mod）", style="SubHeader.TLabel"
+        ).pack(anchor="w")
 
-        quick = ttk.Frame(tab)
-        quick.pack(fill="x", pady=(8, 18))
+        # ---- Memory Fly ----
+        fly_frame = ttk.LabelFrame(tab, text="飞行切换", padding=(12, 8))
+        fly_frame.pack(fill="x", pady=(8, 10))
 
-        quick_buttons: list[tuple[str, Callable[[], None]]] = [
-            ("🦅 切换飞行 (开)", lambda: self._send(cmd.fly(True))),
-            ("🛬 切换飞行 (关)", lambda: self._send(cmd.fly(False))),
-            ("📍 打印坐标", lambda: self._send(cmd.get_position())),
-            ("🚨 脱困", lambda: self._send(cmd.unstuck())),
-            ("🗺 解锁所有传送点", lambda: self._send(cmd.unlock_fast_travel())),
-            ("🔬 解锁全部科技", lambda: self._send(cmd.unlock_all_tech())),
-        ]
-        for index, (label, callback) in enumerate(quick_buttons):
-            ttk.Button(quick, text=label, style="Big.TButton", command=callback).grid(
-                row=index // 3, column=index % 3, padx=6, pady=6, sticky="ew"
-            )
-        for col in range(3):
-            quick.columnconfigure(col, weight=1)
+        ttk.Label(
+            fly_frame,
+            text=(
+                "校准：站着不动 → 填 1 → 首次搜索 → 跳起来（空中=3）"
+                " → 填 3 → 缩小 → 落地后填 1 → 缩小 → 锁定。"
+            ),
+            style="Status.TLabel",
+            wraplength=840,
+        ).pack(anchor="w", pady=(0, 4))
 
-        ttk.Separator(tab).pack(fill="x", pady=(4, 12))
-        ttk.Label(tab, text="经验值", style="SubHeader.TLabel").pack(anchor="w")
+        mode_grid = ttk.Frame(fly_frame)
+        mode_grid.pack(fill="x", pady=(0, 6))
+        self._build_mem_slot_row(mode_grid, 0, "move_mode")
+        mode_grid.columnconfigure(1, weight=1)
 
-        exp_row = ttk.Frame(tab)
-        exp_row.pack(fill="x", pady=(8, 6))
+        fly_btns = ttk.Frame(fly_frame)
+        fly_btns.pack(fill="x")
         ttk.Button(
-            exp_row,
-            text="+10,000 经验",
-            style="Big.TButton",
-            command=lambda: self._send(cmd.give_exp(10000)),
+            fly_btns, text="🦅 开启飞行", style="Big.TButton",
+            command=lambda: self._on_mem_fly(True),
         ).pack(side="left", padx=4)
         ttk.Button(
-            exp_row,
-            text="+100,000 经验",
-            style="Big.TButton",
-            command=lambda: self._send(cmd.give_exp(100_000)),
-        ).pack(side="left", padx=4)
-        ttk.Button(
-            exp_row,
-            text="+1,000,000 经验",
-            style="Big.TButton",
-            command=lambda: self._send(cmd.give_exp(1_000_000)),
+            fly_btns, text="🛬 关闭飞行", style="Big.TButton",
+            command=lambda: self._on_mem_fly(False),
         ).pack(side="left", padx=4)
 
-        custom_exp = ttk.Frame(tab)
-        custom_exp.pack(fill="x", pady=(4, 14))
-        ttk.Label(custom_exp, text="自定义经验：").pack(side="left")
-        self.exp_var = tk.StringVar(value=str(self.settings.custom_exp_amount))
-        ttk.Entry(custom_exp, textvariable=self.exp_var, width=12).pack(side="left", padx=(4, 8))
-        ttk.Button(
-            custom_exp,
-            text="给予",
-            style="Big.TButton",
-            command=self._on_give_custom_exp,
-        ).pack(side="left")
+        # ---- Memory Teleport ----
+        tp_frame = ttk.LabelFrame(tab, text="传送", padding=(12, 8))
+        tp_frame.pack(fill="x", pady=(0, 10))
 
-        ttk.Separator(tab).pack(fill="x", pady=(4, 12))
-        ttk.Label(tab, text="传送", style="SubHeader.TLabel").pack(anchor="w")
+        ttk.Label(
+            tp_frame,
+            text=(
+                "校准：读取当前 X 坐标 → 填入 → 首次搜索 → 移动后读新值"
+                " → 填入 → 缩小 → 锁定。Y、Z 同理。三轴锁定后可传送。"
+            ),
+            style="Status.TLabel",
+            wraplength=840,
+        ).pack(anchor="w", pady=(0, 4))
 
-        tp_row = ttk.Frame(tab)
-        tp_row.pack(fill="x", pady=(8, 0))
+        pos_grid = ttk.Frame(tp_frame)
+        pos_grid.pack(fill="x", pady=(0, 6))
+        for row_idx, slot in enumerate(POSITION_SLOTS):
+            self._build_mem_slot_row(pos_grid, row_idx, slot)
+        pos_grid.columnconfigure(1, weight=1)
+
+        tp_row = ttk.Frame(tp_frame)
+        tp_row.pack(fill="x", pady=(6, 0))
         ttk.Label(tp_row, text="X：").pack(side="left")
         self.tp_x_var = tk.StringVar(value="0")
-        ttk.Entry(tp_row, textvariable=self.tp_x_var, width=10).pack(side="left", padx=(2, 8))
+        ttk.Entry(tp_row, textvariable=self.tp_x_var, width=10).pack(
+            side="left", padx=(2, 8)
+        )
         ttk.Label(tp_row, text="Y：").pack(side="left")
         self.tp_y_var = tk.StringVar(value="0")
-        ttk.Entry(tp_row, textvariable=self.tp_y_var, width=10).pack(side="left", padx=(2, 8))
+        ttk.Entry(tp_row, textvariable=self.tp_y_var, width=10).pack(
+            side="left", padx=(2, 8)
+        )
         ttk.Label(tp_row, text="Z：").pack(side="left")
         self.tp_z_var = tk.StringVar(value="0")
-        ttk.Entry(tp_row, textvariable=self.tp_z_var, width=10).pack(side="left", padx=(2, 8))
-        ttk.Button(
-            tp_row, text="传送到坐标", style="Big.TButton", command=self._on_teleport
-        ).pack(side="left", padx=(6, 0))
-
-        # ---- Route teleport (吸帕鲁/吸宝箱 替代方案) ----
-        ttk.Separator(tab).pack(fill="x", pady=(12, 8))
-        ttk.Label(tab, text="路径传送（吸宝箱/吸手记替代方案）", style="SubHeader.TLabel").pack(
-            anchor="w"
+        ttk.Entry(tp_row, textvariable=self.tp_z_var, width=10).pack(
+            side="left", padx=(2, 8)
         )
+        ttk.Button(
+            tp_row, text="📍 读取当前", style="Quiet.TButton",
+            command=self._on_mem_read_pos,
+        ).pack(side="left", padx=(6, 4))
+        ttk.Button(
+            tp_row, text="传送到坐标", style="Big.TButton",
+            command=self._on_mem_teleport,
+        ).pack(side="left", padx=(4, 0))
+
+        # ---- Route teleport (内存注入) ----
+        ttk.Separator(tab).pack(fill="x", pady=(4, 8))
+        ttk.Label(
+            tab, text="路径传送（吸宝箱/吸手记替代方案）", style="SubHeader.TLabel"
+        ).pack(anchor="w")
         ttk.Label(
             tab,
             text=(
                 "粘贴一组坐标（每行一个 X Y Z），修改器会按顺序自动传送过去，"
-                "每个点停留几秒让游戏触发拾取。效果等同于「吸宝箱」但不需要遍历 actor。"
-                "坐标可以从 wiki/社区获取。"
+                "每个点停留几秒让游戏触发拾取。需要先锁定 pos_x/y/z。"
             ),
             justify="left",
             style="Status.TLabel",
@@ -661,7 +669,7 @@ class TrainerApp:
                 row=1, column=col, padx=4, pady=(0, 4), sticky="w"
             )
 
-        for row, slot in enumerate(SLOTS, start=2):
+        for row, slot in enumerate(CORE_SLOTS, start=2):
             self._build_mem_slot_row(slots_frame, row, slot)
 
         slots_frame.columnconfigure(1, weight=1)
@@ -1001,7 +1009,11 @@ class TrainerApp:
         save_settings(self.settings)
         self._send(cmd.give_exp(amount))
 
-    def _on_teleport(self) -> None:
+    def _on_mem_teleport(self) -> None:
+        for slot in POSITION_SLOTS:
+            if not self.mem.is_locked(slot):
+                self._show_result("先锁定 pos_x/y/z 地址，才能传送。", ok=False)
+                return
         try:
             x = float(self.tp_x_var.get())
             y = float(self.tp_y_var.get())
@@ -1009,7 +1021,39 @@ class TrainerApp:
         except ValueError:
             self._show_result("坐标必须是数字。", ok=False)
             return
-        self._send(cmd.teleport(x, y, z))
+        self.mem.write_slot_value("pos_x", x)
+        self.mem.write_slot_value("pos_y", y)
+        self.mem.write_slot_value("pos_z", z)
+        self._show_result(f"已传送到 ({x:g}, {y:g}, {z:g})", ok=True)
+
+    def _on_mem_fly(self, enabled: bool) -> None:
+        if not self.mem.is_locked("move_mode"):
+            self._show_result("先锁定 move_mode 地址。", ok=False)
+            return
+        value = 5 if enabled else 1
+        self.mem.set_slot_target("move_mode", float(value))
+        self.mem.set_slot_freeze("move_mode", True)
+        var = self._mem_slot_vars.get("move_mode")
+        if var:
+            var.set(True)
+        entry = self._mem_target_entries.get("move_mode")
+        if entry:
+            entry.set(str(value))
+        label = "飞行" if enabled else "行走"
+        self._show_result(f"已切换到{label}模式（move_mode={value}）。", ok=True)
+
+    def _on_mem_read_pos(self) -> None:
+        for slot, var in (
+            ("pos_x", self.tp_x_var),
+            ("pos_y", self.tp_y_var),
+            ("pos_z", self.tp_z_var),
+        ):
+            v = self.mem.read_current_value(slot)
+            if v is None:
+                self._show_result(f"无法读取 {slot}，先锁定地址。", ok=False)
+                return
+            var.set(f"{v:g}")
+        self._show_result("已读取当前坐标。", ok=True)
 
     # ------------------------------------------------------------------
     # Route teleport
@@ -1035,6 +1079,10 @@ class TrainerApp:
         return coords
 
     def _on_route_start(self) -> None:
+        for slot in POSITION_SLOTS:
+            if not self.mem.is_locked(slot):
+                self._show_result("先锁定 pos_x/y/z 地址，才能路径传送。", ok=False)
+                return
         coords = self._parse_route_coords()
         if not coords:
             self._show_result("没有有效坐标。每行一组 X Y Z。", ok=False)
@@ -1065,12 +1113,16 @@ class TrainerApp:
                         text=f"[{i}/{total}]"
                     ),
                 )
-                result = game_control.send_chat_command(cmd.teleport(x, y, z))
-                if not result.ok:
+                ok = (
+                    self.mem.write_slot_value("pos_x", x)
+                    and self.mem.write_slot_value("pos_y", y)
+                    and self.mem.write_slot_value("pos_z", z)
+                )
+                if not ok:
                     self.root.after(
                         0,
-                        lambda msg=result.message: self._route_done(
-                            f"传送失败：{msg}"
+                        lambda: self._route_done(
+                            "传送失败：坐标地址未锁定或进程已断开。"
                         ),
                     )
                     return
@@ -1189,7 +1241,7 @@ class TrainerApp:
             self._show_result("数值要是个数字，例如 500 或 32.5。", ok=False)
             return
 
-        label = SLOT_LABELS_CN[slot]
+        label = self.mem.label_for(slot)
         self._mem_busy = True
         action = "首次搜索" if first else "缩小范围"
         self._show_result(f"{label} {action} 中（约 40 秒首次/秒级缩小）…", ok=True, pending=True)
@@ -1209,7 +1261,7 @@ class TrainerApp:
 
     def _mem_scan_done(self, slot: str, count: int | None, error: str | None) -> None:
         self._mem_busy = False
-        label = SLOT_LABELS_CN[slot]
+        label = self.mem.label_for(slot)
         if error is not None:
             self._show_result(f"{label} 扫描失败：{error}", ok=False)
             return
@@ -1246,14 +1298,14 @@ class TrainerApp:
                 )
             return
         self._refresh_mem_rows()
-        self._show_result(f"{SLOT_LABELS_CN[slot]} 已锁定。可以勾选「冻结」了。", ok=True)
+        self._show_result(f"{self.mem.label_for(slot)} 已锁定。可以勾选「冻结」了。", ok=True)
 
     def _on_mem_clear(self, slot: str) -> None:
         self.mem.unlock_address(slot)
         self._mem_slot_vars[slot].set(False)
-        self.mem.state.set_slot(slot, False)
+        self.mem.set_slot_freeze(slot, False)
         self._refresh_mem_rows()
-        self._show_result(f"{SLOT_LABELS_CN[slot]} 已清除。", ok=True)
+        self._show_result(f"{self.mem.label_for(slot)} 已清除。", ok=True)
 
     def _on_mem_target_changed(self, slot: str) -> None:
         value = self._parse_float(self._mem_target_entries[slot].get())

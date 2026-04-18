@@ -1,9 +1,10 @@
 local UEHelpers = require("UEHelpers")
 
 local ModName = "PalworldTrainerBridge"
-local Version = "0.8.0"
+local Version = "1.1.0"
 local LastFindQuery = nil
 local SessionLogPath = "Mods/NativeMods/UE4SS/Mods/PalworldTrainerBridge/session.log"
+local TogglesPath = "Mods/NativeMods/UE4SS/Mods/PalworldTrainerBridge/toggles.json"
 local LogWriteHealthy = true
 local LastLogFailureShown = false
 local PresetQueries = {
@@ -331,6 +332,347 @@ local function repeat_last_find()
     return run_find_query(LastFindQuery.class_name, LastFindQuery.limit, LastFindQuery.label)
 end
 
+-- ===========================================================================
+-- Cheat engine
+-- ===========================================================================
+--
+-- Persistent toggle state mirrored from the Python GUI via toggles.json.
+-- Every ~200 ms we re-read the file (cheap) and re-apply any "force value"
+-- style cheats (god mode, infinite stamina, move speed multiplier, ...).
+-- One-shot style cheats (map defog, give passives) are exposed as pt_*
+-- console commands and should be triggered manually from the in-game UE4SS
+-- console — we do NOT want to run them every tick.
+--
+-- Field names below are best-effort guesses against Palworld's UObject
+-- layout. If something doesn't work, the `pt_dump` command prints the
+-- player's full class hierarchy + property names + component list so we
+-- can correct the names in the next iteration.
+
+local Cheats = {
+    godmode = false,
+    inf_stamina = false,
+    weight_zero = false,
+    inf_ammo = false,
+    no_durability = false,
+    speed_multiplier = 1.0,
+    jump_multiplier = 1.0,
+}
+
+local BaseMovement = {
+    walk = nil,
+    run = nil,
+    sprint = nil,
+    jump = nil,
+}
+
+local TickCounter = 0
+local LastTogglesRead = 0
+
+local function safe_get_prop(object, name)
+    if not object or not object:IsValid() then
+        return nil
+    end
+    local ok, value = pcall(function()
+        return object[name]
+    end)
+    if ok then
+        return value
+    end
+    return nil
+end
+
+local function safe_set_prop(object, name, value)
+    if not object or not object:IsValid() then
+        return false
+    end
+    local ok = pcall(function()
+        object[name] = value
+    end)
+    return ok
+end
+
+local function try_components(player, class_names)
+    for _, class_name in ipairs(class_names) do
+        local ok, component = pcall(function()
+            return player:GetComponentByClass(class_name)
+        end)
+        if ok and component and component:IsValid() then
+            return component
+        end
+    end
+    return nil
+end
+
+local function parse_bool(text, key)
+    local value = text:match('"' .. key .. '"%s*:%s*([%a]+)')
+    if value == "true" then
+        return true
+    end
+    if value == "false" then
+        return false
+    end
+    return nil
+end
+
+local function parse_number(text, key)
+    local value = text:match('"' .. key .. '"%s*:%s*([%-%.%d]+)')
+    return tonumber(value)
+end
+
+local function read_toggles()
+    local handle = io.open(TogglesPath, "r")
+    if not handle then
+        return false
+    end
+
+    local text = handle:read("*a") or ""
+    handle:close()
+    if text == "" then
+        return false
+    end
+
+    local function apply_bool(key)
+        local parsed = parse_bool(text, key)
+        if parsed ~= nil then
+            Cheats[key] = parsed
+        end
+    end
+    local function apply_num(key)
+        local parsed = parse_number(text, key)
+        if parsed ~= nil then
+            Cheats[key] = parsed
+        end
+    end
+
+    apply_bool("godmode")
+    apply_bool("inf_stamina")
+    apply_bool("weight_zero")
+    apply_bool("inf_ammo")
+    apply_bool("no_durability")
+    apply_num("speed_multiplier")
+    apply_num("jump_multiplier")
+    return true
+end
+
+local function describe_cheats()
+    return string.format(
+        "god=%s stam=%s weight0=%s ammo=%s dura=%s speed=%.2f jump=%.2f",
+        tostring(Cheats.godmode),
+        tostring(Cheats.inf_stamina),
+        tostring(Cheats.weight_zero),
+        tostring(Cheats.inf_ammo),
+        tostring(Cheats.no_durability),
+        Cheats.speed_multiplier,
+        Cheats.jump_multiplier
+    )
+end
+
+local function capture_base_movement(move)
+    if not move or not move:IsValid() then
+        return
+    end
+
+    local walk = safe_get_prop(move, "MaxWalkSpeed")
+    local jump = safe_get_prop(move, "JumpZVelocity")
+
+    -- Only capture once, and ignore obviously-modified (already multiplied) values
+    if walk and walk > 0 and not BaseMovement.walk then
+        BaseMovement.walk = walk
+    end
+    if jump and jump > 0 and not BaseMovement.jump then
+        BaseMovement.jump = jump
+    end
+end
+
+local function apply_movement_multipliers(player)
+    local move = safe_get_prop(player, "CharacterMovement")
+    if not move or not move:IsValid() then
+        return
+    end
+
+    capture_base_movement(move)
+
+    if BaseMovement.walk then
+        safe_set_prop(move, "MaxWalkSpeed", BaseMovement.walk * Cheats.speed_multiplier)
+        safe_set_prop(move, "MaxWalkSpeedCrouched", BaseMovement.walk * Cheats.speed_multiplier * 0.5)
+    end
+    if BaseMovement.jump then
+        safe_set_prop(move, "JumpZVelocity", BaseMovement.jump * Cheats.jump_multiplier)
+    end
+end
+
+local function apply_godmode(player)
+    if not Cheats.godmode then
+        return
+    end
+
+    -- Try known Palworld parameter component class names.
+    local comp = try_components(player, {
+        "PalCharacterParameterComponent",
+        "PalPlayerCharacterParameterComponent",
+        "CharacterParameterComponent",
+    })
+    if comp then
+        local max_hp = safe_get_prop(comp, "MaxHP") or safe_get_prop(comp, "HP_Max")
+        if max_hp and max_hp > 0 then
+            safe_set_prop(comp, "HP", max_hp)
+            safe_set_prop(comp, "CurrentHP", max_hp)
+        end
+    end
+
+    -- Fallback: direct pawn properties.
+    local max_hp = safe_get_prop(player, "MaxHP")
+    if max_hp and max_hp > 0 then
+        safe_set_prop(player, "HP", max_hp)
+        safe_set_prop(player, "CurrentHP", max_hp)
+    end
+end
+
+local function apply_infinite_stamina(player)
+    if not Cheats.inf_stamina then
+        return
+    end
+
+    local comp = try_components(player, {
+        "PalStaminaComponent",
+        "PalCharacterStaminaComponent",
+        "PalStatusComponent",
+        "PalCharacterParameterComponent",
+    })
+    if comp then
+        local max_sp = safe_get_prop(comp, "MaxSP")
+            or safe_get_prop(comp, "SP_Max")
+            or safe_get_prop(comp, "MaxStamina")
+        if max_sp and max_sp > 0 then
+            safe_set_prop(comp, "SP", max_sp)
+            safe_set_prop(comp, "CurrentSP", max_sp)
+            safe_set_prop(comp, "Stamina", max_sp)
+        end
+    end
+
+    local pawn_max = safe_get_prop(player, "MaxSP") or safe_get_prop(player, "MaxStamina")
+    if pawn_max and pawn_max > 0 then
+        safe_set_prop(player, "SP", pawn_max)
+        safe_set_prop(player, "Stamina", pawn_max)
+    end
+end
+
+local function apply_weight_zero(player)
+    if not Cheats.weight_zero then
+        return
+    end
+
+    -- Palworld player inventory lives on a component. Try a few names.
+    local inv = try_components(player, {
+        "PalPlayerInventoryDataComponent",
+        "PalInventoryDataComponent",
+        "PalCharacterInventoryComponent",
+    })
+    if inv then
+        -- We don't want an immovable player, so we bump MaxWeight to a huge
+        -- number instead of touching CurrentWeight.
+        safe_set_prop(inv, "MaxInventoryWeight", 99999999.0)
+        safe_set_prop(inv, "MaxWeight", 99999999.0)
+    end
+
+    -- Fallback: parameter component often exposes max carry weight too.
+    local param = try_components(player, {
+        "PalCharacterParameterComponent",
+        "PalPlayerCharacterParameterComponent",
+    })
+    if param then
+        safe_set_prop(param, "MaxInventoryWeight", 99999999.0)
+        safe_set_prop(param, "MaxWeight", 99999999.0)
+    end
+end
+
+local function tick_apply_cheats()
+    local player = get_player()
+    if not player:IsValid() then
+        return
+    end
+
+    pcall(function() apply_godmode(player) end)
+    pcall(function() apply_infinite_stamina(player) end)
+    pcall(function() apply_weight_zero(player) end)
+    pcall(function() apply_movement_multipliers(player) end)
+end
+
+-- Diagnostic dump: print player class hierarchy + properties + components so
+-- we can correct any wrong field guesses in the next iteration.
+local function dump_player()
+    local player = get_player()
+    if not player:IsValid() then
+        log("pt_dump: local player not ready")
+        return
+    end
+
+    log("=== pt_dump ===")
+    log("Player full name: " .. safe_name(player))
+
+    pcall(function()
+        local class = player:GetClass()
+        local depth = 0
+        while class and class:IsValid() and depth < 12 do
+            log(string.format("class[%d]: %s", depth, class:GetFullName()))
+            local ok, super = pcall(function()
+                return class:GetSuperStruct()
+            end)
+            if not ok or not super or not super:IsValid() then
+                break
+            end
+            class = super
+            depth = depth + 1
+        end
+    end)
+
+    pcall(function()
+        local class = player:GetClass()
+        if class and class:IsValid() and class.ForEachProperty then
+            log("-- properties --")
+            local count = 0
+            class:ForEachProperty(function(prop)
+                count = count + 1
+                if count > 120 then
+                    return LoopAction.Break
+                end
+                local ok, name = pcall(function()
+                    return prop:GetFName():ToString()
+                end)
+                if ok then
+                    log("prop: " .. tostring(name))
+                end
+                return LoopAction.Continue
+            end)
+            log(string.format("-- %d properties enumerated --", count))
+        end
+    end)
+
+    local move = safe_get_prop(player, "CharacterMovement")
+    if move and move:IsValid() then
+        log("CharacterMovement: " .. safe_name(move))
+        log("  MaxWalkSpeed: " .. tostring(safe_get_prop(move, "MaxWalkSpeed")))
+        log("  JumpZVelocity: " .. tostring(safe_get_prop(move, "JumpZVelocity")))
+    else
+        log("CharacterMovement: <not found>")
+    end
+
+    local probe = {
+        "PalCharacterParameterComponent",
+        "PalPlayerCharacterParameterComponent",
+        "PalStaminaComponent",
+        "PalStatusComponent",
+        "PalPlayerInventoryDataComponent",
+        "PalInventoryDataComponent",
+    }
+    for _, class_name in ipairs(probe) do
+        local comp = try_components(player, { class_name })
+        log("component " .. class_name .. ": " .. (comp and safe_name(comp) or "<not found>"))
+    end
+
+    log("=== end pt_dump ===")
+end
+
 RegisterConsoleCommandHandler("pt_help", function(full_command, parameters, ar)
     log("Available commands:")
     log("pt_help   - print the available trainer bridge commands")
@@ -344,6 +686,9 @@ RegisterConsoleCommandHandler("pt_help", function(full_command, parameters, ar)
     log("pt_repeat - repeat the most recent pt_find query")
     log("pt_log_status - print the bridge session log health and path")
     log("pt_log_clear - clear the bridge session log")
+    log("pt_cheats - print current cheat toggle state")
+    log("pt_reload - re-read toggles.json from disk")
+    log("pt_dump   - dump player class hierarchy + properties for diagnostics")
     log("Hotkeys: CTRL+F6 = pt_pos, CTRL+F7 = pt_world, CTRL+F8 = pt_repeat")
     return true
 end)
@@ -419,6 +764,24 @@ RegisterConsoleCommandHandler("pt_log_clear", function(full_command, parameters,
     return clear_session_log()
 end)
 
+RegisterConsoleCommandHandler("pt_cheats", function(full_command, parameters, ar)
+    log("Cheat state: " .. describe_cheats())
+    log("Toggles file: " .. TogglesPath)
+    return true
+end)
+
+RegisterConsoleCommandHandler("pt_reload", function(full_command, parameters, ar)
+    local ok = read_toggles()
+    log(string.format("Reloaded toggles from disk: %s", tostring(ok)))
+    log("Cheat state: " .. describe_cheats())
+    return true
+end)
+
+RegisterConsoleCommandHandler("pt_dump", function(full_command, parameters, ar)
+    dump_player()
+    return true
+end)
+
 RegisterKeyBindAsync(Key.F6, { ModifierKey.CONTROL }, function()
     local player = get_player()
     if not player:IsValid() then
@@ -444,13 +807,41 @@ RegisterKeyBindAsync(Key.F8, { ModifierKey.CONTROL }, function()
     repeat_last_find()
 end)
 
-RegisterHook("/Script/Engine.PlayerController:ClientRestart", function(self, new_pawn)
+RegisterKeyBindAsync(Key.F9, { ModifierKey.CONTROL }, function()
     ExecuteInGameThread(function()
-        print_status()
+        dump_player()
     end)
 end)
 
+RegisterHook("/Script/Engine.PlayerController:ClientRestart", function(self, new_pawn)
+    ExecuteInGameThread(function()
+        print_status()
+        -- Reset cached base movement values so next tick re-captures them.
+        BaseMovement.walk = nil
+        BaseMovement.jump = nil
+        BaseMovement.run = nil
+        BaseMovement.sprint = nil
+        read_toggles()
+    end)
+end)
+
+LoopAsync(200, function()
+    TickCounter = TickCounter + 1
+
+    -- Re-read toggles every ~2 seconds so GUI checkbox flips propagate
+    -- without needing a pt_reload call.
+    if TickCounter - LastTogglesRead >= 10 then
+        LastTogglesRead = TickCounter
+        pcall(read_toggles)
+    end
+
+    pcall(tick_apply_cheats)
+    return false
+end)
+
 ExecuteInGameThread(function()
-    log("Bridge loaded.")
-    log("Use pt_help, pt_presets, or the hotkeys CTRL+F6 / CTRL+F7 / CTRL+F8 in-game.")
+    log(string.format("Bridge %s loaded.", Version))
+    log("Use pt_help, pt_cheats, pt_dump, or the hotkeys CTRL+F6 / F7 / F8 / F9 in-game.")
+    pcall(read_toggles)
+    log("Initial cheat state: " .. describe_cheats())
 end)

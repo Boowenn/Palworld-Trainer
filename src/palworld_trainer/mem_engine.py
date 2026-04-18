@@ -47,15 +47,25 @@ from .memory import ProcessHandle, ScanSnapshot
 # ---------------------------------------------------------------------------
 
 
-SLOTS = ("hp", "sp", "walk_speed", "jump_z")
+SLOTS = ("hp", "sp", "walk_speed", "jump_z", "pos_x", "pos_y", "pos_z", "move_mode")
 
 # Reasonable default "freeze to" values for each slot — used when the user
 # flips a toggle without having manually typed a freeze value.
-DEFAULT_FREEZE = {
+DEFAULT_FREEZE: dict[str, float] = {
     "hp": 9999.0,
     "sp": 9999.0,
     "walk_speed": 1200.0,
     "jump_z": 1200.0,
+    "pos_x": 0.0,
+    "pos_y": 0.0,
+    "pos_z": 0.0,
+    "move_mode": 1.0,  # 1=Walking, 5=Flying
+}
+
+# Data type per fixed slot (default f32). Position & basic stats are f32,
+# movement mode is u8.
+SLOT_DTYPES: dict[str, str] = {
+    "move_mode": "u8",
 }
 
 SLOT_LABELS_CN = {
@@ -63,7 +73,17 @@ SLOT_LABELS_CN = {
     "sp": "SP（体力值）",
     "walk_speed": "移动速度（MaxWalkSpeed）",
     "jump_z": "跳跃初速度（JumpZVelocity）",
+    "pos_x": "玩家坐标 X",
+    "pos_y": "玩家坐标 Y",
+    "pos_z": "玩家坐标 Z",
+    "move_mode": "移动模式（1=走 5=飞）",
 }
+
+# Slots that the GUI shows in the core "字段校准" grid. The other fixed
+# slots (pos, move_mode) are surfaced in their own dedicated sections.
+CORE_SLOTS = ("hp", "sp", "walk_speed", "jump_z")
+POSITION_SLOTS = ("pos_x", "pos_y", "pos_z")
+MODE_SLOTS = ("move_mode",)
 
 
 @dataclass(frozen=True)
@@ -116,11 +136,19 @@ class MemCheatState:
     sp_freeze: bool = False
     walk_speed_freeze: bool = False
     jump_z_freeze: bool = False
+    pos_x_freeze: bool = False
+    pos_y_freeze: bool = False
+    pos_z_freeze: bool = False
+    move_mode_freeze: bool = False
 
     hp_target: float = DEFAULT_FREEZE["hp"]
     sp_target: float = DEFAULT_FREEZE["sp"]
     walk_speed_target: float = DEFAULT_FREEZE["walk_speed"]
     jump_z_target: float = DEFAULT_FREEZE["jump_z"]
+    pos_x_target: float = DEFAULT_FREEZE["pos_x"]
+    pos_y_target: float = DEFAULT_FREEZE["pos_y"]
+    pos_z_target: float = DEFAULT_FREEZE["pos_z"]
+    move_mode_target: float = DEFAULT_FREEZE["move_mode"]
 
     def is_slot_enabled(self, slot: str) -> bool:
         return bool(getattr(self, f"{slot}_freeze"))
@@ -146,6 +174,10 @@ class Calibration:
     sp_addr: int = 0
     walk_speed_addr: int = 0
     jump_z_addr: int = 0
+    pos_x_addr: int = 0
+    pos_y_addr: int = 0
+    pos_z_addr: int = 0
+    move_mode_addr: int = 0
 
     def address_for(self, slot: str) -> int:
         return int(getattr(self, f"{slot}_addr"))
@@ -357,10 +389,10 @@ class MemEngine:
     # ------------------------------------------------------------------
 
     def dtype_for(self, slot: str) -> str:
-        """Return the data type for a slot ("f32" for fixed slots)."""
+        """Return the data type for a slot ("f32" for most fixed slots)."""
 
         if slot in SLOTS:
-            return "f32"
+            return SLOT_DTYPES.get(slot, "f32")
         cs = self._custom.get(slot)
         return cs.dtype if cs else "f32"
 
@@ -451,6 +483,24 @@ class MemEngine:
             cs.freeze = False
         self._snapshots.pop(slot, None)
 
+    def write_slot_value(self, slot: str, value: float) -> bool:
+        """One-shot write to a calibrated slot (no freeze). Used for teleport."""
+
+        addr = self.address_for(slot)
+        if not addr:
+            return False
+        with self._lock:
+            if self._handle is None:
+                return False
+            dtype = self.dtype_for(slot)
+            if dtype == "i32":
+                self._handle.write_i32(addr, int(value))
+            elif dtype == "u8":
+                self._handle.write_u8(addr, int(value))
+            else:
+                self._handle.write_f32(addr, value)
+        return True
+
     def read_current_value(self, slot: str) -> float | None:
         """Peek the current value at the calibrated address (for the UI)."""
 
@@ -530,7 +580,7 @@ class MemEngine:
             handle = self._handle
             if handle is None:
                 return
-            # Fixed slots
+            # Fixed slots (dtype-aware: most are f32, move_mode is u8)
             for slot in SLOTS:
                 if not self.state.is_slot_enabled(slot):
                     continue
@@ -538,13 +588,22 @@ class MemEngine:
                 if not addr:
                     continue
                 target = self.state.target_for(slot)
-                # Don't spam writes if the value is already correct — saves a
-                # few round-trips per tick and avoids fighting the game's own
-                # integrity checks on values that didn't actually drift.
-                current = handle.read_f32(addr)
-                if current is not None and abs(current - target) < 1e-3:
-                    continue
-                handle.write_f32(addr, target)
+                dtype = SLOT_DTYPES.get(slot, "f32")
+                if dtype == "i32":
+                    current = handle.read_i32(addr)
+                    if current is not None and current == int(target):
+                        continue
+                    handle.write_i32(addr, int(target))
+                elif dtype == "u8":
+                    current = handle.read_u8(addr)
+                    if current is not None and current == int(target) & 0xFF:
+                        continue
+                    handle.write_u8(addr, int(target))
+                else:
+                    current = handle.read_f32(addr)
+                    if current is not None and abs(current - target) < 1e-3:
+                        continue
+                    handle.write_f32(addr, target)
             # Custom slots (snapshot values so a concurrent add/remove can't
             # mutate the dict mid-iteration).
             for cs in list(self._custom.values()):
