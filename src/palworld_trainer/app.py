@@ -1,6 +1,6 @@
 """Palworld Trainer — 傻瓜版主界面.
 
-界面分七个 Tab：主页 / 玩家 / 物品 / 帕鲁 / 科技 / 世界 / 设置。
+界面分六个 Tab：常用 / 角色 / 物品 / 帕鲁 / 坐标 / 设置。
 每个按钮背后对应一条 ClientCheatCommands 的 @! 聊天命令，trainer 通过
 ``game_control.send_chat_command`` 直接打到游戏聊天框里。
 """
@@ -70,14 +70,11 @@ WINDOW_HEIGHT = 680
 RESULT_CLEAR_MS = 6000
 
 TAB_NAMES = (
-    "home",
-    "player",
+    "common",
+    "character",
     "items",
     "pals",
-    "tech",
-    "world",
-    "enhance",
-    "chat",
+    "coords",
     "settings",
 )
 
@@ -206,7 +203,7 @@ class TrainerApp:
         self.status_cheats = ttk.Label(bar, text="聊天命令：检测中", style="Status.TLabel")
         self.status_cheats.pack(side="left", padx=(0, 18))
 
-        self.status_mem = ttk.Label(bar, text="高级：未连接", style="Status.TLabel")
+        self.status_mem = ttk.Label(bar, text="增强模块：检测中", style="Status.TLabel")
         self.status_mem.pack(side="left")
 
         ttk.Button(bar, text="刷新状态", style="Quiet.TButton", command=self._refresh_status).pack(
@@ -217,14 +214,11 @@ class TrainerApp:
         self.notebook = ttk.Notebook(parent)
         self.notebook.pack(fill="both", expand=True, pady=(10, 8))
 
-        self._build_home_tab()
+        self._build_common_tab()
         self._build_player_tab()
         self._build_items_tab()
         self._build_pals_tab()
-        self._build_tech_tab()
-        self._build_world_tab()
-        self._build_enhance_tab()
-        self._build_chat_tab()
+        self._build_coords_tab()
         self._build_settings_tab()
 
         try:
@@ -246,36 +240,31 @@ class TrainerApp:
     # Tabs
     # ------------------------------------------------------------------
 
-    def _build_home_tab(self) -> None:
+    def _build_common_tab(self) -> None:
         tab = ttk.Frame(self.notebook, padding=16)
-        self.notebook.add(tab, text="主页")
+        self.notebook.add(tab, text="常用")
 
-        ttk.Label(tab, text="欢迎使用 Palworld 修改器", style="SubHeader.TLabel").pack(anchor="w")
+        ttk.Label(tab, text="常用功能", style="SubHeader.TLabel").pack(anchor="w")
         ttk.Label(
             tab,
             text=(
-                "使用流程：\n"
-                "  1) 先启动 Palworld 并进入世界。\n"
-                "  2) 切换到本程序，点任意功能按钮。\n"
-                "  3) 程序会自动把游戏窗口拉到前台，并把命令打进聊天框。\n\n"
-                "前提条件：\n"
-                "  • 已安装 UE4SS Experimental (Palworld)。\n"
-                "  • 已安装 ClientCheatCommands 并在 PalModSettings.ini 中启用。\n"
-                "  • 游戏内聊天默认打开键是回车。"
+                "按参照修改器的思路，主界面只保留常用流程：启动游戏、角色增强、物品/帕鲁、"
+                "坐标库传送。高级内存调试和自由命令不再占用主界面。"
             ),
             justify="left",
             style="Status.TLabel",
         ).pack(anchor="w", pady=(6, 16))
 
-        ttk.Label(tab, text="一键操作", style="SubHeader.TLabel").pack(anchor="w")
+        ttk.Label(tab, text="启动与修复", style="SubHeader.TLabel").pack(anchor="w")
 
         grid = ttk.Frame(tab)
         grid.pack(fill="x", pady=(8, 0))
 
         buttons: list[tuple[str, Callable[[], None]]] = [
             ("🚀 启动 Palworld", self._launch_game),
-            ("🎮 高级连接（内存）", self._on_mem_attach),
+            ("🧩 部署/更新增强模块", self._on_deploy_bridge),
             ("📂 打开游戏目录", self._open_game_dir),
+            ("🔄 刷新状态", self._refresh_status),
         ]
         for index, (label, callback) in enumerate(buttons):
             ttk.Button(grid, text=label, style="Big.TButton", command=callback).grid(
@@ -284,9 +273,83 @@ class TrainerApp:
         grid.columnconfigure(0, weight=1)
         grid.columnconfigure(1, weight=1)
 
+        ttk.Separator(tab).pack(fill="x", pady=(14, 10))
+
+        ttk.Label(tab, text="角色快捷操作", style="SubHeader.TLabel").pack(anchor="w")
+        common_row = ttk.Frame(tab)
+        common_row.pack(fill="x", pady=(8, 14))
+        common_buttons: list[tuple[str, Callable[[], None]]] = [
+            ("🛠 脱困", lambda: self._send_with_label(cmd.unstuck(), "脱困")),
+            ("🏠 回家", lambda: self._send_with_label("@!homepoint", "回家")),
+            ("❤ 全额治疗", lambda: self._send_with_label("@!healfull", "全额治疗")),
+            ("💊 清状态", lambda: self._send_with_label("@!fillstatus", "清除负面状态")),
+        ]
+        for index, (label, callback) in enumerate(common_buttons):
+            ttk.Button(common_row, text=label, style="Big.TButton", command=callback).grid(
+                row=0, column=index, padx=6, pady=4, sticky="ew"
+            )
+            common_row.columnconfigure(index, weight=1)
+
+        ttk.Label(tab, text="世界解锁", style="SubHeader.TLabel").pack(anchor="w")
+        unlock_row = ttk.Frame(tab)
+        unlock_row.pack(fill="x", pady=(8, 14))
+        unlock_buttons: list[tuple[str, Callable[[], None]]] = [
+            ("🗺 一键开图", lambda: self._send_with_label("@!unlockmap", "一键开图")),
+            ("📍 解锁传送点", lambda: self._send(cmd.unlock_fast_travel())),
+            ("🔓 解锁全部科技", lambda: self._send(cmd.unlock_all_tech())),
+            ("📖 全部手记", lambda: self._send_with_label("@!giveallnotes", "全部手记")),
+        ]
+        for index, (label, callback) in enumerate(unlock_buttons):
+            ttk.Button(unlock_row, text=label, style="Big.TButton", command=callback).grid(
+                row=0, column=index, padx=6, pady=4, sticky="ew"
+            )
+            unlock_row.columnconfigure(index, weight=1)
+
+        ttk.Label(tab, text="世界时间", style="SubHeader.TLabel").pack(anchor="w")
+        ttk.Label(
+            tab,
+            text="拖动小时数后点「设置时间」，或直接使用下方的清晨/正午/黄昏/午夜快捷按钮。",
+            style="Status.TLabel",
+        ).pack(anchor="w", pady=(2, 8))
+
+        slider_row = ttk.Frame(tab)
+        slider_row.pack(fill="x", pady=(4, 10))
+        self.time_var = tk.IntVar(value=12)
+        ttk.Scale(
+            slider_row,
+            from_=0,
+            to=23,
+            orient="horizontal",
+            variable=self.time_var,
+            command=lambda _value: self._refresh_time_label(),
+        ).pack(side="left", fill="x", expand=True)
+        self.time_label = ttk.Label(slider_row, text="12 时", width=8, anchor="e")
+        self.time_label.pack(side="left", padx=(10, 0))
+        ttk.Button(
+            slider_row,
+            text="设置时间",
+            style="Big.TButton",
+            command=lambda: self._send(cmd.set_time(self.time_var.get())),
+        ).pack(side="left", padx=(10, 0))
+
+        quick = ttk.Frame(tab)
+        quick.pack(fill="x", pady=(0, 4))
+        for label, hour in (
+            ("🌅 清晨 6:00", 6),
+            ("☀️ 正午 12:00", 12),
+            ("🌆 黄昏 18:00", 18),
+            ("🌙 午夜 0:00", 0),
+        ):
+            ttk.Button(
+                quick,
+                text=label,
+                style="Big.TButton",
+                command=lambda h=hour: self._send(cmd.set_time(h)),
+            ).pack(side="left", padx=4)
+
     def _build_player_tab(self) -> None:
         tab = ttk.Frame(self.notebook, padding=16)
-        self.notebook.add(tab, text="玩家")
+        self.notebook.add(tab, text="角色")
         self._build_simple_player_tab(tab)
         return
 
@@ -432,60 +495,145 @@ class TrainerApp:
         self._route_stop_event = threading.Event()
 
     def _build_simple_player_tab(self, tab: ttk.Frame) -> None:
-        ttk.Label(tab, text="玩家操作（默认简易模式）", style="SubHeader.TLabel").pack(anchor="w")
+        ttk.Label(tab, text="角色功能", style="SubHeader.TLabel").pack(anchor="w")
         ttk.Label(
             tab,
             text=(
-                "这一页默认走聊天命令和玩家增强模块，不需要再手动搜索地址。"
-                " 原始内存扫描和手动锁值已经收回到“高级”页，只给排障时使用。"
+                "这一页只保留角色相关的常用功能：飞行、脱困、回家和角色增强。"
+                " 传送、Boss、商人、洞窟和路线点位全部放到“坐标”页。"
             ),
             justify="left",
             style="Status.TLabel",
             wraplength=860,
         ).pack(anchor="w", pady=(4, 10))
 
-        quick_frame = ttk.LabelFrame(tab, text="基础操作", padding=(12, 8))
+        quick_frame = ttk.LabelFrame(tab, text="角色快捷操作", padding=(12, 8))
         quick_frame.pack(fill="x", pady=(0, 10))
 
         quick_row = ttk.Frame(quick_frame)
         quick_row.pack(fill="x", pady=(0, 6))
-        ttk.Button(
-            quick_row,
-            text="开启飞行",
-            style="Big.TButton",
-            command=lambda: self._on_mem_fly(True),
-        ).pack(side="left", padx=(0, 6))
-        ttk.Button(
-            quick_row,
-            text="关闭飞行",
-            style="Big.TButton",
-            command=lambda: self._on_mem_fly(False),
-        ).pack(side="left", padx=(0, 6))
-        ttk.Button(
-            quick_row,
-            text="读取当前位置",
-            style="Quiet.TButton",
-            command=self._on_mem_read_pos,
-        ).pack(side="left", padx=(0, 6))
-        ttk.Button(
-            quick_row,
-            text="脱困",
-            style="Quiet.TButton",
-            command=lambda: self._send_with_label(cmd.unstuck(), "脱困"),
-        ).pack(side="left")
+        quick_buttons: list[tuple[str, Callable[[], None]]] = [
+            ("🦅 开启飞行", lambda: self._on_mem_fly(True)),
+            ("🛬 关闭飞行", lambda: self._on_mem_fly(False)),
+            ("🛠 脱困", lambda: self._send_with_label(cmd.unstuck(), "脱困")),
+            ("🏠 回家", lambda: self._send_with_label("@!homepoint", "回家")),
+            ("📍 读取当前位置", self._on_mem_read_pos),
+            ("🧭 打开坐标页", lambda: self.notebook.select(TAB_NAMES.index("coords"))),
+        ]
+        for index, (label, callback) in enumerate(quick_buttons):
+            ttk.Button(
+                quick_row,
+                text=label,
+                style="Big.TButton",
+                command=callback,
+            ).grid(row=index // 3, column=index % 3, padx=6, pady=4, sticky="ew")
+        for col in range(3):
+            quick_row.columnconfigure(col, weight=1)
 
         ttk.Label(
             quick_frame,
-            text="读取当前位置会先把 @!getpos 发到游戏；当前这局没载入增强模块时，坐标结果会显示在游戏聊天框里。",
+            text="读取当前位置会同步刷新“坐标”页里的 X/Y/Z 输入框；飞行按钮优先走 bridge，同时保留聊天命令回退。",
             style="Status.TLabel",
             wraplength=840,
         ).pack(anchor="w")
+
+        cheats_frame = ttk.LabelFrame(tab, text="角色增强（需增强模块）", padding=(12, 8))
+        cheats_frame.pack(fill="x")
+
+        cheats_head = ttk.Frame(cheats_frame)
+        cheats_head.pack(fill="x", pady=(0, 6))
+        self.player_bridge_status_label = ttk.Label(
+            cheats_head, text="", style="Status.TLabel"
+        )
+        self.player_bridge_status_label.pack(side="left", fill="x", expand=True)
+        ttk.Button(
+            cheats_head,
+            text="部署/更新增强模块",
+            style="Quiet.TButton",
+            command=self._on_deploy_bridge,
+        ).pack(side="right")
+
+        toggles_row = ttk.Frame(cheats_frame)
+        toggles_row.pack(fill="x", pady=(0, 6))
+        self.bridge_godmode_var = tk.BooleanVar(value=self.cheat_state.godmode)
+        self.bridge_stamina_var = tk.BooleanVar(value=self.cheat_state.inf_stamina)
+        self.bridge_weight_var = tk.BooleanVar(value=self.cheat_state.weight_zero)
+        ttk.Checkbutton(
+            toggles_row, text="无敌", variable=self.bridge_godmode_var
+        ).pack(side="left", padx=(0, 12))
+        ttk.Checkbutton(
+            toggles_row, text="无限体力", variable=self.bridge_stamina_var
+        ).pack(side="left", padx=(0, 12))
+        ttk.Checkbutton(
+            toggles_row, text="无限负重", variable=self.bridge_weight_var
+        ).pack(side="left")
+
+        multiplier_row = ttk.Frame(cheats_frame)
+        multiplier_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(multiplier_row, text="移速倍率:").pack(side="left")
+        self.bridge_speed_var = tk.StringVar(
+            value=f"{self.cheat_state.speed_multiplier:g}"
+        )
+        ttk.Entry(multiplier_row, textvariable=self.bridge_speed_var, width=8).pack(
+            side="left", padx=(4, 12)
+        )
+        ttk.Label(multiplier_row, text="跳跃倍率:").pack(side="left")
+        self.bridge_jump_var = tk.StringVar(
+            value=f"{self.cheat_state.jump_multiplier:g}"
+        )
+        ttk.Entry(multiplier_row, textvariable=self.bridge_jump_var, width=8).pack(
+            side="left", padx=(4, 12)
+        )
+        ttk.Button(
+            multiplier_row,
+            text="应用增强状态",
+            style="Big.TButton",
+            command=self._apply_player_cheats,
+        ).pack(side="left", padx=(6, 4))
+        ttk.Button(
+            multiplier_row,
+            text="恢复默认倍率",
+            style="Quiet.TButton",
+            command=self._reset_player_multipliers,
+        ).pack(side="left")
+
+        ttk.Label(
+            cheats_frame,
+            text="无敌/体力/负重/倍率依赖 PalworldTrainerBridge。当前这局没载入时，我会先帮你部署好，重启游戏后自动生效。",
+            justify="left",
+            style="Status.TLabel",
+            wraplength=840,
+        ).pack(anchor="w")
+
+        ttk.Label(
+            tab,
+            text="主界面已经按傻瓜模式重构，不再引导你做手动搜索地址。",
+            style="Status.TLabel",
+        ).pack(anchor="w", pady=(10, 0))
+
+        self._refresh_player_bridge_status()
+
+    def _build_coords_tab(self) -> None:
+        tab = ttk.Frame(self.notebook, padding=16)
+        self.notebook.add(tab, text="坐标")
+
+        ttk.Label(tab, text="坐标与传送", style="SubHeader.TLabel").pack(anchor="w")
+        ttk.Label(
+            tab,
+            text=(
+                "参照桌面修改器，把传送功能收成独立页：通用坐标库、Boss 直达、手动坐标和路径传送都在这里。"
+                " 不再需要先扫 X/Y/Z 地址。"
+            ),
+            justify="left",
+            style="Status.TLabel",
+            wraplength=860,
+        ).pack(anchor="w", pady=(4, 10))
 
         preset_frame = ttk.LabelFrame(tab, text="通用坐标库", padding=(12, 8))
         preset_frame.pack(fill="x", pady=(0, 10))
 
         preset_note = (
-            "参考桌面版坐标库思路：按分类选点后可直接传送，也能一键追加到路径传送。"
+            "支持基地、采集点、Boss、悬赏、洞窟、传送点、商人和各等级区域。"
             " 输入关键词时会自动跨分类搜索。"
         )
         if self.coord_file_path is not None:
@@ -573,7 +721,6 @@ class TrainerApp:
             justify="left",
         )
         self.coord_preset_hint_label.pack(anchor="w")
-        self._refresh_coord_presets()
 
         boss_frame = ttk.LabelFrame(tab, text="Boss 直达", padding=(12, 8))
         boss_frame.pack(fill="x", pady=(0, 10))
@@ -618,9 +765,8 @@ class TrainerApp:
             justify="left",
         )
         self.boss_preset_hint_label.pack(anchor="w")
-        self._update_boss_preset_hint()
 
-        tp_frame = ttk.LabelFrame(tab, text="坐标传送", padding=(12, 8))
+        tp_frame = ttk.LabelFrame(tab, text="手动坐标传送", padding=(12, 8))
         tp_frame.pack(fill="x", pady=(0, 10))
 
         tp_row = ttk.Frame(tp_frame)
@@ -642,6 +788,12 @@ class TrainerApp:
         )
         ttk.Button(
             tp_row,
+            text="读取当前位置",
+            style="Quiet.TButton",
+            command=self._on_mem_read_pos,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            tp_row,
             text="传送到坐标",
             style="Big.TButton",
             command=self._on_mem_teleport,
@@ -649,7 +801,7 @@ class TrainerApp:
 
         ttk.Label(
             tp_frame,
-            text="直接输入坐标后点传送即可，不再需要先扫 X/Y/Z 地址。",
+            text="支持直接手填 X/Y/Z；如果增强模块已在线，读取当前位置会直接回填这里。",
             style="Status.TLabel",
         ).pack(anchor="w", pady=(6, 0))
 
@@ -660,7 +812,7 @@ class TrainerApp:
             route_frame,
             text=(
                 "每行一个 X Y Z，支持空格或逗号分隔。修改器会按顺序逐点写入桥接传送请求，"
-                " 不再要求提前锁定 pos_x/y/z。"
+                " 适合扫洞窟、商人、宝箱和多点采集路线。"
             ),
             justify="left",
             style="Status.TLabel",
@@ -694,7 +846,7 @@ class TrainerApp:
 
         route_text_frame = ttk.Frame(route_frame)
         route_text_frame.pack(fill="both", expand=True)
-        self.route_text = tk.Text(route_text_frame, height=6, wrap="none")
+        self.route_text = tk.Text(route_text_frame, height=8, wrap="none")
         self.route_text.pack(side="left", fill="both", expand=True)
         route_scroll = ttk.Scrollbar(
             route_text_frame, orient="vertical", command=self.route_text.yview
@@ -709,81 +861,8 @@ class TrainerApp:
             "# -280000, 85000, 12000\n",
         )
 
-        cheats_frame = ttk.LabelFrame(tab, text="玩家增强（需增强模块）", padding=(12, 8))
-        cheats_frame.pack(fill="x")
-
-        cheats_head = ttk.Frame(cheats_frame)
-        cheats_head.pack(fill="x", pady=(0, 6))
-        self.player_bridge_status_label = ttk.Label(
-            cheats_head, text="", style="Status.TLabel"
-        )
-        self.player_bridge_status_label.pack(side="left", fill="x", expand=True)
-        ttk.Button(
-            cheats_head,
-            text="部署/更新增强模块",
-            style="Quiet.TButton",
-            command=self._on_deploy_bridge,
-        ).pack(side="right")
-
-        toggles_row = ttk.Frame(cheats_frame)
-        toggles_row.pack(fill="x", pady=(0, 6))
-        self.bridge_godmode_var = tk.BooleanVar(value=self.cheat_state.godmode)
-        self.bridge_stamina_var = tk.BooleanVar(value=self.cheat_state.inf_stamina)
-        self.bridge_weight_var = tk.BooleanVar(value=self.cheat_state.weight_zero)
-        ttk.Checkbutton(
-            toggles_row, text="无敌", variable=self.bridge_godmode_var
-        ).pack(side="left", padx=(0, 12))
-        ttk.Checkbutton(
-            toggles_row, text="无限体力", variable=self.bridge_stamina_var
-        ).pack(side="left", padx=(0, 12))
-        ttk.Checkbutton(
-            toggles_row, text="无限负重", variable=self.bridge_weight_var
-        ).pack(side="left")
-
-        multiplier_row = ttk.Frame(cheats_frame)
-        multiplier_row.pack(fill="x", pady=(0, 6))
-        ttk.Label(multiplier_row, text="移速倍率:").pack(side="left")
-        self.bridge_speed_var = tk.StringVar(
-            value=f"{self.cheat_state.speed_multiplier:g}"
-        )
-        ttk.Entry(multiplier_row, textvariable=self.bridge_speed_var, width=8).pack(
-            side="left", padx=(4, 12)
-        )
-        ttk.Label(multiplier_row, text="跳跃倍率:").pack(side="left")
-        self.bridge_jump_var = tk.StringVar(
-            value=f"{self.cheat_state.jump_multiplier:g}"
-        )
-        ttk.Entry(multiplier_row, textvariable=self.bridge_jump_var, width=8).pack(
-            side="left", padx=(4, 12)
-        )
-        ttk.Button(
-            multiplier_row,
-            text="应用增强状态",
-            style="Big.TButton",
-            command=self._apply_player_cheats,
-        ).pack(side="left", padx=(6, 4))
-        ttk.Button(
-            multiplier_row,
-            text="恢复默认倍率",
-            style="Quiet.TButton",
-            command=self._reset_player_multipliers,
-        ).pack(side="left")
-
-        ttk.Label(
-            cheats_frame,
-            text="无敌/体力/负重/倍率依赖 PalworldTrainerBridge。当前这局没载入时，我会先帮你部署好，重启游戏后自动生效。",
-            justify="left",
-            style="Status.TLabel",
-            wraplength=840,
-        ).pack(anchor="w")
-
-        ttk.Label(
-            tab,
-            text="需要旧版手动搜索地址、锁血、锁蓝等底层调试功能时，请切到“高级”页。",
-            style="Status.TLabel",
-        ).pack(anchor="w", pady=(10, 0))
-
-        self._refresh_player_bridge_status()
+        self._refresh_coord_presets()
+        self._update_boss_preset_hint()
 
     def _bridge_toggles_path(self) -> Path | None:
         return toggles_path_for(self.report)
@@ -2575,11 +2654,15 @@ class TrainerApp:
         else:
             self.status_cheats.configure(text="聊天命令：未安装 ✘", style="Bad.TLabel")
 
-        if self.mem.is_attached():
-            pid = self.mem.pid()
-            self.status_mem.configure(text=f"高级：已连接 PID={pid} ✔", style="Good.TLabel")
+        status = self._read_bridge_status()
+        if status.player_valid:
+            self.status_mem.configure(text="增强模块：当前会话已就绪 ✔", style="Good.TLabel")
+        elif self.report.trainer_bridge_deployed and self.report.trainer_bridge_enabled:
+            self.status_mem.configure(text="增强模块：已部署，重开游戏后生效 ⚠", style="Warn.TLabel")
+        elif self.report.trainer_bridge_target is not None:
+            self.status_mem.configure(text="增强模块：未部署 ⚠", style="Warn.TLabel")
         else:
-            self.status_mem.configure(text="高级：未连接", style="Warn.TLabel")
+            self.status_mem.configure(text="增强模块：不可用 ✘", style="Bad.TLabel")
 
     def _rebuild_env_text(self) -> None:
         self.env_text.configure(state="normal")
@@ -2605,7 +2688,7 @@ class TrainerApp:
             if self.report.ue4ss_loader_path is not None:
                 lines.append(f"载入模块: {self.report.ue4ss_loader_path}")
         lines.append("")
-        lines.append("高级（内存）模块不依赖 UE4SS / mod，只要游戏运行就能在「高级」Tab 连接。")
+        lines.append("主界面当前只保留傻瓜模式流程；内存调试页已从主流程里隐藏。")
         if self.report.notes:
             lines.append("")
             lines.append("说明：")

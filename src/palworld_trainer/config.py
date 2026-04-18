@@ -15,7 +15,7 @@ SETTINGS_FILE_NAME = "settings.json"
 @dataclass
 class TrainerSettings:
     game_root: str | None = None
-    last_tab: str = "home"
+    last_tab: str = "common"
     custom_item_count: int = 1
     custom_pal_count: int = 1
     custom_exp_amount: int = 100000
@@ -71,7 +71,7 @@ def load_settings() -> TrainerSettings:
 
     return TrainerSettings(
         game_root=data.get("game_root") if isinstance(data.get("game_root"), str) else None,
-        last_tab=str(data.get("last_tab", "home")) or "home",
+        last_tab=str(data.get("last_tab", "common")) or "common",
         custom_item_count=int(data.get("custom_item_count", 1) or 1),
         custom_pal_count=int(data.get("custom_pal_count", 1) or 1),
         custom_exp_amount=int(data.get("custom_exp_amount", 100000) or 100000),
