@@ -29,6 +29,13 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install .[build]
 
+      - name: Resolve package version
+        id: meta
+        shell: pwsh
+        run: |
+          $version = python -c "from palworld_trainer import __version__; print(__version__)"
+          "version=$version" >> $env:GITHUB_OUTPUT
+
       - name: Run unit tests
         run: python -m unittest discover -s tests
 
@@ -41,5 +48,5 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
-          name: PalworldTrainer-windows
+          name: PalworldTrainer-v${{ steps.meta.outputs.version }}-windows
           path: dist/PalworldTrainer.exe

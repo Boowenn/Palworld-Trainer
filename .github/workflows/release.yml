@@ -26,6 +26,13 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install .[build]
 
+      - name: Resolve package version
+        id: meta
+        shell: pwsh
+        run: |
+          $version = python -c "from palworld_trainer import __version__; print(__version__)"
+          "version=$version" >> $env:GITHUB_OUTPUT
+
       - name: Run unit tests
         run: python -m unittest discover -s tests
 
@@ -38,7 +45,7 @@ jobs:
       - name: Upload release artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: PalworldTrainer-release
+          name: PalworldTrainer-v${{ steps.meta.outputs.version }}-release
           path: release/*
 
       - name: Publish GitHub release
@@ -47,18 +54,15 @@ jobs:
         run: |
           $tag = "${{ github.ref_name }}"
           $notes = @"
-          Palworld Trainer $tag
+          幻兽帕鲁修改器 $tag
 
-          傻瓜版 Palworld 修改器 — 下载 exe，双击运行，进游戏点按钮。
+          本次版本重点：
+          - 主界面继续朝参考修改器的点击式流程收敛，常用功能直接点，不再强迫玩家手输命令
+          - 物品 / 帕鲁 / 科技页加入推荐分类、最近记录和收藏入口，默认就能傻瓜式操作
+          - 大礼包和推荐项已按当前目录校准，过期条目会自动跳过，不再一整包失效
+          - 头部 GitHub 入口和多余说明已移除，界面可见文案进一步汉化
+          - 发布包内置增强模块资源并使用独立 exe 图标
 
-          Features:
-          - 7 tabs: 主页 / 玩家 / 物品 / 帕鲁 / 科技 / 世界 / 设置
-          - 1900+ items, 600+ pals, 500+ techs searchable and one-click give
-          - 7 quick gift presets (starter kit, advanced materials, top gear, ammo, food, capture, tech points)
-          - Auto-focus Palworld window and inject @! commands via Win32 SendInput
-          - Bundled ClientCheatCommands catalogs — works even before the mod is installed
-          - UE4SS bridge one-click deploy for optional diagnostics
-
-          Requirements: UE4SS Experimental (Palworld) + ClientCheatCommands installed in your Palworld folder.
+          使用前提：请先在游戏目录安装 UE4SS 与聊天命令模组（CCC）。
           "@
-          gh release create $tag .\release\* --title "Palworld Trainer $tag" --notes $notes
+          gh release create $tag .\release\* --title "幻兽帕鲁修改器 $tag" --notes $notes
