@@ -1,8 +1,6 @@
-"""Palworld Trainer — 傻瓜版主界面.
+"""幻兽帕鲁修改器主界面。
 
-界面分六个 Tab：常用功能 / 角色 / 物品 / 帕鲁 / 坐标 / 设置。
-每个按钮背后对应一条 ClientCheatCommands 的 @! 聊天命令，trainer 通过
-``game_control.send_chat_command`` 直接打到游戏聊天框里。
+主界面优先展示点击式常用流程，手动命令和调试入口只作为补充页签保留。
 """
 
 from __future__ import annotations
@@ -11,7 +9,6 @@ import os
 import subprocess
 import threading
 import tkinter as tk
-import webbrowser
 from pathlib import Path
 from tkinter import filedialog, ttk
 from typing import Callable
@@ -61,9 +58,7 @@ from .mem_engine import (
 from .teleport_points import BOSS_TELEPORT_POINTS, BossTeleportPoint
 
 
-APP_TITLE = "Palworld 修改器"
-GITHUB_URL = "https://github.com/Boowenn/Palworld-Trainer"
-
+APP_TITLE = "幻兽帕鲁修改器"
 WINDOW_WIDTH = 960
 WINDOW_HEIGHT = 720
 
@@ -102,6 +97,19 @@ class TrainerApp:
         self.tech_entries = self.catalogs.get("technology", [])
         self._item_entry_by_key = {entry.key: entry for entry in self.item_entries}
         self._pal_entry_by_key = {entry.key: entry for entry in self.pal_entries}
+        self._tech_entry_by_key = {entry.key: entry for entry in self.tech_entries}
+        self._item_guide_groups = self._resolve_choice_groups(
+            cmd.ITEM_GUIDE_GROUPS,
+            self._item_entry_by_key,
+        )
+        self._pal_guide_groups = self._resolve_choice_groups(
+            cmd.PAL_GUIDE_GROUPS,
+            self._pal_entry_by_key,
+        )
+        self._tech_guide_groups = self._resolve_choice_groups(
+            cmd.TECH_GUIDE_GROUPS,
+            self._tech_entry_by_key,
+        )
         self.boss_points: tuple[BossTeleportPoint, ...] = BOSS_TELEPORT_POINTS
         self._boss_point_by_label: dict[str, BossTeleportPoint] = {
             point.label: point for point in self.boss_points
@@ -110,6 +118,9 @@ class TrainerApp:
         self._current_item_results: list[CatalogEntry] = []
         self._current_pal_results: list[CatalogEntry] = []
         self._current_tech_results: list[CatalogEntry] = []
+        self._item_quick_choice_map: dict[str, CatalogEntry] = {}
+        self._pal_quick_choice_map: dict[str, CatalogEntry] = {}
+        self._tech_quick_choice_map: dict[str, CatalogEntry] = {}
         self._coord_group_names: list[str] = [
             group.name for group in self.coord_groups if group.items
         ]
@@ -195,10 +206,6 @@ class TrainerApp:
             side="left", padx=(10, 0)
         )
 
-        link = ttk.Label(header, text="GitHub", foreground="#2563eb", cursor="hand2")
-        link.pack(side="right")
-        link.bind("<Button-1>", lambda _event: webbrowser.open(GITHUB_URL))
-
     def _build_status_bar(self, parent: ttk.Frame) -> None:
         bar = ttk.Frame(parent, style="Card.TFrame", padding=(12, 10))
         bar.pack(fill="x")
@@ -255,15 +262,6 @@ class TrainerApp:
         self.notebook.add(tab, text="常用功能")
 
         ttk.Label(tab, text="常用功能", style="SubHeader.TLabel").pack(anchor="w")
-        ttk.Label(
-            tab,
-            text=(
-                "按参照修改器的思路，主界面只保留常用流程：启动游戏、角色增强、物品/帕鲁、"
-                "坐标库传送。高级内存调试和自由命令不再占用主界面。"
-            ),
-            justify="left",
-            style="Status.TLabel",
-        ).pack(anchor="w", pady=(6, 16))
 
         ttk.Label(tab, text="启动与修复", style="SubHeader.TLabel").pack(anchor="w")
 
@@ -271,7 +269,7 @@ class TrainerApp:
         grid.pack(fill="x", pady=(8, 0))
 
         buttons: list[tuple[str, Callable[[], None]]] = [
-            ("🚀 启动 Palworld", self._launch_game),
+            ("🚀 启动游戏", self._launch_game),
             ("🧩 部署/更新增强模块", self._on_deploy_bridge),
             ("📂 打开游戏目录", self._open_game_dir),
             ("🔄 刷新状态", self._refresh_status),
@@ -289,10 +287,10 @@ class TrainerApp:
         common_row = ttk.Frame(tab)
         common_row.pack(fill="x", pady=(8, 14))
         common_buttons: list[tuple[str, Callable[[], None]]] = [
+            ("🦅 开启飞行", lambda: self._on_mem_fly(True)),
+            ("🛬 关闭飞行", lambda: self._on_mem_fly(False)),
             ("🛠 脱困", lambda: self._send_with_label(cmd.unstuck(), "脱困")),
-            ("🏠 回家", lambda: self._send_with_label("@!homepoint", "回家")),
-            ("❤ 全额治疗", lambda: self._send_with_label("@!healfull", "全额治疗")),
-            ("💊 清状态", lambda: self._send_with_label("@!fillstatus", "清除负面状态")),
+            ("📍 读取坐标", self._on_mem_read_pos),
         ]
         for index, (label, callback) in enumerate(common_buttons):
             ttk.Button(common_row, text=label, style="Big.TButton", command=callback).grid(
@@ -304,10 +302,10 @@ class TrainerApp:
         unlock_row = ttk.Frame(tab)
         unlock_row.pack(fill="x", pady=(8, 14))
         unlock_buttons: list[tuple[str, Callable[[], None]]] = [
-            ("🗺 一键开图", lambda: self._send_with_label("@!unlockmap", "一键开图")),
             ("📍 解锁传送点", lambda: self._send(cmd.unlock_fast_travel())),
             ("🔓 解锁全部科技", lambda: self._send(cmd.unlock_all_tech())),
-            ("📖 全部手记", lambda: self._send_with_label("@!giveallnotes", "全部手记")),
+            ("🎁 打开物品页", lambda: self.notebook.select(TAB_NAMES.index("items"))),
+            ("🧭 打开坐标页", lambda: self.notebook.select(TAB_NAMES.index("coords"))),
         ]
         for index, (label, callback) in enumerate(unlock_buttons):
             ttk.Button(unlock_row, text=label, style="Big.TButton", command=callback).grid(
@@ -367,16 +365,6 @@ class TrainerApp:
 
     def _build_simple_player_tab(self, tab: ttk.Frame) -> None:
         ttk.Label(tab, text="角色功能", style="SubHeader.TLabel").pack(anchor="w")
-        ttk.Label(
-            tab,
-            text=(
-                "这一页只保留角色相关的常用功能：飞行、脱困、回家和角色增强。"
-                " 传送、Boss、商人、洞窟和路线点位全部放到“坐标”页。"
-            ),
-            justify="left",
-            style="Status.TLabel",
-            wraplength=860,
-        ).pack(anchor="w", pady=(4, 10))
 
         quick_frame = ttk.LabelFrame(tab, text="角色快捷操作", padding=(12, 8))
         quick_frame.pack(fill="x", pady=(0, 10))
@@ -387,9 +375,9 @@ class TrainerApp:
             ("🦅 开启飞行", lambda: self._on_mem_fly(True)),
             ("🛬 关闭飞行", lambda: self._on_mem_fly(False)),
             ("🛠 脱困", lambda: self._send_with_label(cmd.unstuck(), "脱困")),
-            ("🏠 回家", lambda: self._send_with_label("@!homepoint", "回家")),
             ("📍 读取当前位置", self._on_mem_read_pos),
             ("🧭 打开坐标页", lambda: self.notebook.select(TAB_NAMES.index("coords"))),
+            ("🧩 部署增强模块", self._on_deploy_bridge),
         ]
         for index, (label, callback) in enumerate(quick_buttons):
             ttk.Button(
@@ -400,13 +388,6 @@ class TrainerApp:
             ).grid(row=index // 3, column=index % 3, padx=6, pady=4, sticky="ew")
         for col in range(3):
             quick_row.columnconfigure(col, weight=1)
-
-        ttk.Label(
-            quick_frame,
-            text="读取当前位置会同步刷新“坐标”页里的 X/Y/Z 输入框；飞行按钮优先走 bridge，同时保留聊天命令回退。",
-            style="Status.TLabel",
-            wraplength=840,
-        ).pack(anchor="w")
 
         cheats_frame = ttk.LabelFrame(tab, text="角色增强（需增强模块）", padding=(12, 8))
         cheats_frame.pack(fill="x")
@@ -469,14 +450,6 @@ class TrainerApp:
         ).pack(side="left")
 
         ttk.Label(
-            cheats_frame,
-            text="无敌/体力/负重/倍率依赖 PalworldTrainerBridge。当前这局没载入时，我会先帮你部署好，重启游戏后自动生效。",
-            justify="left",
-            style="Status.TLabel",
-            wraplength=840,
-        ).pack(anchor="w")
-
-        ttk.Label(
             tab,
             text="主界面已经按傻瓜模式重构，不再引导你做手动搜索地址。",
             style="Status.TLabel",
@@ -491,20 +464,15 @@ class TrainerApp:
         ttk.Label(tab, text="坐标与传送", style="SubHeader.TLabel").pack(anchor="w")
         ttk.Label(
             tab,
-            text=(
-                "参照桌面修改器，把传送功能收成独立页：通用坐标库、Boss 直达、手动坐标和路径传送都在这里。"
-                " 不再需要先扫 X/Y/Z 地址。"
-            ),
-            justify="left",
+            text="坐标收藏、首领直达、手动传送和路线传送都在这里。",
             style="Status.TLabel",
-            wraplength=860,
         ).pack(anchor="w", pady=(4, 10))
 
         favorite_frame = ttk.LabelFrame(tab, text="收藏夹", padding=(12, 8))
         favorite_frame.pack(fill="x", pady=(0, 10))
         ttk.Label(
             favorite_frame,
-            text="把常用 Boss、商人、洞窟、传送点或基地点位收进这里，下次直接传，不用重新翻分类。",
+            text="把常用首领、商人、洞窟、传送点或基地点位收进这里，下次直接传，不用重新翻分类。",
             style="Status.TLabel",
             wraplength=840,
             justify="left",
@@ -564,7 +532,7 @@ class TrainerApp:
         preset_frame.pack(fill="x", pady=(0, 10))
 
         preset_note = (
-            "支持基地、采集点、Boss、悬赏、洞窟、传送点、商人和各等级区域。"
+            "支持基地、采集点、首领、悬赏、洞窟、传送点、商人和各等级区域。"
             " 输入关键词时会自动跨分类搜索。"
         )
         if self.coord_file_path is not None:
@@ -659,12 +627,12 @@ class TrainerApp:
         )
         self.coord_preset_hint_label.pack(anchor="w")
 
-        boss_frame = ttk.LabelFrame(tab, text="Boss 直达", padding=(12, 8))
+        boss_frame = ttk.LabelFrame(tab, text="首领直达", padding=(12, 8))
         boss_frame.pack(fill="x", pady=(0, 10))
 
         boss_row = ttk.Frame(boss_frame)
         boss_row.pack(fill="x", pady=(0, 6))
-        ttk.Label(boss_row, text="目标 Boss:").pack(side="left")
+        ttk.Label(boss_row, text="目标首领:").pack(side="left")
         self.boss_preset_var = tk.StringVar()
         boss_labels = [point.label for point in self.boss_points]
         if boss_labels:
@@ -969,7 +937,7 @@ class TrainerApp:
         point = self._selected_boss_point()
         if point is None:
             self.boss_preset_hint_label.configure(
-                text="选择一个 Boss 后，可直接把坐标填入下方传送栏，或一键传送到 Boss 上空。"
+                text="选择一个首领后，可直接把坐标填入下方传送栏，或一键传送到首领上空。"
             )
             return
 
@@ -984,7 +952,7 @@ class TrainerApp:
     def _load_selected_boss_preset(self) -> None:
         point = self._selected_boss_point()
         if point is None:
-            self._show_result("先选一个 Boss。", ok=False)
+            self._show_result("先选一个首领。", ok=False)
             return
 
         safe_z = self._boss_point_safe_z(point)
@@ -995,7 +963,7 @@ class TrainerApp:
     def _teleport_selected_boss_preset(self) -> None:
         point = self._selected_boss_point()
         if point is None:
-            self._show_result("先选一个 Boss。", ok=False)
+            self._show_result("先选一个首领。", ok=False)
             return
 
         safe_z = self._boss_point_safe_z(point)
@@ -1009,7 +977,7 @@ class TrainerApp:
     def _add_selected_boss_preset_to_favorites(self) -> None:
         point = self._selected_boss_point()
         if point is None:
-            self._show_result("先选一个 Boss。", ok=False)
+            self._show_result("先选一个首领。", ok=False)
             return
         self._remember_value(self.settings.favorite_coord_labels, point.label, limit=80)
         save_settings(self.settings)
@@ -1064,7 +1032,7 @@ class TrainerApp:
             text = "未找到 UE4SS Mods 目录，无法部署玩家增强模块。"
             style = "Bad.TLabel"
         elif not self.report.client_cheat_commands_present:
-            text = "还没检测到 ClientCheatCommands，先把 UE4SS / CCC 装好。"
+            text = "还没检测到聊天命令模组，先把 UE4SS / CCC 装好。"
             style = "Bad.TLabel"
         elif not self.report.trainer_bridge_deployed or not self.report.trainer_bridge_enabled:
             text = "玩家增强模块还没部署完成，点右侧按钮即可自动修复。"
@@ -1213,15 +1181,8 @@ class TrainerApp:
 
         ttk.Separator(tab).pack(fill="x", pady=(4, 10))
 
-        shortcuts = ttk.LabelFrame(tab, text="常用物品", padding=(12, 8))
+        shortcuts = ttk.LabelFrame(tab, text="傻瓜式点选", padding=(12, 8))
         shortcuts.pack(fill="x", pady=(0, 10))
-        ttk.Label(
-            shortcuts,
-            text="桌面版那种常用逻辑补进来了：最近用过的和手动收藏的物品都会留在这里，后面可直接一键再发。",
-            style="Status.TLabel",
-            wraplength=840,
-            justify="left",
-        ).pack(anchor="w", pady=(0, 6))
 
         count_row = ttk.Frame(shortcuts)
         count_row.pack(fill="x", pady=(0, 6))
@@ -1235,6 +1196,48 @@ class TrainerApp:
                 command=lambda value=amount: self._set_numeric_var(self.item_count_var, value),
             ).pack(side="left", padx=(6, 0))
 
+        select_row = ttk.Frame(shortcuts)
+        select_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(select_row, text="分类:").pack(side="left")
+        self.item_quick_group_var = tk.StringVar(value=next(iter(self._item_guide_groups), ""))
+        self.item_quick_group_box = ttk.Combobox(
+            select_row,
+            textvariable=self.item_quick_group_var,
+            values=list(self._item_guide_groups),
+            state="readonly",
+            width=18,
+        )
+        self.item_quick_group_box.pack(side="left", padx=(6, 12))
+        self.item_quick_group_box.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self._refresh_item_quick_choices(),
+        )
+        ttk.Label(select_row, text="常用项:").pack(side="left")
+        self.item_quick_choice_var = tk.StringVar()
+        self.item_quick_choice_box = ttk.Combobox(
+            select_row,
+            textvariable=self.item_quick_choice_var,
+            values=[],
+            state="readonly",
+            width=34,
+        )
+        self.item_quick_choice_box.pack(side="left", padx=(6, 0), fill="x", expand=True)
+
+        action_row = ttk.Frame(shortcuts)
+        action_row.pack(fill="x", pady=(0, 8))
+        ttk.Button(
+            action_row,
+            text="🎁 直接给我",
+            style="Big.TButton",
+            command=self._give_selected_item_quick,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            action_row,
+            text="⭐ 收藏当前",
+            style="Quiet.TButton",
+            command=self._add_selected_item_quick_favorite,
+        ).pack(side="left")
+
         recent_row = ttk.Frame(shortcuts)
         recent_row.pack(fill="x", pady=(0, 6))
         ttk.Label(recent_row, text="最近给予:").pack(side="left")
@@ -1247,12 +1250,6 @@ class TrainerApp:
             width=42,
         )
         self.item_recent_box.pack(side="left", padx=(6, 10), fill="x", expand=True)
-        ttk.Button(
-            recent_row,
-            text="填入搜索",
-            style="Quiet.TButton",
-            command=self._load_recent_item_into_search,
-        ).pack(side="left", padx=(0, 6))
         ttk.Button(
             recent_row,
             text="直接给予",
@@ -1285,16 +1282,18 @@ class TrainerApp:
             command=self._remove_selected_item_favorite,
         ).pack(side="left")
 
-        ttk.Label(tab, text="单件物品查找", style="SubHeader.TLabel").pack(anchor="w")
+        ttk.Separator(tab).pack(fill="x", pady=(4, 10))
+
+        ttk.Label(tab, text="高级查找（不知道名字时可以不管）", style="SubHeader.TLabel").pack(anchor="w")
         ttk.Label(
             tab,
-            text=f"当前物品目录共 {len(self.item_entries)} 条。支持按名称或内部 ID 搜索，双击列表也会直接给予。",
+            text="默认列表会跟着上面的推荐分类走；只有要找冷门物品时再输入关键字。",
             style="Status.TLabel",
         ).pack(anchor="w", pady=(2, 8))
 
         search_row = ttk.Frame(tab)
         search_row.pack(fill="x")
-        ttk.Label(search_row, text="搜索名称 / ID：").pack(side="left")
+        ttk.Label(search_row, text="关键字：").pack(side="left")
         self.item_search_var = tk.StringVar()
         self.item_search_var.trace_add("write", lambda *_: self._refresh_item_list())
         ttk.Entry(search_row, textvariable=self.item_search_var).pack(
@@ -1329,29 +1328,18 @@ class TrainerApp:
             command=self._add_selected_item_favorite,
         ).pack(side="left")
 
-        self._refresh_item_list()
         self._refresh_item_shortcuts()
+        self._refresh_item_quick_choices()
+        self._refresh_item_list()
 
     def _build_pals_tab(self) -> None:
         tab = ttk.Frame(self.notebook, padding=16)
         self.notebook.add(tab, text="帕鲁")
 
-        ttk.Label(tab, text="生成帕鲁（仅房主/单机有效）", style="SubHeader.TLabel").pack(anchor="w")
-        ttk.Label(
-            tab,
-            text=f"当前帕鲁目录共 {len(self.pal_entries)} 条。支持按名称或内部 ID 搜索，双击列表也会直接生成。",
-            style="Status.TLabel",
-        ).pack(anchor="w", pady=(2, 8))
+        ttk.Label(tab, text="常用帕鲁（仅房主/单机有效）", style="SubHeader.TLabel").pack(anchor="w")
 
-        shortcuts = ttk.LabelFrame(tab, text="常用帕鲁", padding=(12, 8))
+        shortcuts = ttk.LabelFrame(tab, text="傻瓜式点选", padding=(12, 8))
         shortcuts.pack(fill="x", pady=(0, 10))
-        ttk.Label(
-            shortcuts,
-            text="把常召的帕鲁留在这里，后面直接挑最近或收藏就能再生成。",
-            style="Status.TLabel",
-            wraplength=840,
-            justify="left",
-        ).pack(anchor="w", pady=(0, 6))
 
         count_row = ttk.Frame(shortcuts)
         count_row.pack(fill="x", pady=(0, 6))
@@ -1365,6 +1353,48 @@ class TrainerApp:
                 command=lambda value=amount: self._set_numeric_var(self.pal_count_var, value),
             ).pack(side="left", padx=(6, 0))
 
+        select_row = ttk.Frame(shortcuts)
+        select_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(select_row, text="分类:").pack(side="left")
+        self.pal_quick_group_var = tk.StringVar(value=next(iter(self._pal_guide_groups), ""))
+        self.pal_quick_group_box = ttk.Combobox(
+            select_row,
+            textvariable=self.pal_quick_group_var,
+            values=list(self._pal_guide_groups),
+            state="readonly",
+            width=18,
+        )
+        self.pal_quick_group_box.pack(side="left", padx=(6, 12))
+        self.pal_quick_group_box.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self._refresh_pal_quick_choices(),
+        )
+        ttk.Label(select_row, text="推荐项:").pack(side="left")
+        self.pal_quick_choice_var = tk.StringVar()
+        self.pal_quick_choice_box = ttk.Combobox(
+            select_row,
+            textvariable=self.pal_quick_choice_var,
+            values=[],
+            state="readonly",
+            width=34,
+        )
+        self.pal_quick_choice_box.pack(side="left", padx=(6, 0), fill="x", expand=True)
+
+        action_row = ttk.Frame(shortcuts)
+        action_row.pack(fill="x", pady=(0, 8))
+        ttk.Button(
+            action_row,
+            text="🐉 直接生成",
+            style="Big.TButton",
+            command=self._spawn_selected_pal_quick,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            action_row,
+            text="⭐ 收藏当前",
+            style="Quiet.TButton",
+            command=self._add_selected_pal_quick_favorite,
+        ).pack(side="left")
+
         recent_row = ttk.Frame(shortcuts)
         recent_row.pack(fill="x", pady=(0, 6))
         ttk.Label(recent_row, text="最近生成:").pack(side="left")
@@ -1377,12 +1407,6 @@ class TrainerApp:
             width=42,
         )
         self.pal_recent_box.pack(side="left", padx=(6, 10), fill="x", expand=True)
-        ttk.Button(
-            recent_row,
-            text="填入搜索",
-            style="Quiet.TButton",
-            command=self._load_recent_pal_into_search,
-        ).pack(side="left", padx=(0, 6))
         ttk.Button(
             recent_row,
             text="直接生成",
@@ -1415,9 +1439,17 @@ class TrainerApp:
             command=self._remove_selected_pal_favorite,
         ).pack(side="left")
 
+        ttk.Separator(tab).pack(fill="x", pady=(4, 10))
+        ttk.Label(tab, text="高级查找（不知道名字时可以不管）", style="SubHeader.TLabel").pack(anchor="w")
+        ttk.Label(
+            tab,
+            text="默认列表会跟着上面的推荐分类走；只有要找冷门帕鲁时再输入关键字。",
+            style="Status.TLabel",
+        ).pack(anchor="w", pady=(2, 8))
+
         search_row = ttk.Frame(tab)
         search_row.pack(fill="x")
-        ttk.Label(search_row, text="搜索名称 / ID：").pack(side="left")
+        ttk.Label(search_row, text="关键字：").pack(side="left")
         self.pal_search_var = tk.StringVar()
         self.pal_search_var.trace_add("write", lambda *_: self._refresh_pal_list())
         ttk.Entry(search_row, textvariable=self.pal_search_var).pack(
@@ -1452,8 +1484,9 @@ class TrainerApp:
             command=self._add_selected_pal_favorite,
         ).pack(side="left")
 
-        self._refresh_pal_list()
         self._refresh_pal_shortcuts()
+        self._refresh_pal_quick_choices()
+        self._refresh_pal_list()
 
     def _build_tech_tab(self) -> None:
         tab = ttk.Frame(self.notebook, padding=16)
@@ -1477,16 +1510,62 @@ class TrainerApp:
         ).pack(side="left", padx=4)
 
         ttk.Separator(tab).pack(fill="x", pady=(4, 10))
-        ttk.Label(tab, text="单项科技解锁", style="SubHeader.TLabel").pack(anchor="w")
+        guide = ttk.LabelFrame(tab, text="傻瓜式点选", padding=(12, 8))
+        guide.pack(fill="x", pady=(0, 10))
+
+        select_row = ttk.Frame(guide)
+        select_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(select_row, text="分类:").pack(side="left")
+        self.tech_quick_group_var = tk.StringVar(value=next(iter(self._tech_guide_groups), ""))
+        self.tech_quick_group_box = ttk.Combobox(
+            select_row,
+            textvariable=self.tech_quick_group_var,
+            values=list(self._tech_guide_groups),
+            state="readonly",
+            width=18,
+        )
+        self.tech_quick_group_box.pack(side="left", padx=(6, 12))
+        self.tech_quick_group_box.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self._refresh_tech_quick_choices(),
+        )
+        ttk.Label(select_row, text="推荐项:").pack(side="left")
+        self.tech_quick_choice_var = tk.StringVar()
+        self.tech_quick_choice_box = ttk.Combobox(
+            select_row,
+            textvariable=self.tech_quick_choice_var,
+            values=[],
+            state="readonly",
+            width=36,
+        )
+        self.tech_quick_choice_box.pack(side="left", padx=(6, 0), fill="x", expand=True)
+
+        action_row = ttk.Frame(guide)
+        action_row.pack(fill="x")
+        ttk.Button(
+            action_row,
+            text="🔓 解锁当前",
+            style="Big.TButton",
+            command=self._unlock_selected_tech_quick,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            action_row,
+            text="📚 解锁整组",
+            style="Quiet.TButton",
+            command=self._unlock_selected_tech_group,
+        ).pack(side="left")
+
+        ttk.Separator(tab).pack(fill="x", pady=(4, 10))
+        ttk.Label(tab, text="高级查找（不知道名字时可以不管）", style="SubHeader.TLabel").pack(anchor="w")
         ttk.Label(
             tab,
-            text=f"当前科技目录共 {len(self.tech_entries)} 条。",
+            text="默认列表会跟着上面的推荐分类走；只有要找冷门科技时再输入关键字。",
             style="Status.TLabel",
         ).pack(anchor="w", pady=(2, 8))
 
         search_row = ttk.Frame(tab)
         search_row.pack(fill="x")
-        ttk.Label(search_row, text="搜索：").pack(side="left")
+        ttk.Label(search_row, text="关键字：").pack(side="left")
         self.tech_search_var = tk.StringVar()
         self.tech_search_var.trace_add("write", lambda *_: self._refresh_tech_list())
         ttk.Entry(search_row, textvariable=self.tech_search_var).pack(
@@ -1513,6 +1592,7 @@ class TrainerApp:
             command=self._on_unlock_selected_tech,
         ).pack(side="left")
 
+        self._refresh_tech_quick_choices()
         self._refresh_tech_list()
 
     def _build_world_tab(self) -> None:
@@ -1795,14 +1875,13 @@ class TrainerApp:
 
         ttk.Label(
             tab,
-            text="实验性命令（需要 ClientCheatCommands mod 支持）",
+            text="实验按钮（是否生效取决于当前模组版本）",
             style="SubHeader.TLabel",
         ).pack(anchor="w")
         ttk.Label(
             tab,
             text=(
-                "下面这些按钮对应社区公开文档里 CCC mod v2+ 支持的 @! 命令。"
-                "不同版本的 mod 未必每条都实现——点了如果没反应，去游戏聊天框看报错，"
+                "点了没反应就说明当前版本不支持。"
                 "或者直接用下方「自由命令」输入框。"
             ),
             justify="left",
@@ -1834,11 +1913,11 @@ class TrainerApp:
             grid.columnconfigure(col, weight=1)
 
         ttk.Separator(tab).pack(fill="x", pady=(4, 10))
-        ttk.Label(tab, text="自由命令", style="SubHeader.TLabel").pack(anchor="w")
+        ttk.Label(tab, text="手动命令（可选）", style="SubHeader.TLabel").pack(anchor="w")
         ttk.Label(
             tab,
             text=(
-                "直接输入任意 @! 命令发送给游戏。不用自己加 @! 前缀，"
+                "这里给懂命令的人备用，不想碰可以不管。"
                 "程序会自动补。按 Enter 或点「发送」即可。"
             ),
             justify="left",
@@ -1910,12 +1989,6 @@ class TrainerApp:
         ttk.Button(
             bottom, text="重新扫描", style="Quiet.TButton", command=self._refresh_status
         ).pack(side="left")
-        ttk.Button(
-            bottom,
-            text="访问 GitHub",
-            style="Quiet.TButton",
-            command=lambda: webbrowser.open(GITHUB_URL),
-        ).pack(side="right")
 
     # ------------------------------------------------------------------
     # List refreshers
@@ -1925,7 +1998,10 @@ class TrainerApp:
         variable.set(str(value))
 
     def _catalog_display(self, entry: CatalogEntry) -> str:
-        return f"{entry.label} [{entry.key}]"
+        label = cmd.display_name(entry.kind, entry.key, entry.label)
+        if label != entry.label:
+            return label
+        return f"{label} [{entry.key}]"
 
     def _catalog_entry_from_display(
         self,
@@ -1933,10 +2009,65 @@ class TrainerApp:
         mapping: dict[str, CatalogEntry],
     ) -> CatalogEntry | None:
         text = display.strip()
-        if not text or not text.endswith("]") or "[" not in text:
+        if not text:
             return None
-        key = text.rsplit("[", 1)[1].removesuffix("]").strip()
-        return mapping.get(key)
+        if text.endswith("]") and "[" in text:
+            key = text.rsplit("[", 1)[1].removesuffix("]").strip()
+            entry = mapping.get(key)
+            if entry is not None:
+                return entry
+        for entry in mapping.values():
+            if self._catalog_display(entry) == text:
+                return entry
+        return None
+
+    def _resolve_choice_groups(
+        self,
+        groups: tuple[cmd.QuickChoiceGroup, ...],
+        mapping: dict[str, CatalogEntry],
+    ) -> dict[str, list[tuple[str, CatalogEntry]]]:
+        resolved: dict[str, list[tuple[str, CatalogEntry]]] = {}
+        for group in groups:
+            entries: list[tuple[str, CatalogEntry]] = []
+            for choice in group.choices:
+                entry = mapping.get(choice.key)
+                if entry is not None:
+                    entries.append((choice.title, entry))
+            if entries:
+                resolved[group.title] = entries
+        return resolved
+
+    def _preferred_group_entries(
+        self,
+        groups: dict[str, list[tuple[str, CatalogEntry]]],
+        selected_group: str,
+    ) -> list[CatalogEntry]:
+        if selected_group in groups:
+            return [entry for _, entry in groups[selected_group]]
+        if groups:
+            return [entry for _, entry in next(iter(groups.values()))]
+        return []
+
+    def _refresh_choice_box(
+        self,
+        groups: dict[str, list[tuple[str, CatalogEntry]]],
+        group_var: tk.StringVar,
+        choice_var: tk.StringVar,
+        choice_box: ttk.Combobox,
+        *,
+        choice_map_attr: str,
+    ) -> None:
+        selected_group = group_var.get().strip()
+        if selected_group not in groups and groups:
+            selected_group = next(iter(groups))
+            group_var.set(selected_group)
+
+        choice_map = {title: entry for title, entry in groups.get(selected_group, [])}
+        setattr(self, choice_map_attr, choice_map)
+        values = list(choice_map)
+        choice_box.configure(values=values)
+        if choice_var.get().strip() not in values:
+            choice_var.set(values[0] if values else "")
 
     def _refresh_combo_values(
         self,
@@ -1996,6 +2127,113 @@ class TrainerApp:
                     self._pal_entry_by_key,
                 ),
             )
+
+    def _refresh_item_quick_choices(self) -> None:
+        if not hasattr(self, "item_quick_choice_box"):
+            return
+        self._refresh_choice_box(
+            self._item_guide_groups,
+            self.item_quick_group_var,
+            self.item_quick_choice_var,
+            self.item_quick_choice_box,
+            choice_map_attr="_item_quick_choice_map",
+        )
+        if hasattr(self, "item_search_var") and not self.item_search_var.get().strip():
+            self._refresh_item_list()
+
+    def _selected_item_quick_entry(self) -> CatalogEntry | None:
+        if not hasattr(self, "item_quick_choice_var"):
+            return None
+        return self._item_quick_choice_map.get(self.item_quick_choice_var.get().strip())
+
+    def _give_selected_item_quick(self) -> None:
+        entry = self._selected_item_quick_entry()
+        if entry is None:
+            self._show_result("当前分类没有可直接发放的物品。", ok=False)
+            return
+        self._give_item_entry(entry)
+
+    def _add_selected_item_quick_favorite(self) -> None:
+        entry = self._selected_item_quick_entry()
+        if entry is None:
+            self._show_result("当前分类没有可收藏的物品。", ok=False)
+            return
+        self._remember_value(self.settings.favorite_item_ids, entry.key, limit=40)
+        save_settings(self.settings)
+        self._refresh_item_shortcuts()
+        self._show_result(f"已收藏物品：{self._catalog_display(entry)}。", ok=True)
+
+    def _refresh_pal_quick_choices(self) -> None:
+        if not hasattr(self, "pal_quick_choice_box"):
+            return
+        self._refresh_choice_box(
+            self._pal_guide_groups,
+            self.pal_quick_group_var,
+            self.pal_quick_choice_var,
+            self.pal_quick_choice_box,
+            choice_map_attr="_pal_quick_choice_map",
+        )
+        if hasattr(self, "pal_search_var") and not self.pal_search_var.get().strip():
+            self._refresh_pal_list()
+
+    def _selected_pal_quick_entry(self) -> CatalogEntry | None:
+        if not hasattr(self, "pal_quick_choice_var"):
+            return None
+        return self._pal_quick_choice_map.get(self.pal_quick_choice_var.get().strip())
+
+    def _spawn_selected_pal_quick(self) -> None:
+        entry = self._selected_pal_quick_entry()
+        if entry is None:
+            self._show_result("当前分类没有可直接生成的帕鲁。", ok=False)
+            return
+        self._spawn_pal_entry(entry)
+
+    def _add_selected_pal_quick_favorite(self) -> None:
+        entry = self._selected_pal_quick_entry()
+        if entry is None:
+            self._show_result("当前分类没有可收藏的帕鲁。", ok=False)
+            return
+        self._remember_value(self.settings.favorite_pal_ids, entry.key, limit=40)
+        save_settings(self.settings)
+        self._refresh_pal_shortcuts()
+        self._show_result(f"已收藏帕鲁：{self._catalog_display(entry)}。", ok=True)
+
+    def _refresh_tech_quick_choices(self) -> None:
+        if not hasattr(self, "tech_quick_choice_box"):
+            return
+        self._refresh_choice_box(
+            self._tech_guide_groups,
+            self.tech_quick_group_var,
+            self.tech_quick_choice_var,
+            self.tech_quick_choice_box,
+            choice_map_attr="_tech_quick_choice_map",
+        )
+        if hasattr(self, "tech_search_var") and not self.tech_search_var.get().strip():
+            self._refresh_tech_list()
+
+    def _selected_tech_quick_entry(self) -> CatalogEntry | None:
+        if not hasattr(self, "tech_quick_choice_var"):
+            return None
+        return self._tech_quick_choice_map.get(self.tech_quick_choice_var.get().strip())
+
+    def _unlock_selected_tech_quick(self) -> None:
+        entry = self._selected_tech_quick_entry()
+        if entry is None:
+            self._show_result("当前分类没有可直接解锁的科技。", ok=False)
+            return
+        self._send_with_label(cmd.unlock_tech(entry.key), f"解锁科技：{self._catalog_display(entry)}")
+
+    def _unlock_selected_tech_group(self) -> None:
+        if not hasattr(self, "tech_quick_group_var"):
+            self._show_result("当前还没有可整组解锁的科技分类。", ok=False)
+            return
+        group_name = self.tech_quick_group_var.get().strip()
+        entries = self._preferred_group_entries(self._tech_guide_groups, group_name)
+        if not entries:
+            self._show_result("当前分类没有可整组解锁的科技。", ok=False)
+            return
+        commands = [cmd.unlock_tech(entry.key) for entry in entries]
+        self._send_many(commands, label=f"{group_name}（共 {len(commands)} 项）")
         if hasattr(self, "pal_favorite_box"):
             self._refresh_combo_values(
                 self.pal_favorite_box,
@@ -2078,27 +2316,51 @@ class TrainerApp:
         self._show_result(f"已把 {label} 追加到路径列表。", ok=True)
 
     def _refresh_item_list(self) -> None:
-        query = self.item_search_var.get()
-        results = search_catalog(self.item_entries, query, limit=400)
+        query = self.item_search_var.get().strip() if hasattr(self, "item_search_var") else ""
+        if query:
+            results = search_catalog(self.item_entries, query, limit=400)
+        else:
+            selected_group = (
+                self.item_quick_group_var.get().strip()
+                if hasattr(self, "item_quick_group_var")
+                else ""
+            )
+            results = self._preferred_group_entries(self._item_guide_groups, selected_group)
         self.item_listbox.delete(0, "end")
         for entry in results:
             self.item_listbox.insert("end", self._catalog_display(entry))
         self._current_item_results = results
 
     def _refresh_pal_list(self) -> None:
-        query = self.pal_search_var.get()
-        results = search_catalog(self.pal_entries, query, limit=400)
+        query = self.pal_search_var.get().strip() if hasattr(self, "pal_search_var") else ""
+        if query:
+            results = search_catalog(self.pal_entries, query, limit=400)
+        else:
+            selected_group = (
+                self.pal_quick_group_var.get().strip()
+                if hasattr(self, "pal_quick_group_var")
+                else ""
+            )
+            results = self._preferred_group_entries(self._pal_guide_groups, selected_group)
         self.pal_listbox.delete(0, "end")
         for entry in results:
             self.pal_listbox.insert("end", self._catalog_display(entry))
         self._current_pal_results = results
 
     def _refresh_tech_list(self) -> None:
-        query = self.tech_search_var.get()
-        results = search_catalog(self.tech_entries, query, limit=400)
+        query = self.tech_search_var.get().strip() if hasattr(self, "tech_search_var") else ""
+        if query:
+            results = search_catalog(self.tech_entries, query, limit=400)
+        else:
+            selected_group = (
+                self.tech_quick_group_var.get().strip()
+                if hasattr(self, "tech_quick_group_var")
+                else ""
+            )
+            results = self._preferred_group_entries(self._tech_guide_groups, selected_group)
         self.tech_listbox.delete(0, "end")
         for entry in results:
-            self.tech_listbox.insert("end", f"{entry.label}   [{entry.key}]")
+            self.tech_listbox.insert("end", self._catalog_display(entry))
         self._current_tech_results = results
 
     def _refresh_time_label(self, time_var: tk.IntVar, time_label: ttk.Label) -> None:
@@ -2137,7 +2399,7 @@ class TrainerApp:
         if self._bridge_runtime_ready():
             bridge_ok, _message = self._write_bridge_fly_request(enabled)
         if bridge_ok:
-            label = f"{label}（bridge + 命令双保险）"
+            label = f"{label}（增强模块 + 命令双保险）"
         self._send_with_label(cmd.fly(enabled), label)
 
     def _on_mem_read_pos(self) -> None:
@@ -2239,11 +2501,20 @@ class TrainerApp:
         self._show_result(message, ok=ok)
 
     def _on_give_preset(self, preset: cmd.QuickPreset) -> None:
-        commands = cmd.preset_commands(preset)
+        valid_items = [
+            (item_id, count)
+            for item_id, count in preset.items
+            if item_id in self._item_entry_by_key
+        ]
+        missing_count = len(preset.items) - len(valid_items)
+        commands = [cmd.giveme(item_id, count) for item_id, count in valid_items]
         if not commands:
-            self._show_result(f"{preset.title} 是空包。", ok=False)
+            self._show_result(f"{preset.title} 里没有当前版本可用的物品。", ok=False)
             return
-        self._send_many(commands, label=f"{preset.title}（共 {len(commands)} 条）")
+        label = preset.title
+        if missing_count > 0:
+            label = f"{preset.title}（已跳过 {missing_count} 个过期物品）"
+        self._send_many(commands, label=f"{label}（共 {len(commands)} 条）")
 
     def _parse_count(self, raw: str, default: int = 1) -> int:
         try:
@@ -2749,7 +3020,7 @@ class TrainerApp:
         except OSError as error:
             self._show_result(f"启动失败：{error}", ok=False)
             return
-        self._show_result("已拉起 Palworld.exe。", ok=True)
+        self._show_result("游戏已启动。", ok=True)
 
     def _open_game_dir(self) -> None:
         if not self.report.game_root_exists or not self.report.game_root:
@@ -2761,7 +3032,7 @@ class TrainerApp:
             self._show_result(f"打开失败：{error}", ok=False)
 
     def _browse_game_root(self) -> None:
-        chosen = filedialog.askdirectory(title="选择 Palworld 安装目录")
+        chosen = filedialog.askdirectory(title="选择游戏安装目录")
         if chosen:
             self.game_root_var.set(chosen)
 
@@ -2891,16 +3162,12 @@ class TrainerApp:
 
         lines: list[str] = []
         lines.append(f"游戏根目录: {self.report.game_root or '<未检测到>'}")
-        lines.append(f"  Palworld.exe 存在: {'是' if self.report.launcher_exists else '否'}")
-        lines.append(f"  Shipping.exe 存在: {'是' if self.report.shipping_exists else '否'}")
+        lines.append(f"  启动程序 Palworld.exe: {'是' if self.report.launcher_exists else '否'}")
+        lines.append(f"  主程序 Shipping.exe: {'是' if self.report.shipping_exists else '否'}")
         lines.append("")
-        lines.append(
-            f"ClientCheatCommands 安装: {'是' if self.report.client_cheat_commands_present else '否'}"
-        )
-        lines.append(f"模组总开关 bGlobalEnableMod: {'是' if self.report.mods_globally_enabled else '否'}")
-        lines.append(
-            f"ClientCheatCommands 启用: {'是' if self.report.client_cheat_commands_active else '否'}"
-        )
+        lines.append(f"聊天命令模组安装: {'是' if self.report.client_cheat_commands_present else '否'}")
+        lines.append(f"模组总开关: {'是' if self.report.mods_globally_enabled else '否'}")
+        lines.append(f"聊天命令模组启用: {'是' if self.report.client_cheat_commands_active else '否'}")
         if self.report.game_pid is None:
             lines.append("当前游戏进程: 未运行，无法验证 UE4SS 是否真的载入")
         else:
@@ -2908,11 +3175,9 @@ class TrainerApp:
             lines.append(f"当前进程已载入 UE4SS: {'是' if self.report.ue4ss_live_loaded else '否'}")
             if self.report.ue4ss_loader_path is not None:
                 lines.append(f"载入模块: {self.report.ue4ss_loader_path}")
-        lines.append("")
-        lines.append("主界面当前只保留桌面版风格的傻瓜流程；旧的内存扫描/自由命令入口已从主流程移除。")
         if self.report.notes:
             lines.append("")
-            lines.append("说明：")
+            lines.append("检测提示：")
             for note in self.report.notes:
                 lines.append(f"  • {note}")
 

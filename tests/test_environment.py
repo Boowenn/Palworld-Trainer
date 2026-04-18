@@ -113,7 +113,7 @@ class ScanEnvironmentTests(unittest.TestCase):
 
         self.assertFalse(report.mods_globally_enabled)
         self.assertFalse(report.client_cheat_commands_active)
-        self.assertTrue(any("bGlobalEnableMod" in note for note in report.notes))
+        self.assertTrue(any("模组总开关" in note for note in report.notes))
 
 
 class DeployBridgeTests(unittest.TestCase):

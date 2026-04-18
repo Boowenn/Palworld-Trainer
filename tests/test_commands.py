@@ -4,6 +4,7 @@ import unittest
 
 from tests import _bootstrap  # noqa: F401
 from palworld_trainer import commands as cmd
+from palworld_trainer.catalog import get_bundled_enum_dir, load_all_catalogs
 
 
 class CommandBuilderTests(unittest.TestCase):
@@ -56,6 +57,34 @@ class QuickPresetTests(unittest.TestCase):
         preset = cmd.QUICK_PRESETS[0]
         self.assertIs(preset, cmd.find_preset(preset.key))
         self.assertIsNone(cmd.find_preset("not_a_preset"))
+
+    def test_presets_only_use_known_bundled_item_keys(self) -> None:
+        catalogs = load_all_catalogs(get_bundled_enum_dir())
+        item_keys = {entry.key for entry in catalogs["item"]}
+        for preset in cmd.QUICK_PRESETS:
+            for item_key, _count in preset.items:
+                self.assertIn(item_key, item_keys, f"{preset.key} contains missing item {item_key}")
+
+    def test_quick_choice_groups_only_use_known_catalog_keys(self) -> None:
+        catalogs = load_all_catalogs(get_bundled_enum_dir())
+        lookup = {
+            "item": {entry.key for entry in catalogs["item"]},
+            "pal": {entry.key for entry in catalogs["pal"]},
+            "technology": {entry.key for entry in catalogs["technology"]},
+        }
+        for group in cmd.ITEM_GUIDE_GROUPS:
+            for choice in group.choices:
+                self.assertIn(choice.key, lookup["item"], f"item guide {group.key} missing {choice.key}")
+        for group in cmd.PAL_GUIDE_GROUPS:
+            for choice in group.choices:
+                self.assertIn(choice.key, lookup["pal"], f"pal guide {group.key} missing {choice.key}")
+        for group in cmd.TECH_GUIDE_GROUPS:
+            for choice in group.choices:
+                self.assertIn(
+                    choice.key,
+                    lookup["technology"],
+                    f"tech guide {group.key} missing {choice.key}",
+                )
 
 
 if __name__ == "__main__":

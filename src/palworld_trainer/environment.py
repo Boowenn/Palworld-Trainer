@@ -341,19 +341,19 @@ def scan_environment(configured_game_root: str | None) -> EnvironmentReport:
 
     if not report.ue4ss_root_exists:
         report.notes.append(
-            "没检测到 UE4SS。请先装 UE4SS Experimental (Palworld) 和 ClientCheatCommands。"
+            "没检测到 UE4SS，请先装好 UE4SS 和聊天命令模组（CCC）。"
         )
     elif not report.mods_globally_enabled:
         report.notes.append(
-            "PalModSettings.ini 的 bGlobalEnableMod 目前是 False，模组总开关处于关闭状态；UE4SS 和聊天命令本次启动都不会生效。"
+            "模组总开关目前是关闭状态；这次启动里 UE4SS 和聊天命令都不会生效。"
         )
     elif not report.client_cheat_commands_present:
         report.notes.append(
-            "UE4SS 已安装但没发现 ClientCheatCommands，大部分作弊命令会失效。"
+            "UE4SS 已安装，但没发现聊天命令模组（CCC），大部分功能会失效。"
         )
     elif not report.client_cheat_commands_active:
         report.notes.append(
-            "ClientCheatCommands 已存在但未在 PalModSettings.ini 中启用。"
+            "聊天命令模组（CCC）已安装，但当前没有启用。"
         )
     elif report.game_pid is not None and not report.ue4ss_live_loaded:
         report.notes.append(
@@ -362,23 +362,14 @@ def scan_environment(configured_game_root: str | None) -> EnvironmentReport:
     else:
         if report.ue4ss_loader_path is not None:
             report.notes.append(
-                f"环境就绪：UE4SS + ClientCheatCommands 已启用，当前进程已载入 {report.ue4ss_loader_path.name}。"
+                f"环境就绪：UE4SS 和聊天命令模组已启用，当前进程已载入 {report.ue4ss_loader_path.name}。"
             )
         else:
-            report.notes.append("环境就绪：UE4SS + ClientCheatCommands 均已启用。")
+            report.notes.append("环境就绪：UE4SS 和聊天命令模组均已启用。")
 
     if report.trainer_bridge_deployed and not report.trainer_bridge_enabled:
         report.notes.append(
-            "PalworldTrainerBridge 已复制到 UE4SS/Mods，但还没有写入 mods.txt/mods.json；部署后需要启用并重启游戏。"
-        )
-
-    if (
-        report.trainer_bridge_runtime_target is not None
-        and report.trainer_bridge_target is not None
-        and report.trainer_bridge_runtime_target != report.trainer_bridge_target
-    ):
-        report.notes.append(
-            f"PalworldTrainerBridge live IO path: {report.trainer_bridge_runtime_target}"
+            "增强模块已经复制到 UE4SS 模组目录，重启游戏后就会生效。"
         )
 
     return report
@@ -409,7 +400,7 @@ def deploy_bridge(report: EnvironmentReport) -> tuple[bool, str]:
             break
 
     if not source:
-        return False, "找不到 bridge 源文件。"
+        return False, "找不到增强模块源文件。"
 
     targets: list[Path] = []
     seen: set[Path] = set()
@@ -429,7 +420,7 @@ def deploy_bridge(report: EnvironmentReport) -> tuple[bool, str]:
         targets.append(candidate)
 
     if not targets:
-        return False, "没定位到 bridge 目录。"
+        return False, "没定位到增强模块目录。"
 
     try:
         deployed_paths: list[str] = []
@@ -440,6 +431,6 @@ def deploy_bridge(report: EnvironmentReport) -> tuple[bool, str]:
             shutil.copytree(source, target)
             _ensure_mod_enabled(target.parent, BRIDGE_MOD_NAME)
             deployed_paths.append(str(target))
-        return True, "Bridge 已部署并启用: " + " / ".join(deployed_paths)
+        return True, "增强模块已部署并启用: " + " / ".join(deployed_paths)
     except OSError as error:
         return False, f"部署失败：{error}"
