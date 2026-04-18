@@ -1653,7 +1653,21 @@ class TrainerApp:
         else:
             self.status_game.configure(text="游戏：未运行 ✘", style="Bad.TLabel")
 
-        if self.report.client_cheat_commands_active:
+        if not self.report.mods_globally_enabled and self.report.client_cheat_commands_present:
+            self.status_cheats.configure(
+                text="聊天命令：模组总开关关闭 ⚠",
+                style="Warn.TLabel",
+            )
+        elif (
+            self.report.client_cheat_commands_active
+            and self.report.game_pid is not None
+            and not self.report.ue4ss_live_loaded
+        ):
+            self.status_cheats.configure(
+                text="聊天命令：当前进程未载入 UE4SS ⚠",
+                style="Warn.TLabel",
+            )
+        elif self.report.client_cheat_commands_active:
             self.status_cheats.configure(text="聊天命令：已启用 ✔", style="Good.TLabel")
         elif self.report.client_cheat_commands_present:
             self.status_cheats.configure(text="聊天命令：未启用 ⚠", style="Warn.TLabel")
@@ -1678,9 +1692,17 @@ class TrainerApp:
         lines.append(
             f"ClientCheatCommands 安装: {'是' if self.report.client_cheat_commands_present else '否'}"
         )
+        lines.append(f"模组总开关 bGlobalEnableMod: {'是' if self.report.mods_globally_enabled else '否'}")
         lines.append(
             f"ClientCheatCommands 启用: {'是' if self.report.client_cheat_commands_active else '否'}"
         )
+        if self.report.game_pid is None:
+            lines.append("当前游戏进程: 未运行，无法验证 UE4SS 是否真的载入")
+        else:
+            lines.append(f"当前游戏进程 PID: {self.report.game_pid}")
+            lines.append(f"当前进程已载入 UE4SS: {'是' if self.report.ue4ss_live_loaded else '否'}")
+            if self.report.ue4ss_loader_path is not None:
+                lines.append(f"载入模块: {self.report.ue4ss_loader_path}")
         lines.append("")
         lines.append("外挂（内存）模块不依赖 UE4SS / mod，只要游戏运行就能在「外挂」Tab 连接。")
         if self.report.notes:

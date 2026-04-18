@@ -167,6 +167,14 @@ def _load_apis() -> tuple:
     ]
     psapi.GetModuleBaseNameW.restype = wintypes.DWORD
 
+    psapi.GetModuleFileNameExW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.HMODULE,
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+    ]
+    psapi.GetModuleFileNameExW.restype = wintypes.DWORD
+
     psapi.GetModuleInformation.argtypes = [
         wintypes.HANDLE,
         wintypes.HMODULE,
@@ -226,6 +234,7 @@ class ModuleInfo:
     name: str
     base: int
     size: int
+    path: str | None = None
 
 
 class ProcessHandle:
@@ -274,6 +283,10 @@ class ProcessHandle:
         for i in range(count):
             name_buf = ctypes.create_unicode_buffer(260)
             _PSAPI.GetModuleBaseNameW(self.handle, arr[i], name_buf, 260)
+            path_buf = ctypes.create_unicode_buffer(1024)
+            path = None
+            if _PSAPI.GetModuleFileNameExW(self.handle, arr[i], path_buf, 1024):
+                path = path_buf.value or None
             info = MODULEINFO()
             if not _PSAPI.GetModuleInformation(
                 self.handle, arr[i], ctypes.byref(info), ctypes.sizeof(info)
@@ -283,6 +296,7 @@ class ProcessHandle:
                 name=name_buf.value,
                 base=int(info.lpBaseOfDll or 0),
                 size=int(info.SizeOfImage),
+                path=path,
             )
 
     def main_module(self) -> ModuleInfo | None:

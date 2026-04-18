@@ -19,6 +19,14 @@ from pathlib import Path
 
 BRIDGE_MOD_NAME = "PalworldTrainerBridge"
 CLIENT_CHEAT_COMMANDS_MOD_NAME = "ClientCheatCommands"
+UE4SS_PROXY_DLL_NAMES = {
+    "xinput1_3.dll",
+    "dinput8.dll",
+    "dxgi.dll",
+    "dsound.dll",
+    "version.dll",
+    "winmm.dll",
+}
 
 
 @dataclass
@@ -27,7 +35,11 @@ class EnvironmentReport:
     game_root_exists: bool = False
     launcher_exists: bool = False
     shipping_exists: bool = False
+    game_pid: int | None = None
     ue4ss_root_exists: bool = False
+    ue4ss_live_loaded: bool = False
+    ue4ss_loader_path: Path | None = None
+    mods_globally_enabled: bool = False
     client_cheat_commands_present: bool = False
     client_cheat_commands_active: bool = False
     client_cheat_commands_enum_dir: Path | None = None
@@ -99,6 +111,42 @@ def resolve_game_root(configured_path: str | None) -> Path | None:
     return detect_default_game_root()
 
 
+def _path_is_inside(root: Path, candidate: Path) -> bool:
+    try:
+        candidate.resolve().relative_to(root.resolve())
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _detect_live_ue4ss_loader(game_root: Path) -> tuple[int | None, bool, Path | None]:
+    """Inspect the live Palworld process and see whether UE4SS really loaded."""
+
+    from . import memory
+
+    pid = memory.find_process_id()
+    if pid is None:
+        return None, False, None
+
+    try:
+        with memory.ProcessHandle(pid, writable=False) as handle:
+            for module in handle.iter_modules():
+                name = module.name.lower()
+                path = Path(module.path) if module.path else None
+                if name == "ue4ss.dll":
+                    return pid, True, path
+                if (
+                    name in UE4SS_PROXY_DLL_NAMES
+                    and path is not None
+                    and _path_is_inside(game_root, path)
+                ):
+                    return pid, True, path
+    except (OSError, RuntimeError):
+        pass
+
+    return pid, False, None
+
+
 def scan_environment(configured_game_root: str | None) -> EnvironmentReport:
     game_root = resolve_game_root(configured_game_root)
 
@@ -128,7 +176,16 @@ def scan_environment(configured_game_root: str | None) -> EnvironmentReport:
             contents = pal_mod_settings.read_text(encoding="utf-8")
         except OSError:
             contents = ""
-        report.client_cheat_commands_active = "ActiveModList=ClientCheatCommands" in contents
+        normalized_contents = contents.replace(" ", "").lower()
+        report.mods_globally_enabled = "bglobalenablemod=true" in normalized_contents
+        report.client_cheat_commands_active = (
+            report.mods_globally_enabled
+            and "activemodlist=clientcheatcommands" in normalized_contents
+        )
+
+    report.game_pid, report.ue4ss_live_loaded, report.ue4ss_loader_path = _detect_live_ue4ss_loader(
+        game_root
+    )
 
     bridge_target = ue4ss_root / "Mods" / BRIDGE_MOD_NAME
     report.trainer_bridge_target = bridge_target
@@ -138,6 +195,10 @@ def scan_environment(configured_game_root: str | None) -> EnvironmentReport:
         report.notes.append(
             "没检测到 UE4SS。请先装 UE4SS Experimental (Palworld) 和 ClientCheatCommands。"
         )
+    elif not report.mods_globally_enabled:
+        report.notes.append(
+            "PalModSettings.ini 的 bGlobalEnableMod 目前是 False，模组总开关处于关闭状态；UE4SS 和聊天命令本次启动都不会生效。"
+        )
     elif not report.client_cheat_commands_present:
         report.notes.append(
             "UE4SS 已安装但没发现 ClientCheatCommands，大部分作弊命令会失效。"
@@ -146,8 +207,17 @@ def scan_environment(configured_game_root: str | None) -> EnvironmentReport:
         report.notes.append(
             "ClientCheatCommands 已存在但未在 PalModSettings.ini 中启用。"
         )
+    elif report.game_pid is not None and not report.ue4ss_live_loaded:
+        report.notes.append(
+            "当前这次游戏进程没有加载 UE4SS/代理 DLL。聊天命令类功能会完全无效；请先修好 UE4SS 安装，或在确认安装正确后重启游戏。"
+        )
     else:
-        report.notes.append("环境就绪：UE4SS + ClientCheatCommands 均已启用。")
+        if report.ue4ss_loader_path is not None:
+            report.notes.append(
+                f"环境就绪：UE4SS + ClientCheatCommands 已启用，当前进程已载入 {report.ue4ss_loader_path.name}。"
+            )
+        else:
+            report.notes.append("环境就绪：UE4SS + ClientCheatCommands 均已启用。")
 
     return report
 
