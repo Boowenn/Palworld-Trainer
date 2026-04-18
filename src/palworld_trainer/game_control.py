@@ -122,6 +122,12 @@ user32.EnumWindows.restype = wintypes.BOOL
 user32.IsWindowVisible.argtypes = (wintypes.HWND,)
 user32.IsWindowVisible.restype = wintypes.BOOL
 
+user32.GetClassNameW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+user32.GetClassNameW.restype = ctypes.c_int
+
+user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+
 
 # ---------------------------------------------------------------------------
 # Public data classes
@@ -142,9 +148,6 @@ class SendResult:
 # ---------------------------------------------------------------------------
 
 
-DEFAULT_WINDOW_TITLES = ("Palworld", "Palworld  ")
-
-
 def _get_window_title(hwnd: int) -> str:
     length = user32.GetWindowTextLengthW(hwnd)
     if length <= 0:
@@ -154,28 +157,43 @@ def _get_window_title(hwnd: int) -> str:
     return buffer.value
 
 
-def find_palworld_window(title_hints: tuple[str, ...] = DEFAULT_WINDOW_TITLES) -> int | None:
-    """Return the HWND of the Palworld game window, or ``None`` if not found.
+def _get_window_class(hwnd: int) -> str:
+    buffer = ctypes.create_unicode_buffer(256)
+    user32.GetClassNameW(hwnd, buffer, 256)
+    return buffer.value
 
-    First tries an exact ``FindWindowW`` for each hint, then falls back to an
-    ``EnumWindows`` scan that looks for a visible top-level window whose title
-    contains "Palworld" (case-insensitive).
+
+def _window_pid(hwnd: int) -> int:
+    out = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(out))
+    return int(out.value)
+
+
+def find_palworld_window() -> int | None:
+    """Return the HWND of the Palworld game window, or ``None``.
+
+    Strategy: find the Palworld process by PID, then look for its visible
+    top-level window with class ``UnrealWindow``.  This avoids false
+    positives from the trainer's own window (whose title also contains
+    "Palworld") and handles the game having unusual window titles like
+    ``Pal  `` instead of ``Palworld``.
     """
 
-    for title in title_hints:
-        hwnd = user32.FindWindowW(None, title)
-        if hwnd:
-            return int(hwnd)
+    from . import memory
+
+    pid = memory.find_process_id()
+    if pid is None:
+        return None
 
     found: list[int] = []
 
     def _cb(hwnd: int, _lparam: int) -> bool:
         if not user32.IsWindowVisible(hwnd):
             return True
-        title = _get_window_title(hwnd)
-        if not title:
+        if _window_pid(hwnd) != pid:
             return True
-        if "palworld" in title.lower():
+        cls = _get_window_class(hwnd)
+        if cls == "UnrealWindow":
             found.append(int(hwnd))
             return False
         return True
