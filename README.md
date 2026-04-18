@@ -10,7 +10,7 @@
 
 ## 能做什么
 
-![Tabs](https://img.shields.io/badge/Tabs-6-blue) &nbsp; ![Items](https://img.shields.io/badge/物品-1900%2B-green) &nbsp; ![Pals](https://img.shields.io/badge/帕鲁-600%2B-orange) &nbsp; ![Coords](https://img.shields.io/badge/坐标点-900%2B-orange)
+![Tabs](https://img.shields.io/badge/Tabs-10-blue) &nbsp; ![Items](https://img.shields.io/badge/物品-1900%2B-green) &nbsp; ![Pals](https://img.shields.io/badge/帕鲁-600%2B-orange) &nbsp; ![Coords](https://img.shields.io/badge/坐标点-900%2B-orange)
 
 | Tab | 功能 |
 |-----|------|

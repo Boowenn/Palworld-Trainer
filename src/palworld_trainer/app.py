@@ -74,7 +74,11 @@ TAB_NAMES = (
     "character",
     "items",
     "pals",
+    "tech",
+    "world",
     "coords",
+    "enhance",
+    "chat",
     "settings",
 )
 
@@ -220,7 +224,11 @@ class TrainerApp:
         self._build_player_tab()
         self._build_items_tab()
         self._build_pals_tab()
+        self._build_tech_tab()
+        self._build_world_tab()
         self._build_coords_tab()
+        self._build_enhance_tab()
+        self._build_chat_tab()
         self._build_settings_tab()
 
         try:
@@ -316,22 +324,24 @@ class TrainerApp:
 
         slider_row = ttk.Frame(tab)
         slider_row.pack(fill="x", pady=(4, 10))
-        self.time_var = tk.IntVar(value=12)
+        self.common_time_var = tk.IntVar(value=12)
         ttk.Scale(
             slider_row,
             from_=0,
             to=23,
             orient="horizontal",
-            variable=self.time_var,
-            command=lambda _value: self._refresh_time_label(),
+            variable=self.common_time_var,
+            command=lambda _value: self._refresh_time_label(
+                self.common_time_var, self.common_time_label
+            ),
         ).pack(side="left", fill="x", expand=True)
-        self.time_label = ttk.Label(slider_row, text="12 时", width=8, anchor="e")
-        self.time_label.pack(side="left", padx=(10, 0))
+        self.common_time_label = ttk.Label(slider_row, text="12 时", width=8, anchor="e")
+        self.common_time_label.pack(side="left", padx=(10, 0))
         ttk.Button(
             slider_row,
             text="设置时间",
             style="Big.TButton",
-            command=lambda: self._send(cmd.set_time(self.time_var.get())),
+            command=lambda: self._send(cmd.set_time(self.common_time_var.get())),
         ).pack(side="left", padx=(10, 0))
 
         quick = ttk.Frame(tab)
@@ -1518,22 +1528,24 @@ class TrainerApp:
 
         slider_row = ttk.Frame(tab)
         slider_row.pack(fill="x", pady=(4, 14))
-        self.time_var = tk.IntVar(value=12)
+        self.world_time_var = tk.IntVar(value=12)
         ttk.Scale(
             slider_row,
             from_=0,
             to=23,
             orient="horizontal",
-            variable=self.time_var,
-            command=lambda _value: self._refresh_time_label(),
+            variable=self.world_time_var,
+            command=lambda _value: self._refresh_time_label(
+                self.world_time_var, self.world_time_label
+            ),
         ).pack(side="left", fill="x", expand=True)
-        self.time_label = ttk.Label(slider_row, text="12 时", width=8, anchor="e")
-        self.time_label.pack(side="left", padx=(10, 0))
+        self.world_time_label = ttk.Label(slider_row, text="12 时", width=8, anchor="e")
+        self.world_time_label.pack(side="left", padx=(10, 0))
         ttk.Button(
             slider_row,
             text="设置时间",
             style="Big.TButton",
-            command=lambda: self._send(cmd.set_time(self.time_var.get())),
+            command=lambda: self._send(cmd.set_time(self.world_time_var.get())),
         ).pack(side="left", padx=(10, 0))
 
         quick = ttk.Frame(tab)
@@ -2089,8 +2101,8 @@ class TrainerApp:
             self.tech_listbox.insert("end", f"{entry.label}   [{entry.key}]")
         self._current_tech_results = results
 
-    def _refresh_time_label(self) -> None:
-        self.time_label.configure(text=f"{self.time_var.get()} 时")
+    def _refresh_time_label(self, time_var: tk.IntVar, time_label: ttk.Label) -> None:
+        time_label.configure(text=f"{time_var.get()} 时")
 
     # ------------------------------------------------------------------
     # Button handlers
