@@ -146,6 +146,51 @@ class DeployBridgeTests(unittest.TestCase):
             )
             self.assertTrue(bridge_entry["mod_enabled"])
 
+    def test_deploy_bridge_also_syncs_runtime_target_when_different(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo_root = root / "repo"
+            source = repo_root / "integrations" / "ue4ss" / BRIDGE_MOD_NAME
+            scripts = source / "Scripts"
+            scripts.mkdir(parents=True, exist_ok=True)
+            (scripts / "main.lua").write_text("-- bridge", encoding="utf-8")
+
+            deployed = (
+                root
+                / "game"
+                / "Mods"
+                / "NativeMods"
+                / "UE4SS"
+                / "Mods"
+                / BRIDGE_MOD_NAME
+            )
+            runtime = (
+                root
+                / "game"
+                / "Pal"
+                / "Binaries"
+                / "Win64"
+                / "Mods"
+                / "NativeMods"
+                / "UE4SS"
+                / "Mods"
+                / BRIDGE_MOD_NAME
+            )
+            report = EnvironmentReport(
+                game_root=root / "game",
+                trainer_bridge_target=deployed,
+                trainer_bridge_runtime_target=runtime,
+            )
+
+            with patch("palworld_trainer.environment.get_repo_root", return_value=repo_root):
+                ok, message = deploy_bridge(report)
+
+            self.assertTrue(ok, message)
+            self.assertTrue((deployed / "Scripts" / "main.lua").exists())
+            self.assertTrue((runtime / "Scripts" / "main.lua").exists())
+            self.assertIn(str(deployed), message)
+            self.assertIn(str(runtime), message)
+
 
 class BridgeRuntimeTargetTests(unittest.TestCase):
     def test_prefers_runtime_artifact_under_shipping_workdir(self) -> None:

@@ -411,14 +411,35 @@ def deploy_bridge(report: EnvironmentReport) -> tuple[bool, str]:
     if not source:
         return False, "找不到 bridge 源文件。"
 
-    target = report.trainer_bridge_target
+    targets: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in (
+        report.trainer_bridge_target,
+        report.trainer_bridge_runtime_target,
+    ):
+        if candidate is None:
+            continue
+        try:
+            resolved = candidate.resolve(strict=False)
+        except OSError:
+            resolved = candidate
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        targets.append(candidate)
+
+    if not targets:
+        return False, "没定位到 bridge 目录。"
+
     try:
-        if target.exists():
-            shutil.rmtree(target)
-        shutil.copytree(source, target)
-        _ensure_mod_enabled(target.parent, BRIDGE_MOD_NAME)
-        return True, f"Bridge 已部署并启用: {target}"
+        deployed_paths: list[str] = []
+        for target in targets:
+            if target.exists():
+                shutil.rmtree(target)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(source, target)
+            _ensure_mod_enabled(target.parent, BRIDGE_MOD_NAME)
+            deployed_paths.append(str(target))
+        return True, "Bridge 已部署并启用: " + " / ".join(deployed_paths)
     except OSError as error:
         return False, f"部署失败：{error}"
-
-    return True, f"Bridge 已部署到 {target}"

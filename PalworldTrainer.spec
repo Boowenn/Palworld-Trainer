@@ -5,12 +5,16 @@ from pathlib import Path
 project_root = Path.cwd()
 src_root = project_root / "src"
 data_enums = src_root / "palworld_trainer" / "data" / "enums"
+data_coords = src_root / "palworld_trainer" / "data" / "coords"
 
 datas = []
 
 if data_enums.exists():
     for lua_file in data_enums.glob("*.lua"):
         datas.append((str(lua_file), "palworld_trainer/data/enums"))
+if data_coords.exists():
+    for json_file in data_coords.glob("*.json"):
+        datas.append((str(json_file), "palworld_trainer/data/coords"))
 
 hiddenimports = []
 

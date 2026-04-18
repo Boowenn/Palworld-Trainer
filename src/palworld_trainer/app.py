@@ -35,6 +35,13 @@ from .cheats import (
     write_request,
     write_toggles,
 )
+from .coord_presets import (
+    ALL_GROUPS_LABEL,
+    CoordPreset,
+    flatten_coord_groups,
+    load_coord_groups,
+    search_coord_presets,
+)
 from .config import TrainerSettings, config_dir, load_settings, save_settings
 from .environment import EnvironmentReport, deploy_bridge, scan_environment
 from .mem_engine import (
@@ -87,6 +94,7 @@ class TrainerApp:
 
         enum_dir = pick_enum_dir(self.report.client_cheat_commands_enum_dir)
         self.catalogs = load_all_catalogs(enum_dir)
+        self.coord_file_path, self.coord_groups = load_coord_groups(self.report.game_root)
 
         self.item_entries = self.catalogs.get("item", [])
         self.pal_entries = self.catalogs.get("pal", [])
@@ -99,6 +107,14 @@ class TrainerApp:
         self._current_item_results: list[CatalogEntry] = []
         self._current_pal_results: list[CatalogEntry] = []
         self._current_tech_results: list[CatalogEntry] = []
+        self._coord_group_names: list[str] = [
+            group.name for group in self.coord_groups if group.items
+        ]
+        self._coord_groups_by_name = {
+            group.name: group for group in self.coord_groups if group.items
+        }
+        self._coord_entries = flatten_coord_groups(self.coord_groups)
+        self._current_coord_results: list[CoordPreset] = []
         self._result_clear_job: str | None = None
 
         # Direct memory-attach engine — no UE4SS, no in-game mod needed.
@@ -465,6 +481,100 @@ class TrainerApp:
             wraplength=840,
         ).pack(anchor="w")
 
+        preset_frame = ttk.LabelFrame(tab, text="通用坐标库", padding=(12, 8))
+        preset_frame.pack(fill="x", pady=(0, 10))
+
+        preset_note = (
+            "参考桌面版坐标库思路：按分类选点后可直接传送，也能一键追加到路径传送。"
+            " 输入关键词时会自动跨分类搜索。"
+        )
+        if self.coord_file_path is not None:
+            preset_note += f" 当前坐标库：{self.coord_file_path.name}"
+        else:
+            preset_note += " 当前还没找到坐标库文件。"
+        ttk.Label(
+            preset_frame,
+            text=preset_note,
+            style="Status.TLabel",
+            wraplength=840,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 6))
+
+        preset_filter_row = ttk.Frame(preset_frame)
+        preset_filter_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(preset_filter_row, text="分类:").pack(side="left")
+        self.coord_group_var = tk.StringVar()
+        group_values = [ALL_GROUPS_LABEL, *self._coord_group_names]
+        default_group = next(
+            (name for name in self._coord_group_names if "Boss" in name),
+            self._coord_group_names[0] if self._coord_group_names else ALL_GROUPS_LABEL,
+        )
+        self.coord_group_var.set(default_group)
+        self.coord_group_box = ttk.Combobox(
+            preset_filter_row,
+            textvariable=self.coord_group_var,
+            values=group_values,
+            state="readonly",
+            width=28,
+        )
+        self.coord_group_box.pack(side="left", padx=(6, 10))
+        self.coord_group_box.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self._refresh_coord_presets(),
+        )
+
+        ttk.Label(preset_filter_row, text="搜索:").pack(side="left")
+        self.coord_search_var = tk.StringVar()
+        self.coord_search_var.trace_add("write", lambda *_args: self._refresh_coord_presets())
+        ttk.Entry(
+            preset_filter_row, textvariable=self.coord_search_var, width=26
+        ).pack(side="left", padx=(6, 0), fill="x", expand=True)
+
+        preset_pick_row = ttk.Frame(preset_frame)
+        preset_pick_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(preset_pick_row, text="点位:").pack(side="left")
+        self.coord_preset_var = tk.StringVar()
+        self.coord_preset_box = ttk.Combobox(
+            preset_pick_row,
+            textvariable=self.coord_preset_var,
+            values=[],
+            state="readonly",
+            width=56,
+        )
+        self.coord_preset_box.pack(side="left", padx=(6, 10), fill="x", expand=True)
+        self.coord_preset_box.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self._update_coord_preset_hint(),
+        )
+        ttk.Button(
+            preset_pick_row,
+            text="载入坐标",
+            style="Quiet.TButton",
+            command=self._load_selected_coord_preset,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            preset_pick_row,
+            text="直接传过去",
+            style="Big.TButton",
+            command=self._teleport_selected_coord_preset,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            preset_pick_row,
+            text="追加到路径",
+            style="Quiet.TButton",
+            command=self._append_selected_coord_preset_to_route,
+        ).pack(side="left")
+
+        self.coord_preset_hint_label = ttk.Label(
+            preset_frame,
+            text="",
+            style="Status.TLabel",
+            wraplength=840,
+            justify="left",
+        )
+        self.coord_preset_hint_label.pack(anchor="w")
+        self._refresh_coord_presets()
+
         boss_frame = ttk.LabelFrame(tab, text="Boss 直达", padding=(12, 8))
         boss_frame.pack(fill="x", pady=(0, 10))
 
@@ -721,6 +831,104 @@ class TrainerApp:
             self.bridge_speed_var.set(f"{self.cheat_state.speed_multiplier:g}")
         if hasattr(self, "bridge_jump_var"):
             self.bridge_jump_var.set(f"{self.cheat_state.jump_multiplier:g}")
+
+    def _coord_search_entries(self) -> list[CoordPreset]:
+        if hasattr(self, "coord_search_var") and self.coord_search_var.get().strip():
+            return list(self._coord_entries)
+        group_name = (
+            self.coord_group_var.get().strip()
+            if hasattr(self, "coord_group_var")
+            else ALL_GROUPS_LABEL
+        )
+        if group_name and group_name != ALL_GROUPS_LABEL:
+            group = self._coord_groups_by_name.get(group_name)
+            if group is not None:
+                return list(group.items)
+        return list(self._coord_entries)
+
+    def _refresh_coord_presets(self) -> None:
+        if not hasattr(self, "coord_preset_box"):
+            return
+
+        source_entries = self._coord_search_entries()
+        self._current_coord_results = search_coord_presets(
+            source_entries,
+            self.coord_search_var.get() if hasattr(self, "coord_search_var") else "",
+        )
+        values = [entry.label for entry in self._current_coord_results]
+        self.coord_preset_box.configure(values=values)
+        if values:
+            current = self.coord_preset_var.get().strip()
+            if current not in values:
+                self.coord_preset_var.set(values[0])
+        else:
+            self.coord_preset_var.set("")
+        self._update_coord_preset_hint()
+
+    def _selected_coord_preset(self) -> CoordPreset | None:
+        if not hasattr(self, "coord_preset_box"):
+            return None
+        current_index = self.coord_preset_box.current()
+        if 0 <= current_index < len(self._current_coord_results):
+            return self._current_coord_results[current_index]
+        current_label = self.coord_preset_var.get().strip()
+        for entry in self._current_coord_results:
+            if entry.label == current_label:
+                return entry
+        return self._current_coord_results[0] if self._current_coord_results else None
+
+    def _update_coord_preset_hint(self) -> None:
+        if not hasattr(self, "coord_preset_hint_label"):
+            return
+        entry = self._selected_coord_preset()
+        if entry is None:
+            self.coord_preset_hint_label.configure(
+                text="当前分类下没有匹配点位；可以切分类或输入关键词搜索。"
+            )
+            return
+        self.coord_preset_hint_label.configure(
+            text=(
+                f"{entry.label} -> X={entry.x:g}  Y={entry.y:g}  Z={entry.z:g}。"
+                " 可直接传送，也可把它塞进路径列表。"
+            )
+        )
+
+    def _load_selected_coord_preset(self) -> None:
+        entry = self._selected_coord_preset()
+        if entry is None:
+            self._show_result("先从坐标库里选一个点位。", ok=False)
+            return
+        self.tp_x_var.set(f"{entry.x:g}")
+        self.tp_y_var.set(f"{entry.y:g}")
+        self.tp_z_var.set(f"{entry.z:g}")
+        self._update_coord_preset_hint()
+        self._show_result(f"已载入 {entry.label} 坐标。", ok=True)
+
+    def _teleport_selected_coord_preset(self) -> None:
+        entry = self._selected_coord_preset()
+        if entry is None:
+            self._show_result("先从坐标库里选一个点位。", ok=False)
+            return
+        self.tp_x_var.set(f"{entry.x:g}")
+        self.tp_y_var.set(f"{entry.y:g}")
+        self.tp_z_var.set(f"{entry.z:g}")
+        ok, message = self._write_bridge_teleport_request(entry.x, entry.y, entry.z)
+        if ok:
+            self._show_result(f"已发送 {entry.label} 传送请求。", ok=True)
+        else:
+            self._show_result(message, ok=False)
+
+    def _append_selected_coord_preset_to_route(self) -> None:
+        entry = self._selected_coord_preset()
+        if entry is None:
+            self._show_result("先从坐标库里选一个点位。", ok=False)
+            return
+        if not hasattr(self, "route_text"):
+            self._show_result("路径传送框还没初始化完成。", ok=False)
+            return
+        self.route_text.insert("end", f"{entry.x:g} {entry.y:g} {entry.z:g}\n")
+        self.route_text.see("end")
+        self._show_result(f"已把 {entry.label} 追加到路径列表。", ok=True)
 
     def _selected_boss_point(self) -> BossTeleportPoint | None:
         if not hasattr(self, "boss_preset_var"):
