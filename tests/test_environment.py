@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import json
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from tests import _bootstrap  # noqa: F401
-from palworld_trainer.environment import _looks_like_game_root, scan_environment
+from palworld_trainer.environment import (
+    BRIDGE_MOD_NAME,
+    EnvironmentReport,
+    _detect_bridge_runtime_target,
+    _looks_like_game_root,
+    deploy_bridge,
+    scan_environment,
+)
 
 
 class LooksLikeGameRootTests(unittest.TestCase):
@@ -105,6 +114,84 @@ class ScanEnvironmentTests(unittest.TestCase):
         self.assertFalse(report.mods_globally_enabled)
         self.assertFalse(report.client_cheat_commands_active)
         self.assertTrue(any("bGlobalEnableMod" in note for note in report.notes))
+
+
+class DeployBridgeTests(unittest.TestCase):
+    def test_deploy_bridge_copies_files_and_enables_mod(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo_root = root / "repo"
+            source = repo_root / "integrations" / "ue4ss" / BRIDGE_MOD_NAME
+            scripts = source / "Scripts"
+            scripts.mkdir(parents=True, exist_ok=True)
+            (scripts / "main.lua").write_text("-- bridge", encoding="utf-8")
+            (source / "README.md").write_text("bridge readme", encoding="utf-8")
+
+            target = root / "game" / "Mods" / "NativeMods" / "UE4SS" / "Mods" / BRIDGE_MOD_NAME
+            report = EnvironmentReport(game_root=root / "game", trainer_bridge_target=target)
+
+            with patch("palworld_trainer.environment.get_repo_root", return_value=repo_root):
+                ok, message = deploy_bridge(report)
+
+            self.assertTrue(ok, message)
+            self.assertTrue((target / "Scripts" / "main.lua").exists())
+
+            mods_root = target.parent
+            mods_txt = (mods_root / "mods.txt").read_text(encoding="utf-8")
+            self.assertIn(f"{BRIDGE_MOD_NAME} : 1", mods_txt)
+
+            mods_json = json.loads((mods_root / "mods.json").read_text(encoding="utf-8"))
+            bridge_entry = next(
+                item for item in mods_json if item.get("mod_name") == BRIDGE_MOD_NAME
+            )
+            self.assertTrue(bridge_entry["mod_enabled"])
+
+
+class BridgeRuntimeTargetTests(unittest.TestCase):
+    def test_prefers_runtime_artifact_under_shipping_workdir(self) -> None:
+        with TemporaryDirectory() as tmp:
+            game_root = Path(tmp) / "Palworld"
+            deployed = (
+                game_root
+                / "Mods"
+                / "NativeMods"
+                / "UE4SS"
+                / "Mods"
+                / BRIDGE_MOD_NAME
+            )
+            runtime = (
+                game_root
+                / "Pal"
+                / "Binaries"
+                / "Win64"
+                / "Mods"
+                / "NativeMods"
+                / "UE4SS"
+                / "Mods"
+                / BRIDGE_MOD_NAME
+            )
+            deployed.mkdir(parents=True, exist_ok=True)
+            runtime.mkdir(parents=True, exist_ok=True)
+            (runtime / "status.json").write_text("{}", encoding="utf-8")
+
+            detected = _detect_bridge_runtime_target(game_root, deployed)
+            self.assertEqual(detected, runtime)
+
+    def test_falls_back_to_deployed_target_without_runtime_artifacts(self) -> None:
+        with TemporaryDirectory() as tmp:
+            game_root = Path(tmp) / "Palworld"
+            deployed = (
+                game_root
+                / "Mods"
+                / "NativeMods"
+                / "UE4SS"
+                / "Mods"
+                / BRIDGE_MOD_NAME
+            )
+            deployed.mkdir(parents=True, exist_ok=True)
+
+            detected = _detect_bridge_runtime_target(game_root, deployed)
+            self.assertEqual(detected, deployed)
 
 
 if __name__ == "__main__":

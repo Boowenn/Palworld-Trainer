@@ -21,6 +21,8 @@ from .environment import BRIDGE_MOD_NAME, EnvironmentReport
 
 
 TOGGLES_FILENAME = "toggles.json"
+STATUS_FILENAME = "status.json"
+REQUEST_FILENAME = "request.json"
 
 
 @dataclass
@@ -62,6 +64,38 @@ class CheatState:
         return state
 
 
+@dataclass
+class BridgeStatus:
+    player_valid: bool = False
+    bridge_version: str = ""
+    position_x: float = 0.0
+    position_y: float = 0.0
+    position_z: float = 0.0
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, object]) -> "BridgeStatus":
+        status = cls()
+        player_valid = payload.get("player_valid")
+        if isinstance(player_valid, bool):
+            status.player_valid = player_valid
+        bridge_version = payload.get("bridge_version")
+        if isinstance(bridge_version, str):
+            status.bridge_version = bridge_version
+        for key in ("position_x", "position_y", "position_z"):
+            value = payload.get(key)
+            try:
+                setattr(status, key, float(value))
+            except (TypeError, ValueError):
+                continue
+        return status
+
+
+def _bridge_io_target(report: EnvironmentReport) -> Path | None:
+    if report.trainer_bridge_runtime_target is not None:
+        return report.trainer_bridge_runtime_target
+    return report.trainer_bridge_target
+
+
 def toggles_path_for(report: EnvironmentReport) -> Path | None:
     """Return the absolute path ``toggles.json`` should live at for this game.
 
@@ -69,10 +103,24 @@ def toggles_path_for(report: EnvironmentReport) -> Path | None:
     should disable the cheat tab and surface the bridge deployment button.
     """
 
-    target = report.trainer_bridge_target
+    target = _bridge_io_target(report)
     if target is None:
         return None
     return target / TOGGLES_FILENAME
+
+
+def status_path_for(report: EnvironmentReport) -> Path | None:
+    target = _bridge_io_target(report)
+    if target is None:
+        return None
+    return target / STATUS_FILENAME
+
+
+def request_path_for(report: EnvironmentReport) -> Path | None:
+    target = _bridge_io_target(report)
+    if target is None:
+        return None
+    return target / REQUEST_FILENAME
 
 
 def write_toggles(path: Path, state: CheatState) -> tuple[bool, str]:
@@ -111,6 +159,62 @@ def read_toggles(path: Path) -> CheatState:
     if not isinstance(payload, dict):
         return CheatState()
     return CheatState.from_payload(payload)
+
+
+def read_status(path: Path) -> BridgeStatus:
+    if not path.exists():
+        return BridgeStatus()
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return BridgeStatus()
+    if not raw.strip():
+        return BridgeStatus()
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return BridgeStatus()
+    if not isinstance(payload, dict):
+        return BridgeStatus()
+    return BridgeStatus.from_payload(payload)
+
+
+def write_request(
+    path: Path,
+    *,
+    action: str,
+    request_id: int,
+    x: float | None = None,
+    y: float | None = None,
+    z: float | None = None,
+) -> tuple[bool, str]:
+    payload: dict[str, object] = {
+        "action": action,
+        "request_id": int(request_id),
+    }
+    if x is not None:
+        payload["x"] = float(x)
+    if y is not None:
+        payload["y"] = float(y)
+    if z is not None:
+        payload["z"] = float(z)
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        return False, f"无法创建 bridge 请求目录 {path.parent}: {error}"
+
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    try:
+        tmp_path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        os.replace(tmp_path, path)
+    except OSError as error:
+        return False, f"写入 bridge 请求失败: {error}"
+
+    return True, f"已写入 {path}"
 
 
 def describe_state(state: CheatState) -> str:

@@ -11,6 +11,7 @@ The trainer needs to know three things:
 
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 from dataclasses import dataclass, field
@@ -44,7 +45,9 @@ class EnvironmentReport:
     client_cheat_commands_active: bool = False
     client_cheat_commands_enum_dir: Path | None = None
     trainer_bridge_deployed: bool = False
+    trainer_bridge_enabled: bool = False
     trainer_bridge_target: Path | None = None
+    trainer_bridge_runtime_target: Path | None = None
     notes: list[str] = field(default_factory=list)
 
     @property
@@ -119,6 +122,146 @@ def _path_is_inside(root: Path, candidate: Path) -> bool:
     return True
 
 
+def _is_mod_enabled_in_mods_txt(path: Path, mod_name: str) -> bool:
+    if not path.exists():
+        return False
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+
+    wanted = mod_name.casefold()
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith(";") or stripped.startswith("#"):
+            continue
+        name, sep, value = stripped.partition(":")
+        if sep and name.strip().casefold() == wanted:
+            return value.strip().startswith("1")
+    return False
+
+
+def _is_mod_enabled_in_mods_json(path: Path, mod_name: str) -> bool:
+    if not path.exists():
+        return False
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, list):
+        return False
+
+    wanted = mod_name.casefold()
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("mod_name")
+        if isinstance(name, str) and name.casefold() == wanted:
+            return bool(item.get("mod_enabled"))
+    return False
+
+
+def _write_mods_txt_enabled(path: Path, mod_name: str) -> None:
+    lines: list[str]
+    if path.exists():
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            lines = []
+    else:
+        lines = []
+
+    wanted = mod_name.casefold()
+    found = False
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith(";") or stripped.startswith("#"):
+            continue
+        name, sep, _value = stripped.partition(":")
+        if sep and name.strip().casefold() == wanted:
+            lines[index] = f"{mod_name} : 1"
+            found = True
+            break
+
+    if not found:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.append(f"{mod_name} : 1")
+
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+
+def _write_mods_json_enabled(path: Path, mod_name: str) -> None:
+    payload: list[dict[str, object]]
+    if path.exists():
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            raw = []
+        if isinstance(raw, list):
+            payload = [item for item in raw if isinstance(item, dict)]
+        else:
+            payload = []
+    else:
+        payload = []
+
+    wanted = mod_name.casefold()
+    for item in payload:
+        name = item.get("mod_name")
+        if isinstance(name, str) and name.casefold() == wanted:
+            item["mod_enabled"] = True
+            break
+    else:
+        payload.append({"mod_name": mod_name, "mod_enabled": True})
+
+    path.write_text(json.dumps(payload, indent=4, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def _ensure_mod_enabled(mods_root: Path, mod_name: str) -> None:
+    mods_root.mkdir(parents=True, exist_ok=True)
+    _write_mods_txt_enabled(mods_root / "mods.txt", mod_name)
+    _write_mods_json_enabled(mods_root / "mods.json", mod_name)
+
+
+def _bridge_runtime_candidates(game_root: Path, deployed_target: Path) -> list[Path]:
+    win64_root = game_root / "Pal" / "Binaries" / "Win64"
+    raw_candidates = [
+        deployed_target,
+        game_root / "Mods" / BRIDGE_MOD_NAME,
+        win64_root / "Mods" / BRIDGE_MOD_NAME,
+        win64_root / "Mods" / "NativeMods" / "UE4SS" / "Mods" / BRIDGE_MOD_NAME,
+        deployed_target.parent / "NativeMods" / "UE4SS" / "Mods" / BRIDGE_MOD_NAME,
+    ]
+
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in raw_candidates:
+        try:
+            resolved = candidate.resolve(strict=False)
+        except OSError:
+            resolved = candidate
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        candidates.append(candidate)
+    return candidates
+
+
+def _bridge_runtime_has_artifacts(target: Path) -> bool:
+    return any(
+        (target / filename).exists()
+        for filename in ("status.json", "request.json", "toggles.json", "session.log")
+    )
+
+
+def _detect_bridge_runtime_target(game_root: Path, deployed_target: Path) -> Path:
+    candidates = _bridge_runtime_candidates(game_root, deployed_target)
+    for candidate in candidates:
+        if _bridge_runtime_has_artifacts(candidate):
+            return candidate
+    return deployed_target
+
+
 def _detect_live_ue4ss_loader(game_root: Path) -> tuple[int | None, bool, Path | None]:
     """Inspect the live Palworld process and see whether UE4SS really loaded."""
 
@@ -187,9 +330,14 @@ def scan_environment(configured_game_root: str | None) -> EnvironmentReport:
         game_root
     )
 
-    bridge_target = ue4ss_root / "Mods" / BRIDGE_MOD_NAME
+    mods_root = ue4ss_root / "Mods"
+    bridge_target = mods_root / BRIDGE_MOD_NAME
     report.trainer_bridge_target = bridge_target
     report.trainer_bridge_deployed = bridge_target.exists()
+    report.trainer_bridge_runtime_target = _detect_bridge_runtime_target(game_root, bridge_target)
+    report.trainer_bridge_enabled = _is_mod_enabled_in_mods_txt(
+        mods_root / "mods.txt", BRIDGE_MOD_NAME
+    ) or _is_mod_enabled_in_mods_json(mods_root / "mods.json", BRIDGE_MOD_NAME)
 
     if not report.ue4ss_root_exists:
         report.notes.append(
@@ -218,6 +366,20 @@ def scan_environment(configured_game_root: str | None) -> EnvironmentReport:
             )
         else:
             report.notes.append("环境就绪：UE4SS + ClientCheatCommands 均已启用。")
+
+    if report.trainer_bridge_deployed and not report.trainer_bridge_enabled:
+        report.notes.append(
+            "PalworldTrainerBridge 已复制到 UE4SS/Mods，但还没有写入 mods.txt/mods.json；部署后需要启用并重启游戏。"
+        )
+
+    if (
+        report.trainer_bridge_runtime_target is not None
+        and report.trainer_bridge_target is not None
+        and report.trainer_bridge_runtime_target != report.trainer_bridge_target
+    ):
+        report.notes.append(
+            f"PalworldTrainerBridge live IO path: {report.trainer_bridge_runtime_target}"
+        )
 
     return report
 
@@ -254,6 +416,8 @@ def deploy_bridge(report: EnvironmentReport) -> tuple[bool, str]:
         if target.exists():
             shutil.rmtree(target)
         shutil.copytree(source, target)
+        _ensure_mod_enabled(target.parent, BRIDGE_MOD_NAME)
+        return True, f"Bridge 已部署并启用: {target}"
     except OSError as error:
         return False, f"部署失败：{error}"
 

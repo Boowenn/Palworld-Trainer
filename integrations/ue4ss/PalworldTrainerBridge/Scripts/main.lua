@@ -1,12 +1,89 @@
 local UEHelpers = require("UEHelpers")
 
 local ModName = "PalworldTrainerBridge"
-local Version = "1.1.0"
+local Version = "1.1.1"
 local LastFindQuery = nil
-local SessionLogPath = "Mods/NativeMods/UE4SS/Mods/PalworldTrainerBridge/session.log"
-local TogglesPath = "Mods/NativeMods/UE4SS/Mods/PalworldTrainerBridge/toggles.json"
 local LogWriteHealthy = true
 local LastLogFailureShown = false
+
+local function normalize_path(path)
+    return tostring(path or ""):gsub("\\", "/")
+end
+
+local function dedupe_paths(paths)
+    local result = {}
+    local seen = {}
+    for _, path in ipairs(paths) do
+        local normalized = normalize_path(path)
+        if normalized ~= "" and not seen[normalized] then
+            seen[normalized] = true
+            table.insert(result, normalized)
+        end
+    end
+    return result
+end
+
+local function detect_mod_root()
+    if not debug or not debug.getinfo then
+        return ""
+    end
+
+    local info = debug.getinfo(1, "S")
+    local source = info and info.source or ""
+    if type(source) ~= "string" or source == "" then
+        return ""
+    end
+    if source:sub(1, 1) == "@" then
+        source = source:sub(2)
+    end
+
+    source = normalize_path(source)
+    local script_dir = source:match("^(.*)/[^/]+$")
+    if not script_dir then
+        return ""
+    end
+
+    return script_dir:match("^(.*)/Scripts$") or script_dir
+end
+
+local ModRoot = detect_mod_root()
+local PathRoots = dedupe_paths({
+    ModRoot,
+    "Mods/PalworldTrainerBridge",
+    "Mods/NativeMods/UE4SS/Mods/PalworldTrainerBridge",
+})
+
+local function candidate_paths(filename)
+    local result = {}
+    for _, root in ipairs(PathRoots) do
+        table.insert(result, string.format("%s/%s", root, filename))
+    end
+    return result
+end
+
+local function resolve_read_path(filename)
+    local candidates = candidate_paths(filename)
+    for _, path in ipairs(candidates) do
+        local handle = io.open(path, "r")
+        if handle then
+            handle:close()
+            return path
+        end
+    end
+    return candidates[1]
+end
+
+local function resolve_write_path(filename)
+    local candidates = candidate_paths(filename)
+    for _, path in ipairs(candidates) do
+        local handle = io.open(path, "a+")
+        if handle then
+            handle:close()
+            return path
+        end
+    end
+    return candidates[1]
+end
 local PresetQueries = {
     {
         key = "characters",
@@ -60,7 +137,8 @@ local PresetQueries = {
 }
 
 local function append_session_line(message)
-    local handle = io.open(SessionLogPath, "a+")
+    local session_log_path = resolve_write_path("session.log")
+    local handle = io.open(session_log_path, "a+")
     if not handle then
         return false, "unable to open session log"
     end
@@ -237,12 +315,13 @@ local function print_presets()
 end
 
 local function print_log_status()
-    log("Session log path: " .. SessionLogPath)
+    log("Session log path: " .. resolve_write_path("session.log"))
     log("Session log health: " .. (LogWriteHealthy and "OK" or "Degraded"))
 end
 
 local function clear_session_log()
-    local handle = io.open(SessionLogPath, "w")
+    local session_log_path = resolve_write_path("session.log")
+    local handle = io.open(session_log_path, "w")
     if not handle then
         log("Unable to clear the session log file.")
         return true
@@ -252,7 +331,7 @@ local function clear_session_log()
     handle:close()
     LogWriteHealthy = true
     LastLogFailureShown = false
-    log("Session log cleared: " .. SessionLogPath)
+    log("Session log cleared: " .. session_log_path)
     return true
 end
 
@@ -367,6 +446,8 @@ local BaseMovement = {
 
 local TickCounter = 0
 local LastTogglesRead = 0
+local LastStatusWrite = 0
+local LastRequestId = nil
 
 local function safe_get_prop(object, name)
     if not object or not object:IsValid() then
@@ -419,8 +500,116 @@ local function parse_number(text, key)
     return tonumber(value)
 end
 
+local function parse_string(text, key)
+    return text:match('"' .. key .. '"%s*:%s*"([^"]+)"')
+end
+
+local function write_status()
+    local status_path = resolve_write_path("status.json")
+    local handle = io.open(status_path, "w")
+    if not handle then
+        return false
+    end
+
+    local player = get_player()
+    if not player:IsValid() then
+        handle:write(string.format(
+            '{\n  "player_valid": false,\n  "bridge_version": "%s"\n}\n',
+            Version
+        ))
+        handle:close()
+        return true
+    end
+
+    local location = player:K2_GetActorLocation()
+    handle:write(string.format(
+        '{\n  "player_valid": true,\n  "bridge_version": "%s",\n  "position_x": %.3f,\n  "position_y": %.3f,\n  "position_z": %.3f\n}\n',
+        Version,
+        location.X,
+        location.Y,
+        location.Z
+    ))
+    handle:close()
+    return true
+end
+
+local function read_request()
+    local handle = io.open(resolve_read_path("request.json"), "r")
+    if not handle then
+        return nil
+    end
+
+    local text = handle:read("*a") or ""
+    handle:close()
+    if text == "" then
+        return nil
+    end
+
+    local action = parse_string(text, "action")
+    local request_id = parse_number(text, "request_id")
+    if not action or request_id == nil then
+        return nil
+    end
+
+    return {
+        action = action,
+        request_id = request_id,
+        x = parse_number(text, "x"),
+        y = parse_number(text, "y"),
+        z = parse_number(text, "z"),
+    }
+end
+
+local function process_request()
+    local request = read_request()
+    if not request then
+        return
+    end
+    if LastRequestId ~= nil and request.request_id == LastRequestId then
+        return
+    end
+    LastRequestId = request.request_id
+
+    if request.action == "teleport" then
+        local player = get_player()
+        if not player:IsValid() then
+            log(string.format("Teleport request #%d ignored: local player not ready.", request.request_id))
+            return
+        end
+
+        local root = safe_get_prop(player, "RootComponent")
+        local location = player:K2_GetActorLocation()
+        local rotation = player:K2_GetActorRotation()
+        if root and root:IsValid() then
+            location = root:K2_GetComponentLocation()
+            rotation = root:K2_GetComponentRotation()
+        end
+
+        if request.x ~= nil then
+            location.X = request.x
+        end
+        if request.y ~= nil then
+            location.Y = request.y
+        end
+        if request.z ~= nil then
+            location.Z = request.z
+        end
+
+        local hit_result = {}
+        local ok = pcall(function()
+            player:K2_SetActorLocationAndRotation(location, rotation, false, hit_result, false)
+        end)
+        if ok then
+            log(string.format("Teleport request #%d => %s", request.request_id, format_vector(location)))
+            pcall(write_status)
+        else
+            log(string.format("Teleport request #%d failed.", request.request_id))
+        end
+    end
+end
+
 local function read_toggles()
-    local handle = io.open(TogglesPath, "r")
+    local handle = io.open(resolve_read_path("toggles.json"), "r")
     if not handle then
         return false
     end
@@ -766,7 +955,7 @@ end)
 
 RegisterConsoleCommandHandler("pt_cheats", function(full_command, parameters, ar)
     log("Cheat state: " .. describe_cheats())
-    log("Toggles file: " .. TogglesPath)
+    log("Toggles file: " .. resolve_read_path("toggles.json"))
     return true
 end)
 
@@ -822,6 +1011,7 @@ RegisterHook("/Script/Engine.PlayerController:ClientRestart", function(self, new
         BaseMovement.run = nil
         BaseMovement.sprint = nil
         read_toggles()
+        write_status()
     end)
 end)
 
@@ -835,6 +1025,12 @@ LoopAsync(200, function()
         pcall(read_toggles)
     end
 
+    if TickCounter - LastStatusWrite >= 10 then
+        LastStatusWrite = TickCounter
+        pcall(write_status)
+    end
+
+    pcall(process_request)
     pcall(tick_apply_cheats)
     return false
 end)
@@ -843,5 +1039,6 @@ ExecuteInGameThread(function()
     log(string.format("Bridge %s loaded.", Version))
     log("Use pt_help, pt_cheats, pt_dump, or the hotkeys CTRL+F6 / F7 / F8 / F9 in-game.")
     pcall(read_toggles)
+    pcall(write_status)
     log("Initial cheat state: " .. describe_cheats())
 end)

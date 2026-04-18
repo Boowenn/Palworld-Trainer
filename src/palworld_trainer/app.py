@@ -12,6 +12,7 @@ import subprocess
 import threading
 import tkinter as tk
 import webbrowser
+from pathlib import Path
 from tkinter import filedialog, ttk
 from typing import Callable
 
@@ -23,8 +24,19 @@ from .catalog import (
     pick_enum_dir,
     search_catalog,
 )
+from .cheats import (
+    BridgeStatus,
+    CheatState,
+    read_status,
+    read_toggles,
+    request_path_for,
+    status_path_for,
+    toggles_path_for,
+    write_request,
+    write_toggles,
+)
 from .config import TrainerSettings, config_dir, load_settings, save_settings
-from .environment import EnvironmentReport, scan_environment
+from .environment import EnvironmentReport, deploy_bridge, scan_environment
 from .mem_engine import (
     CUSTOM_SLOT_TEMPLATES,
     DEFAULT_FREEZE,
@@ -70,6 +82,7 @@ class TrainerApp:
         self.version = version
         self.settings: TrainerSettings = load_settings()
         self.report: EnvironmentReport = scan_environment(self.settings.game_root)
+        self.cheat_state: CheatState = self._load_cheat_state()
 
         enum_dir = pick_enum_dir(self.report.client_cheat_commands_enum_dir)
         self.catalogs = load_all_catalogs(enum_dir)
@@ -97,6 +110,8 @@ class TrainerApp:
         self._mem_custom_row_frames: dict[str, ttk.Frame] = {}
         self._mem_busy: bool = False
         self._mem_refresh_job: str | None = None
+        self._route_stop_event = threading.Event()
+        self._bridge_request_counter: int = 0
 
         self._configure_root()
         self._build_style()
@@ -212,6 +227,9 @@ class TrainerApp:
 
     def _build_home_tab(self) -> None:
         tab = ttk.Frame(self.notebook, padding=16)
+        self.notebook.add(tab, text="玩家")
+        self._build_simple_player_tab(tab)
+        return
         self.notebook.add(tab, text="主页")
 
         ttk.Label(tab, text="欢迎使用 Palworld 修改器", style="SubHeader.TLabel").pack(anchor="w")
@@ -392,6 +410,396 @@ class TrainerApp:
             "# -280000, 85000, 12000\n",
         )
         self._route_stop_event = threading.Event()
+
+    def _build_simple_player_tab(self, tab: ttk.Frame) -> None:
+        ttk.Label(tab, text="玩家操作（默认简易模式）", style="SubHeader.TLabel").pack(anchor="w")
+        ttk.Label(
+            tab,
+            text=(
+                "这一页默认走聊天命令和玩家增强模块，不需要再手动搜索地址。"
+                " 原始内存扫描和手动锁值已经收回到“外挂”页，只给高级排障时使用。"
+            ),
+            justify="left",
+            style="Status.TLabel",
+            wraplength=860,
+        ).pack(anchor="w", pady=(4, 10))
+
+        quick_frame = ttk.LabelFrame(tab, text="基础操作", padding=(12, 8))
+        quick_frame.pack(fill="x", pady=(0, 10))
+
+        quick_row = ttk.Frame(quick_frame)
+        quick_row.pack(fill="x", pady=(0, 6))
+        ttk.Button(
+            quick_row,
+            text="开启飞行",
+            style="Big.TButton",
+            command=lambda: self._on_mem_fly(True),
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            quick_row,
+            text="关闭飞行",
+            style="Big.TButton",
+            command=lambda: self._on_mem_fly(False),
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            quick_row,
+            text="读取当前位置",
+            style="Quiet.TButton",
+            command=self._on_mem_read_pos,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            quick_row,
+            text="脱困",
+            style="Quiet.TButton",
+            command=lambda: self._send_with_label(cmd.unstuck(), "脱困"),
+        ).pack(side="left")
+
+        ttk.Label(
+            quick_frame,
+            text="读取当前位置会先把 @!getpos 发到游戏；当前这局没载入增强模块时，坐标结果会显示在游戏聊天框里。",
+            style="Status.TLabel",
+            wraplength=840,
+        ).pack(anchor="w")
+
+        tp_frame = ttk.LabelFrame(tab, text="坐标传送", padding=(12, 8))
+        tp_frame.pack(fill="x", pady=(0, 10))
+
+        tp_row = ttk.Frame(tp_frame)
+        tp_row.pack(fill="x")
+        ttk.Label(tp_row, text="X:").pack(side="left")
+        self.tp_x_var = tk.StringVar(value="0")
+        ttk.Entry(tp_row, textvariable=self.tp_x_var, width=12).pack(
+            side="left", padx=(4, 10)
+        )
+        ttk.Label(tp_row, text="Y:").pack(side="left")
+        self.tp_y_var = tk.StringVar(value="0")
+        ttk.Entry(tp_row, textvariable=self.tp_y_var, width=12).pack(
+            side="left", padx=(4, 10)
+        )
+        ttk.Label(tp_row, text="Z:").pack(side="left")
+        self.tp_z_var = tk.StringVar(value="0")
+        ttk.Entry(tp_row, textvariable=self.tp_z_var, width=12).pack(
+            side="left", padx=(4, 10)
+        )
+        ttk.Button(
+            tp_row,
+            text="传送到坐标",
+            style="Big.TButton",
+            command=self._on_mem_teleport,
+        ).pack(side="left", padx=(6, 0))
+
+        ttk.Label(
+            tp_frame,
+            text="直接输入坐标后点传送即可，不再需要先扫 X/Y/Z 地址。",
+            style="Status.TLabel",
+        ).pack(anchor="w", pady=(6, 0))
+
+        route_frame = ttk.LabelFrame(tab, text="路径传送", padding=(12, 8))
+        route_frame.pack(fill="both", expand=True, pady=(0, 10))
+
+        ttk.Label(
+            route_frame,
+            text=(
+                "每行一个 X Y Z，支持空格或逗号分隔。修改器会按顺序逐点发送 @!teleport，"
+                " 不再要求提前锁定 pos_x/y/z。"
+            ),
+            justify="left",
+            style="Status.TLabel",
+            wraplength=840,
+        ).pack(anchor="w", pady=(0, 6))
+
+        route_ctrl = ttk.Frame(route_frame)
+        route_ctrl.pack(fill="x", pady=(0, 6))
+        ttk.Label(route_ctrl, text="每点停留（秒）:").pack(side="left")
+        self.route_delay_var = tk.StringVar(value="3")
+        ttk.Entry(route_ctrl, textvariable=self.route_delay_var, width=6).pack(
+            side="left", padx=(4, 10)
+        )
+        self.route_start_btn = ttk.Button(
+            route_ctrl,
+            text="开始路径传送",
+            style="Big.TButton",
+            command=self._on_route_start,
+        )
+        self.route_start_btn.pack(side="left", padx=(0, 4))
+        self.route_stop_btn = ttk.Button(
+            route_ctrl,
+            text="停止",
+            style="Big.TButton",
+            command=self._on_route_stop,
+            state="disabled",
+        )
+        self.route_stop_btn.pack(side="left")
+        self.route_progress_label = ttk.Label(route_ctrl, text="", style="Status.TLabel")
+        self.route_progress_label.pack(side="left", padx=(10, 0))
+
+        route_text_frame = ttk.Frame(route_frame)
+        route_text_frame.pack(fill="both", expand=True)
+        self.route_text = tk.Text(route_text_frame, height=6, wrap="none")
+        self.route_text.pack(side="left", fill="both", expand=True)
+        route_scroll = ttk.Scrollbar(
+            route_text_frame, orient="vertical", command=self.route_text.yview
+        )
+        self.route_text.configure(yscrollcommand=route_scroll.set)
+        route_scroll.pack(side="right", fill="y")
+        self.route_text.insert(
+            "1.0",
+            "# 每行一个坐标：X Y Z（空格或逗号分隔）\n"
+            "# 示例：\n"
+            "# -350000 120000 15000\n"
+            "# -280000, 85000, 12000\n",
+        )
+
+        cheats_frame = ttk.LabelFrame(tab, text="玩家增强（需增强模块）", padding=(12, 8))
+        cheats_frame.pack(fill="x")
+
+        cheats_head = ttk.Frame(cheats_frame)
+        cheats_head.pack(fill="x", pady=(0, 6))
+        self.player_bridge_status_label = ttk.Label(
+            cheats_head, text="", style="Status.TLabel"
+        )
+        self.player_bridge_status_label.pack(side="left", fill="x", expand=True)
+        ttk.Button(
+            cheats_head,
+            text="部署/更新增强模块",
+            style="Quiet.TButton",
+            command=self._on_deploy_bridge,
+        ).pack(side="right")
+
+        toggles_row = ttk.Frame(cheats_frame)
+        toggles_row.pack(fill="x", pady=(0, 6))
+        self.bridge_godmode_var = tk.BooleanVar(value=self.cheat_state.godmode)
+        self.bridge_stamina_var = tk.BooleanVar(value=self.cheat_state.inf_stamina)
+        self.bridge_weight_var = tk.BooleanVar(value=self.cheat_state.weight_zero)
+        ttk.Checkbutton(
+            toggles_row, text="无敌", variable=self.bridge_godmode_var
+        ).pack(side="left", padx=(0, 12))
+        ttk.Checkbutton(
+            toggles_row, text="无限体力", variable=self.bridge_stamina_var
+        ).pack(side="left", padx=(0, 12))
+        ttk.Checkbutton(
+            toggles_row, text="无限负重", variable=self.bridge_weight_var
+        ).pack(side="left")
+
+        multiplier_row = ttk.Frame(cheats_frame)
+        multiplier_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(multiplier_row, text="移速倍率:").pack(side="left")
+        self.bridge_speed_var = tk.StringVar(
+            value=f"{self.cheat_state.speed_multiplier:g}"
+        )
+        ttk.Entry(multiplier_row, textvariable=self.bridge_speed_var, width=8).pack(
+            side="left", padx=(4, 12)
+        )
+        ttk.Label(multiplier_row, text="跳跃倍率:").pack(side="left")
+        self.bridge_jump_var = tk.StringVar(
+            value=f"{self.cheat_state.jump_multiplier:g}"
+        )
+        ttk.Entry(multiplier_row, textvariable=self.bridge_jump_var, width=8).pack(
+            side="left", padx=(4, 12)
+        )
+        ttk.Button(
+            multiplier_row,
+            text="应用增强状态",
+            style="Big.TButton",
+            command=self._apply_player_cheats,
+        ).pack(side="left", padx=(6, 4))
+        ttk.Button(
+            multiplier_row,
+            text="恢复默认倍率",
+            style="Quiet.TButton",
+            command=self._reset_player_multipliers,
+        ).pack(side="left")
+
+        ttk.Label(
+            cheats_frame,
+            text="无敌/体力/负重/倍率依赖 PalworldTrainerBridge。当前这局没载入时，我会先帮你部署好，重启游戏后自动生效。",
+            justify="left",
+            style="Status.TLabel",
+            wraplength=840,
+        ).pack(anchor="w")
+
+        ttk.Label(
+            tab,
+            text="需要旧版手动搜索地址、锁血、锁蓝等底层调试功能时，请切到“外挂”页。",
+            style="Status.TLabel",
+        ).pack(anchor="w", pady=(10, 0))
+
+        self._refresh_player_bridge_status()
+
+    def _bridge_toggles_path(self) -> Path | None:
+        return toggles_path_for(self.report)
+
+    def _bridge_status_path(self) -> Path | None:
+        return status_path_for(self.report)
+
+    def _bridge_request_path(self) -> Path | None:
+        return request_path_for(self.report)
+
+    def _bridge_session_log_path(self) -> Path | None:
+        target = self.report.trainer_bridge_runtime_target or self.report.trainer_bridge_target
+        if target is None:
+            return None
+        return target / "session.log"
+
+    def _read_bridge_status(self) -> BridgeStatus:
+        path = self._bridge_status_path()
+        if path is None:
+            return BridgeStatus()
+        return read_status(path)
+
+    def _bridge_runtime_ready(self) -> bool:
+        path = self._bridge_status_path()
+        return path is not None and path.exists()
+
+    def _next_bridge_request_id(self) -> int:
+        self._bridge_request_counter += 1
+        return self._bridge_request_counter
+
+    def _load_cheat_state(self) -> CheatState:
+        path = self._bridge_toggles_path()
+        if path is None:
+            return CheatState()
+        return read_toggles(path)
+
+    def _sync_player_cheat_controls(self) -> None:
+        if hasattr(self, "bridge_godmode_var"):
+            self.bridge_godmode_var.set(self.cheat_state.godmode)
+        if hasattr(self, "bridge_stamina_var"):
+            self.bridge_stamina_var.set(self.cheat_state.inf_stamina)
+        if hasattr(self, "bridge_weight_var"):
+            self.bridge_weight_var.set(self.cheat_state.weight_zero)
+        if hasattr(self, "bridge_speed_var"):
+            self.bridge_speed_var.set(f"{self.cheat_state.speed_multiplier:g}")
+        if hasattr(self, "bridge_jump_var"):
+            self.bridge_jump_var.set(f"{self.cheat_state.jump_multiplier:g}")
+
+    def _refresh_player_bridge_status(self) -> None:
+        if not hasattr(self, "player_bridge_status_label"):
+            return
+
+        status = self._read_bridge_status()
+        if self.report.trainer_bridge_target is None:
+            text = "未找到 UE4SS Mods 目录，无法部署玩家增强模块。"
+            style = "Bad.TLabel"
+        elif not self.report.client_cheat_commands_present:
+            text = "还没检测到 ClientCheatCommands，先把 UE4SS / CCC 装好。"
+            style = "Bad.TLabel"
+        elif not self.report.trainer_bridge_deployed or not self.report.trainer_bridge_enabled:
+            text = "玩家增强模块还没部署完成，点右侧按钮即可自动修复。"
+            style = "Warn.TLabel"
+        elif status.player_valid:
+            text = "玩家增强模块已就绪；无敌/体力/负重/倍率会按当前设置持续生效。"
+            style = "Good.TLabel"
+        else:
+            text = "玩家增强模块已写入，但当前这局还没载入；完全退出并重开游戏后生效。"
+            style = "Warn.TLabel"
+
+        self.player_bridge_status_label.configure(text=text, style=style)
+
+    def _ensure_player_bridge(self) -> tuple[bool, str]:
+        if self.report.trainer_bridge_target is None:
+            return False, "未找到 UE4SS Mods 目录。"
+        if self._bridge_runtime_ready():
+            return True, "玩家增强模块已经就绪。"
+
+        ok, message = deploy_bridge(self.report)
+        self._refresh_status()
+        return ok, message
+
+    def _collect_player_cheat_state(self) -> CheatState | None:
+        return self._collect_player_cheat_state_impl()
+
+    def _write_bridge_teleport_request(
+        self, x: float, y: float, z: float
+    ) -> tuple[bool, str]:
+        ok, message = self._ensure_player_bridge()
+        if not ok:
+            return False, message
+        if not self._bridge_runtime_ready():
+            return (
+                False,
+                "当前这局还没载入玩家增强模块；请完全退出并重开游戏后，再使用坐标传送/路径传送。",
+            )
+
+        path = self._bridge_request_path()
+        if path is None:
+            return False, "还没找到增强模块的 request.json 目录。"
+
+        return write_request(
+            path,
+            action="teleport",
+            request_id=self._next_bridge_request_id(),
+            x=x,
+            y=y,
+            z=z,
+        )
+
+    def _collect_player_cheat_state_impl(self) -> CheatState | None:
+        try:
+            speed = float(self.bridge_speed_var.get().strip())
+            jump = float(self.bridge_jump_var.get().strip())
+        except ValueError:
+            self._show_result("移速倍率和跳跃倍率必须是数字。", ok=False)
+            return None
+
+        speed = max(0.1, min(10.0, speed))
+        jump = max(0.1, min(10.0, jump))
+        self.bridge_speed_var.set(f"{speed:g}")
+        self.bridge_jump_var.set(f"{jump:g}")
+
+        return CheatState(
+            godmode=bool(self.bridge_godmode_var.get()),
+            inf_stamina=bool(self.bridge_stamina_var.get()),
+            weight_zero=bool(self.bridge_weight_var.get()),
+            speed_multiplier=speed,
+            jump_multiplier=jump,
+        )
+
+    def _apply_player_cheats(self) -> None:
+        state = self._collect_player_cheat_state()
+        if state is None:
+            return
+
+        ok, message = self._ensure_player_bridge()
+        if not ok:
+            self._show_result(message, ok=False)
+            return
+
+        path = self._bridge_toggles_path()
+        if path is None:
+            self._show_result("还没找到增强模块的 toggles.json 目录。", ok=False)
+            return
+
+        ok, message = write_toggles(path, state)
+        if not ok:
+            self._show_result(message, ok=False)
+            return
+
+        self.cheat_state = state
+        self._sync_player_cheat_controls()
+        self._refresh_player_bridge_status()
+        if self._bridge_runtime_ready():
+            self._show_result("玩家增强状态已写入并等待桥接脚本持续应用。", ok=True)
+        else:
+            self._show_result(
+                "玩家增强状态已写入；当前这局还没载入增强模块，重启游戏后会自动生效。",
+                ok=True,
+            )
+
+    def _reset_player_multipliers(self) -> None:
+        if hasattr(self, "bridge_speed_var"):
+            self.bridge_speed_var.set("1")
+        if hasattr(self, "bridge_jump_var"):
+            self.bridge_jump_var.set("1")
+        self._apply_player_cheats()
+
+    def _on_deploy_bridge(self) -> None:
+        ok, message = deploy_bridge(self.report)
+        self._refresh_status()
+        if ok:
+            self._show_result(message, ok=True)
+        else:
+            self._show_result(message, ok=False)
 
     def _build_items_tab(self) -> None:
         tab = ttk.Frame(self.notebook, padding=16)
@@ -1009,6 +1417,33 @@ class TrainerApp:
         self._send(cmd.give_exp(amount))
 
     def _on_mem_teleport(self) -> None:
+        try:
+            x = float(self.tp_x_var.get())
+            y = float(self.tp_y_var.get())
+            z = float(self.tp_z_var.get())
+        except ValueError:
+            self._show_result("坐标必须是数字。", ok=False)
+            return
+
+        ok, message = self._write_bridge_teleport_request(x, y, z)
+        if ok:
+            self._show_result(
+                f"已发送坐标传送请求：({x:g}, {y:g}, {z:g})。",
+                ok=True,
+            )
+        else:
+            self._show_result(message, ok=False)
+        return
+        try:
+            x = float(self.tp_x_var.get())
+            y = float(self.tp_y_var.get())
+            z = float(self.tp_z_var.get())
+        except ValueError:
+            self._show_result("坐标必须是数字。", ok=False)
+            return
+
+        self._send_with_label(cmd.teleport(x, y, z), f"传送到坐标 ({x:g}, {y:g}, {z:g})")
+        return
         for slot in POSITION_SLOTS:
             if not self.mem.is_locked(slot):
                 self._show_result("先锁定 pos_x/y/z 地址，才能传送。", ok=False)
@@ -1026,6 +1461,9 @@ class TrainerApp:
         self._show_result(f"已传送到 ({x:g}, {y:g}, {z:g})", ok=True)
 
     def _on_mem_fly(self, enabled: bool) -> None:
+        label = "开启飞行" if enabled else "关闭飞行"
+        self._send_with_label(cmd.fly(enabled), label)
+        return
         if not self.mem.is_locked("move_mode"):
             self._show_result("先锁定 move_mode 地址。", ok=False)
             return
@@ -1042,6 +1480,24 @@ class TrainerApp:
         self._show_result(f"已切换到{label}模式（move_mode={value}）。", ok=True)
 
     def _on_mem_read_pos(self) -> None:
+        status = self._read_bridge_status()
+        if status.player_valid:
+            self.tp_x_var.set(f"{status.position_x:g}")
+            self.tp_y_var.set(f"{status.position_y:g}")
+            self.tp_z_var.set(f"{status.position_z:g}")
+            self._show_result("已从增强模块读取当前位置。", ok=True)
+            return
+
+        self._send_with_label(
+            cmd.get_position(),
+            "读取当前位置（结果会显示在游戏聊天框）",
+        )
+        return
+        self._send_with_label(
+            cmd.get_position(),
+            "读取当前位置（结果会显示在游戏聊天框）",
+        )
+        return
         for slot, var in (
             ("pos_x", self.tp_x_var),
             ("pos_y", self.tp_y_var),
@@ -1078,6 +1534,112 @@ class TrainerApp:
         return coords
 
     def _on_route_start(self) -> None:
+        coords = self._parse_route_coords()
+        if not coords:
+            self._show_result("请至少填写一行 X Y Z 坐标。", ok=False)
+            return
+        try:
+            delay = max(0.5, float(self.route_delay_var.get()))
+        except ValueError:
+            delay = 3.0
+
+        self._route_stop_event.clear()
+        self.route_start_btn.configure(state="disabled")
+        self.route_stop_btn.configure(state="normal")
+        self._show_result(
+            f"开始路径传送，共 {len(coords)} 个点，每点停留 {delay:.1f}s。",
+            ok=True,
+            pending=True,
+        )
+
+        def worker() -> None:
+            for idx, (x, y, z) in enumerate(coords, 1):
+                if self._route_stop_event.is_set():
+                    self.root.after(
+                        0,
+                        lambda done=idx - 1, total=len(coords): self._route_done(
+                            f"路径传送已停止（已发送 {done}/{total} 个点）。"
+                        ),
+                    )
+                    return
+
+                self.root.after(
+                    0,
+                    lambda i=idx, total=len(coords): self.route_progress_label.configure(
+                        text=f"[{i}/{total}]"
+                    ),
+                )
+                ok, message = self._write_bridge_teleport_request(x, y, z)
+                if not ok:
+                    self.root.after(
+                        0,
+                        lambda m=message: self._route_done(m, ok=False),
+                    )
+                    return
+                self._route_stop_event.wait(delay)
+
+            self.root.after(
+                0,
+                lambda total=len(coords): self._route_done(
+                    f"路径传送完成，共发送 {total} 个点。"
+                ),
+            )
+
+        threading.Thread(target=worker, daemon=True).start()
+        return
+        coords = self._parse_route_coords()
+        if not coords:
+            self._show_result("请至少填写一行 X Y Z 坐标。", ok=False)
+            return
+        try:
+            delay = max(0.5, float(self.route_delay_var.get()))
+        except ValueError:
+            delay = 3.0
+
+        self._route_stop_event.clear()
+        self.route_start_btn.configure(state="disabled")
+        self.route_stop_btn.configure(state="normal")
+        self._show_result(
+            f"开始路径传送，共 {len(coords)} 个点，每点停留 {delay:.1f}s。",
+            ok=True,
+            pending=True,
+        )
+
+        def worker() -> None:
+            for idx, (x, y, z) in enumerate(coords, 1):
+                if self._route_stop_event.is_set():
+                    self.root.after(
+                        0,
+                        lambda done=idx - 1, total=len(coords): self._route_done(
+                            f"路径传送已停止（已发送 {done}/{total} 个点）。"
+                        ),
+                    )
+                    return
+
+                self.root.after(
+                    0,
+                    lambda i=idx, total=len(coords): self.route_progress_label.configure(
+                        text=f"[{i}/{total}]"
+                    ),
+                )
+                result = game_control.send_chat_command(cmd.teleport(x, y, z))
+                if not result.ok:
+                    self.root.after(
+                        0,
+                        lambda message=result.message: self._route_done(message, ok=False),
+                    )
+                    return
+                self._route_stop_event.wait(delay)
+
+            self.root.after(
+                0,
+                lambda total=len(coords): self._route_done(
+                    f"路径传送完成，共发送 {total} 个点。"
+                ),
+            )
+
+        threading.Thread(target=worker, daemon=True).start()
+        return
         for slot in POSITION_SLOTS:
             if not self.mem.is_locked(slot):
                 self._show_result("先锁定 pos_x/y/z 地址，才能路径传送。", ok=False)
@@ -1137,11 +1699,11 @@ class TrainerApp:
     def _on_route_stop(self) -> None:
         self._route_stop_event.set()
 
-    def _route_done(self, message: str) -> None:
+    def _route_done(self, message: str, *, ok: bool = True) -> None:
         self.route_start_btn.configure(state="normal")
         self.route_stop_btn.configure(state="disabled")
         self.route_progress_label.configure(text="")
-        self._show_result(message, ok=True)
+        self._show_result(message, ok=ok)
 
     def _on_give_preset(self, preset: cmd.QuickPreset) -> None:
         commands = cmd.preset_commands(preset)
@@ -1646,7 +2208,10 @@ class TrainerApp:
 
     def _refresh_status(self) -> None:
         self.report = scan_environment(self.settings.game_root)
+        self.cheat_state = self._load_cheat_state()
         self._rebuild_env_text()
+        self._sync_player_cheat_controls()
+        self._refresh_player_bridge_status()
 
         if game_control.is_game_running():
             self.status_game.configure(text="游戏：运行中 ✔", style="Good.TLabel")

@@ -8,10 +8,15 @@ from tempfile import TemporaryDirectory
 from tests import _bootstrap  # noqa: F401 - ensures src on sys.path
 
 from palworld_trainer.cheats import (
+    BridgeStatus,
     CheatState,
     describe_state,
+    read_status,
     read_toggles,
+    request_path_for,
+    status_path_for,
     toggles_path_for,
+    write_request,
     write_toggles,
 )
 from palworld_trainer.environment import EnvironmentReport
@@ -114,6 +119,88 @@ class TogglesPathForTests(unittest.TestCase):
             assert result is not None  # for type checker
             self.assertEqual(result.parent, bridge)
             self.assertEqual(result.name, "toggles.json")
+
+    def test_status_and_request_paths_share_bridge_root(self) -> None:
+        with TemporaryDirectory() as tmp:
+            bridge = Path(tmp) / "PalworldTrainerBridge"
+            report = EnvironmentReport(game_root=Path(tmp), trainer_bridge_target=bridge)
+            status = status_path_for(report)
+            request = request_path_for(report)
+            self.assertIsNotNone(status)
+            self.assertIsNotNone(request)
+            assert status is not None
+            assert request is not None
+            self.assertEqual(status.parent, bridge)
+            self.assertEqual(status.name, "status.json")
+            self.assertEqual(request.parent, bridge)
+            self.assertEqual(request.name, "request.json")
+
+    def test_runtime_target_overrides_deployed_target(self) -> None:
+        with TemporaryDirectory() as tmp:
+            deployed = Path(tmp) / "deployed"
+            runtime = Path(tmp) / "runtime"
+            report = EnvironmentReport(
+                game_root=Path(tmp),
+                trainer_bridge_target=deployed,
+                trainer_bridge_runtime_target=runtime,
+            )
+            toggles = toggles_path_for(report)
+            status = status_path_for(report)
+            request = request_path_for(report)
+            self.assertEqual(toggles, runtime / "toggles.json")
+            self.assertEqual(status, runtime / "status.json")
+            self.assertEqual(request, runtime / "request.json")
+
+
+class BridgeStatusTests(unittest.TestCase):
+    def test_read_status_missing_file_returns_default(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "missing-status.json"
+            status = read_status(path)
+            self.assertEqual(status, BridgeStatus())
+
+    def test_read_status_parses_position(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "status.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "player_valid": True,
+                        "bridge_version": "1.2.0",
+                        "position_x": -123.5,
+                        "position_y": 456.0,
+                        "position_z": 789.25,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            status = read_status(path)
+            self.assertTrue(status.player_valid)
+            self.assertEqual(status.bridge_version, "1.2.0")
+            self.assertAlmostEqual(status.position_x, -123.5)
+            self.assertAlmostEqual(status.position_y, 456.0)
+            self.assertAlmostEqual(status.position_z, 789.25)
+
+
+class WriteRequestTests(unittest.TestCase):
+    def test_write_request_creates_request_file(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bridge" / "request.json"
+            ok, message = write_request(
+                path,
+                action="teleport",
+                request_id=42,
+                x=-100.5,
+                y=200.25,
+                z=300.75,
+            )
+            self.assertTrue(ok, message)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["action"], "teleport")
+            self.assertEqual(payload["request_id"], 42)
+            self.assertAlmostEqual(payload["x"], -100.5)
+            self.assertAlmostEqual(payload["y"], 200.25)
+            self.assertAlmostEqual(payload["z"], 300.75)
 
 
 class DescribeStateTests(unittest.TestCase):
