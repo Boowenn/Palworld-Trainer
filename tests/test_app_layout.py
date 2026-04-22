@@ -229,6 +229,7 @@ class AppLayoutTests(unittest.TestCase):
             app = TrainerApp(root, "test")
             root.withdraw()
             with (
+                mock.patch.object(app, "_bridge_runtime_ready", return_value=False),
                 mock.patch.object(app, "_hidden_command_dispatch_mode", return_value="fallback"),
                 mock.patch(
                     "palworld_trainer.app.game_control.send_chat_commands_isolated",
@@ -271,6 +272,7 @@ class AppLayoutTests(unittest.TestCase):
                     return_value=BridgeStatus(
                         bridge_version="1.2.0",
                         hidden_registry_ready=True,
+                        hidden_dispatch_ready=True,
                     ),
                 ),
             ):
@@ -284,6 +286,7 @@ class AppLayoutTests(unittest.TestCase):
                     return_value=BridgeStatus(
                         bridge_version="1.2.0",
                         hidden_registry_ready=False,
+                        hidden_dispatch_ready=False,
                     ),
                 ),
             ):
@@ -294,7 +297,7 @@ class AppLayoutTests(unittest.TestCase):
                 mock.patch.object(
                     app,
                     "_read_bridge_status",
-                    return_value=BridgeStatus(bridge_version="1.1.2"),
+                    return_value=BridgeStatus(bridge_version="1.1.2", player_valid=True),
                 ),
             ):
                 self.assertFalse(app._bridge_supports_hidden_commands())
@@ -306,6 +309,7 @@ class AppLayoutTests(unittest.TestCase):
         try:
             app = TrainerApp(root, "test")
             with (
+                mock.patch.object(app, "_bridge_runtime_ready", return_value=False),
                 mock.patch.object(app, "_bridge_supports_hidden_commands", return_value=True),
                 mock.patch.object(
                     app,
@@ -328,6 +332,7 @@ class AppLayoutTests(unittest.TestCase):
         try:
             app = TrainerApp(root, "test")
             with (
+                mock.patch.object(app, "_bridge_runtime_ready", return_value=False),
                 mock.patch.object(app, "_bridge_supports_hidden_commands", return_value=False),
                 mock.patch.object(app, "_bridge_can_hide_chat_commands", return_value=True),
                 mock.patch(
@@ -362,7 +367,7 @@ class AppLayoutTests(unittest.TestCase):
                 mock.patch.object(
                     app,
                     "_read_bridge_status",
-                    return_value=BridgeStatus(bridge_version="1.1.2"),
+                    return_value=BridgeStatus(bridge_version="1.1.2", player_valid=True),
                 ),
                 mock.patch(
                     "palworld_trainer.app.game_control.send_chat_commands_isolated"
@@ -379,6 +384,39 @@ class AppLayoutTests(unittest.TestCase):
             shown_text = show_result.call_args.args[0]
             self.assertIn("1.1.2", shown_text)
             self.assertIn("兼容模式也不可用", shown_text)
+        finally:
+            root.destroy()
+
+    def test_hidden_commands_require_world_loaded_before_dispatch(self) -> None:
+        root = _make_root()
+        try:
+            app = TrainerApp(root, "test")
+            with (
+                mock.patch.object(app, "_bridge_runtime_ready", return_value=True),
+                mock.patch.object(
+                    app,
+                    "_read_bridge_status",
+                    return_value=BridgeStatus(
+                        bridge_version="1.2.9",
+                        controller_valid=True,
+                        player_valid=False,
+                        chat_suppression_ready=True,
+                    ),
+                ),
+                mock.patch(
+                    "palworld_trainer.app.game_control.send_chat_commands_isolated"
+                ) as send_many,
+                mock.patch.object(app, "_show_result") as show_result,
+            ):
+                app._dispatch_hidden_commands(
+                    [cmd.giveme("Wood", 2)],
+                    label="发放物品 x2",
+                )
+
+            send_many.assert_not_called()
+            show_result.assert_called_once()
+            shown_text = show_result.call_args.args[0]
+            self.assertIn("先进入存档/世界", shown_text)
         finally:
             root.destroy()
 

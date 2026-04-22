@@ -43,7 +43,9 @@ KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_UNICODE = 0x0004
 
 VK_RETURN = 0x0D
+VK_CONTROL = 0x11
 VK_MENU = 0x12  # Alt key, used as the "unblock SetForegroundWindow" tap.
+VK_A = 0x41
 VK_BACK = 0x08
 VK_ESCAPE = 0x1B
 
@@ -307,6 +309,21 @@ def _tap_vk(vk: int, delay_ms: int = 30) -> None:
     time.sleep(delay_ms / 1000.0)
 
 
+def _tap_chord(modifiers: list[int], vk: int, delay_ms: int = 30) -> None:
+    inputs = [_make_key_input(modifier, False) for modifier in modifiers]
+    inputs.extend([_make_key_input(vk, False), _make_key_input(vk, True)])
+    inputs.extend(_make_key_input(modifier, True) for modifier in reversed(modifiers))
+    _send_inputs(inputs)
+    time.sleep(delay_ms / 1000.0)
+
+
+def _clear_chat_input() -> None:
+    # Some sessions reopen chat with stale text still selected or partially present.
+    # Clearing the input box first makes fallback command delivery much less flaky.
+    _tap_chord([VK_CONTROL], VK_A, delay_ms=20)
+    _tap_vk(VK_BACK, delay_ms=20)
+
+
 def _type_unicode(text: str, delay_ms: int = 5) -> None:
     for char in text:
         if char == "\n":
@@ -387,6 +404,8 @@ def send_chat_command(
     time.sleep(chat_open_delay_ms / 1000.0)
     _tap_vk(VK_RETURN)
     time.sleep(post_open_delay_ms / 1000.0)
+    _clear_chat_input()
+    time.sleep(0.04)
 
     _type_unicode(stripped, delay_ms=per_char_delay_ms)
 

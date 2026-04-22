@@ -19,6 +19,7 @@ if str(SRC) not in sys.path:
 
 from palworld_trainer import __version__  # noqa: E402
 from palworld_trainer import commands as cmd  # noqa: E402
+from palworld_trainer import game_control  # noqa: E402
 from palworld_trainer.app import TrainerApp  # noqa: E402
 from palworld_trainer.reference_parity import (  # noqa: E402
     REFERENCE_ADD_PAL_TABS,
@@ -111,7 +112,7 @@ class LiveSmokeHarness:
     def file_text(self, path: Path) -> str:
         if not path.exists():
             return ""
-        return path.read_text(encoding="utf-8", errors="replace")
+        return path.read_text(encoding="utf-8-sig", errors="replace")
 
     def file_size(self, path: Path) -> int:
         if not path.exists():
@@ -317,6 +318,14 @@ class LiveSmokeHarness:
         timeout: float = 8.0,
     ) -> tuple[bool, str, list[str]]:
         normalized = [cmd.sanitize_command(command) for command in commands if command.strip()]
+        game_running = game_control.is_game_running()
+        window_handle = game_control.find_palworld_window()
+        if not game_running or not window_handle:
+            return (
+                False,
+                "game process/window missing during live verification",
+                [f"game_running={game_running}", f"window_handle={window_handle!r}"],
+            )
         mode = str(self._case_context.get("dispatch_mode", self.hidden_dispatch_mode()))
         bridge_ok, bridge_details, bridge_evidence = self.verify_hidden_request_and_no_visible_chat(
             commands_text="\n".join(normalized),
@@ -478,8 +487,6 @@ def main() -> int:
             float(status.get("position_y", 0.0)),
             float(status.get("position_z", 0.0)),
         )
-        dispatch_mode = harness.hidden_dispatch_mode()
-
         def add(
             group: str,
             name: str,
@@ -497,12 +504,12 @@ def main() -> int:
             lambda: (
                 bool(harness.app.report.game_root_exists)
                 and harness.app._read_bridge_status().player_valid
-                and dispatch_mode != "none",
+                and harness.hidden_dispatch_mode() != "none",
                 "status refresh complete",
                 [
                     f"game_root={ascii(str(harness.app.report.game_root))}",
                     f"player_valid={harness.app._read_bridge_status().player_valid}",
-                    f"dispatch_mode={dispatch_mode}",
+                    f"dispatch_mode={harness.hidden_dispatch_mode()}",
                     f"bridge_version={harness.bridge_version()}",
                 ],
             ),

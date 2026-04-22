@@ -49,7 +49,11 @@ from .coord_workspace import (
     load_coord_workspace,
     save_coord_workspace,
 )
-from .environment import EnvironmentReport, deploy_bridge, scan_environment
+from .environment import (
+    EnvironmentReport,
+    deploy_bridge_and_fix_settings,
+    scan_environment,
+)
 from .mem_engine import (
     CUSTOM_SLOT_TEMPLATES,
     DEFAULT_FREEZE,
@@ -1366,6 +1370,12 @@ class TrainerApp:
         elif not self.report.trainer_bridge_deployed or not self.report.trainer_bridge_enabled:
             text = "玩家增强模块还没部署完成，点右侧按钮即可自动修复。"
             style = "Warn.TLabel"
+        elif status.controller_valid and not status.player_valid:
+            text = (
+                f"玩家增强模块已连上当前会话（bridge {bridge_version}），"
+                "但当前还没进入可操作角色状态；先进入存档/世界后再试。"
+            )
+            style = "Warn.TLabel"
         elif status.player_valid and hidden_mode == "bridge":
             text = (
                 f"玩家增强模块已就绪（bridge {bridge_version}，原生隐藏指令可用）；"
@@ -1399,7 +1409,7 @@ class TrainerApp:
         if self._bridge_runtime_ready():
             return True, "玩家增强模块已经就绪。"
 
-        ok, message = deploy_bridge(self.report)
+        ok, message = deploy_bridge_and_fix_settings(self.report)
         self._refresh_status()
         return ok, message
 
@@ -1445,7 +1455,7 @@ class TrainerApp:
             return False
         status = self._read_bridge_status()
         version = _parse_version_tuple(status.bridge_version)
-        return version >= BRIDGE_HIDDEN_COMMANDS_MIN_VERSION and status.hidden_registry_ready
+        return version >= BRIDGE_HIDDEN_COMMANDS_MIN_VERSION and status.hidden_dispatch_ready
 
     def _bridge_can_hide_chat_commands(self) -> bool:
         if not self._bridge_runtime_ready():
@@ -1458,6 +1468,16 @@ class TrainerApp:
         if self._bridge_can_hide_chat_commands():
             return "fallback"
         return "none"
+
+    def _hidden_command_block_reason(self) -> str | None:
+        if not self._bridge_runtime_ready():
+            return None
+        status = self._read_bridge_status()
+        if status.player_valid:
+            return None
+        if status.controller_valid:
+            return "游戏会话已连接，但当前还没进入可操作角色状态。先进入存档/世界后再试。"
+        return "增强模块已载入，但当前会话还没连到角色。先进入存档/世界后再试。"
 
     def _write_bridge_hidden_commands(self, commands: list[str]) -> tuple[bool, str]:
         normalized = [
@@ -1481,11 +1501,16 @@ class TrainerApp:
         if not normalized:
             return
 
+        block_reason = self._hidden_command_block_reason()
+        if block_reason is not None:
+            self._show_result(f"{label} 当前不能执行：{block_reason}", ok=False)
+            return
+
         dispatch_mode = self._hidden_command_dispatch_mode()
         if dispatch_mode == "bridge":
             ok, message = self._write_bridge_hidden_commands(normalized)
             if ok:
-                self._show_result(f"已通过 bridge 原生模式执行：{label}", ok=True)
+                self._show_result(f"已提交给 bridge 执行：{label}", ok=True, pending=True)
             else:
                 self._show_result(f"{label} 发送失败：{message}", ok=False)
             return
@@ -1585,7 +1610,7 @@ class TrainerApp:
         self._apply_player_cheats()
 
     def _on_deploy_bridge(self) -> None:
-        ok, message = deploy_bridge(self.report)
+        ok, message = deploy_bridge_and_fix_settings(self.report)
         self._refresh_status()
         if ok:
             self._show_result(message, ok=True)
@@ -5505,10 +5530,12 @@ class TrainerApp:
                 text="聊天命令：当前进程未载入 UE4SS ⚠",
                 style="Warn.TLabel",
             )
-        elif self.report.client_cheat_commands_active and hidden_mode == "bridge":
+        elif self.report.client_cheat_commands_active and status.player_valid and hidden_mode == "bridge":
             self.status_cheats.configure(text="聊天命令：隐藏执行 ✔", style="Good.TLabel")
-        elif self.report.client_cheat_commands_active and hidden_mode == "fallback":
+        elif self.report.client_cheat_commands_active and status.player_valid and hidden_mode == "fallback":
             self.status_cheats.configure(text="聊天命令：兼容静默 ✔", style="Good.TLabel")
+        elif self.report.client_cheat_commands_active and status.controller_valid:
+            self.status_cheats.configure(text="聊天命令：会话已连，等待进入世界", style="Warn.TLabel")
         elif self.report.client_cheat_commands_active:
             self.status_cheats.configure(
                 text="聊天命令：模组在线（等待兼容链路）",
@@ -5528,6 +5555,8 @@ class TrainerApp:
                 text="增强模块：已连接（仅飞行/坐标）",
                 style="Warn.TLabel",
             )
+        elif status.controller_valid:
+            self.status_mem.configure(text="增强模块：会话已连，等待角色", style="Warn.TLabel")
         elif self.report.trainer_bridge_deployed and self.report.trainer_bridge_enabled:
             self.status_mem.configure(text="增强模块：已部署，重开游戏后生效 ⚠", style="Warn.TLabel")
         elif self.report.trainer_bridge_target is not None:

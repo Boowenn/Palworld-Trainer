@@ -167,8 +167,10 @@ class BridgeStatusTests(unittest.TestCase):
                 json.dumps(
                     {
                         "player_valid": True,
+                        "controller_valid": True,
                         "bridge_version": "1.2.0",
                         "hidden_registry_ready": True,
+                        "hidden_dispatch_ready": False,
                         "chat_suppression_ready": True,
                         "position_x": -123.5,
                         "position_y": 456.0,
@@ -179,8 +181,10 @@ class BridgeStatusTests(unittest.TestCase):
             )
             status = read_status(path)
             self.assertTrue(status.player_valid)
+            self.assertTrue(status.controller_valid)
             self.assertEqual(status.bridge_version, "1.2.0")
             self.assertTrue(status.hidden_registry_ready)
+            self.assertFalse(status.hidden_dispatch_ready)
             self.assertTrue(status.chat_suppression_ready)
             self.assertAlmostEqual(status.position_x, -123.5)
             self.assertAlmostEqual(status.position_y, 456.0)
@@ -200,6 +204,7 @@ class BridgeStatusTests(unittest.TestCase):
                             "player_valid": True,
                             "bridge_version": "1.2.7",
                             "hidden_registry_ready": True,
+                            "hidden_dispatch_ready": False,
                         }
                     ),
                 ],
@@ -209,6 +214,7 @@ class BridgeStatusTests(unittest.TestCase):
         self.assertTrue(status.player_valid)
         self.assertEqual(status.bridge_version, "1.2.7")
         self.assertTrue(status.hidden_registry_ready)
+        self.assertFalse(status.hidden_dispatch_ready)
 
 
 class WriteRequestTests(unittest.TestCase):

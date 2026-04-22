@@ -1,13 +1,14 @@
 local UEHelpers = require("UEHelpers")
 
 local ModName = "PalworldTrainerBridge"
-local Version = "1.2.7"
+local Version = "1.2.10"
 local LastFindQuery = nil
 local LogWriteHealthy = true
 local LastLogFailureShown = false
 local HiddenCommandRegistry = nil
 local HiddenCommandRegistryPath = nil
 local HiddenRegistryReady = false
+local HiddenDispatchReady = false
 local ChatSuppressionReady = false
 local ChatSuppressionProbeLogged = false
 local ClientCheatModulesLogged = false
@@ -232,19 +233,72 @@ local function log(message)
     end
 end
 
-local function get_player()
-    local player = UEHelpers.GetPlayer()
-    if player and player:IsValid() then
-        return player
+local function is_valid_object(object)
+    return object and object.IsValid and object:IsValid()
+end
+
+local function try_controller_pawn(controller)
+    if not is_valid_object(controller) then
+        return nil
     end
-    return CreateInvalidObject()
+
+    local property_candidates = {
+        "AcknowledgedPawn",
+        "Pawn",
+        "Character",
+        "ControlledPawn",
+    }
+    for _, property_name in ipairs(property_candidates) do
+        local ok, value = pcall(function()
+            return controller[property_name]
+        end)
+        if ok and is_valid_object(value) then
+            return value
+        end
+    end
+
+    local method_candidates = {
+        "K2_GetPawn",
+        "GetPawn",
+        "GetControlledPawn",
+        "GetCharacter",
+    }
+    for _, method_name in ipairs(method_candidates) do
+        local ok, value = pcall(function()
+            local method = controller[method_name]
+            if type(method) ~= "function" then
+                return nil
+            end
+            return method(controller)
+        end)
+        if ok and is_valid_object(value) then
+            return value
+        end
+    end
+
+    return nil
 end
 
 local function get_player_controller()
     local controller = UEHelpers.GetPlayerController()
-    if controller and controller:IsValid() then
+    if is_valid_object(controller) then
         return controller
     end
+    return CreateInvalidObject()
+end
+
+local function get_player()
+    local player = UEHelpers.GetPlayer()
+    if is_valid_object(player) then
+        return player
+    end
+
+    local controller = get_player_controller()
+    local pawn = try_controller_pawn(controller)
+    if is_valid_object(pawn) then
+        return pawn
+    end
+
     return CreateInvalidObject()
 end
 
@@ -1434,6 +1488,7 @@ end
 local function discover_hidden_registry()
     if HiddenCommandRegistry ~= nil then
         HiddenRegistryReady = true
+        HiddenDispatchReady = true
         return HiddenCommandRegistry, HiddenCommandRegistryPath
     end
 
@@ -1445,6 +1500,7 @@ local function discover_hidden_registry()
             HiddenCommandRegistry = known_handler
             HiddenCommandRegistryPath = "ccc.module.core.handler"
             HiddenRegistryReady = true
+            HiddenDispatchReady = true
             log(string.format(
                 "Hidden registry found: %s (direct=%s indexed=%s descriptor=%s)",
                 HiddenCommandRegistryPath,
@@ -1494,6 +1550,7 @@ local function discover_hidden_registry()
                 HiddenCommandRegistry = node.value
                 HiddenCommandRegistryPath = node.path
                 HiddenRegistryReady = true
+                HiddenDispatchReady = true
                 log(string.format(
                     "Hidden registry found: %s (direct=%s indexed=%s descriptor=%s)",
                     node.path,
@@ -1548,6 +1605,7 @@ local function discover_hidden_registry()
         log(string.format("Hidden registry discovery hit node cap %d.", max_nodes))
     end
     if #best_candidates > 0 then
+        HiddenDispatchReady = false
         log("Hidden registry discovery failed. Top candidates:")
         for _, candidate in ipairs(best_candidates) do
             log(string.format(
@@ -1563,6 +1621,7 @@ local function discover_hidden_registry()
         return nil, nil
     end
 
+    HiddenDispatchReady = false
     log("Hidden registry discovery failed.")
     return nil, nil
 end
@@ -1608,6 +1667,33 @@ local function build_hidden_command_text(command_name, args_text)
         return string.format("@!%s %s", tostring(command_name), normalized_args)
     end
     return string.format("@!%s", tostring(command_name))
+end
+
+local function find_pal_ui_chat_targets()
+    local class_names = {
+        "PalUIChat",
+        "WBP_PalUIChat_C",
+        "BP_PalUIChat_C",
+    }
+    local targets = {}
+    local seen = {}
+
+    for _, class_name in ipairs(class_names) do
+        local ok, objects = pcall(FindAllOf, class_name)
+        if ok and type(objects) == "table" then
+            for _, object in ipairs(objects) do
+                if object and object.IsValid and object:IsValid() and not seen[object] then
+                    seen[object] = true
+                    table.insert(targets, {
+                        class_name = class_name,
+                        object = object,
+                    })
+                end
+            end
+        end
+    end
+
+    return targets
 end
 
 local function collect_hidden_callables(entry, label)
@@ -1759,6 +1845,13 @@ local function invoke_hidden_callable(callable, command_name, args_text, args)
         last_error = ok and "returned false" or tostring(result)
     end
 
+    log(string.format(
+        "Hidden command '%s' direct callable failed via %s: %s",
+        command_name,
+        tostring(callable.label),
+        tostring(last_error)
+    ))
+
     return false, last_error
 end
 
@@ -1908,6 +2001,169 @@ local function execute_hidden_via_chat_hook(command_name, args_text)
     return false, last_error
 end
 
+local function collect_known_module_callables(command_name)
+    local known_modules = load_known_client_cheat_modules()
+    if type(known_modules) ~= "table" then
+        return {}
+    end
+
+    local specs = {
+        unlockft = {
+            { module = "core.commands", function_names = { "handleUnlockFastTravel" } },
+        },
+        unlockalltech = {
+            { module = "core.technology", function_names = { "unlockAllTech" } },
+            { module = "core.commands", function_names = { "handleUnlockAllTech", "handleTech" } },
+        },
+        unlocktech = {
+            { module = "core.technology", function_names = { "unlockSpecificTech" } },
+            { module = "core.commands", function_names = { "handleUnlockTech", "handleTech" } },
+        },
+        giveme = {
+            { module = "core.commands", function_names = { "handlePersonalGive", "handleGiveCommand", "spawnItem" } },
+        },
+        give = {
+            { module = "core.commands", function_names = { "handleGiveCommand", "spawnItem" } },
+        },
+        spawn = {
+            { module = "core.commands", function_names = { "handleSpawnPal" } },
+        },
+        settime = {
+            { module = "core.commands", function_names = { "handleCurrentTime", "handleTime" } },
+        },
+        time = {
+            { module = "core.commands", function_names = { "handleCurrentTime", "handleTime" } },
+        },
+        giveexp = {
+            { module = "core.commands", function_names = { "handlePersonalExp", "giveExperience" } },
+        },
+        exp = {
+            { module = "core.commands", function_names = { "handlePersonalExp", "giveExperience" } },
+        },
+        getpos = {
+            { module = "core.commands", function_names = { "handleGetPos", "handlePlayerGetPos" } },
+        },
+        ["goto"] = {
+            { module = "core.commands", function_names = { "handleGoto" } },
+        },
+        fly = {
+            { module = "core.commands", function_names = { "toggleFlyMode" } },
+        },
+    }
+
+    local candidates = specs[command_name]
+    if type(candidates) ~= "table" then
+        return {}
+    end
+
+    local callables = {}
+    local seen = {}
+    for _, spec in ipairs(candidates) do
+        local module_value = known_modules[spec.module]
+        if type(module_value) == "table" then
+            for _, function_name in ipairs(spec.function_names or {}) do
+                local func = rawget(module_value, function_name)
+                if type(func) == "function" and not seen[func] then
+                    seen[func] = true
+                    table.insert(callables, {
+                        func = func,
+                        label = string.format("%s.%s", tostring(spec.module), tostring(function_name)),
+                        self_arg = module_value,
+                    })
+                    table.insert(callables, {
+                        func = func,
+                        label = string.format("%s.%s<raw>", tostring(spec.module), tostring(function_name)),
+                    })
+                end
+            end
+        end
+    end
+
+    return callables
+end
+
+local function execute_hidden_via_known_modules(command_name, args_text, args)
+    local callables = collect_known_module_callables(command_name)
+    if #callables < 1 then
+        return false, "known_handler_missing"
+    end
+
+    local last_error = "known_handler_failed"
+    for _, callable in ipairs(callables) do
+        local ok, error_message = invoke_hidden_callable(callable, command_name, args_text, args)
+        if ok then
+            return true, nil
+        end
+        last_error = error_message or last_error
+    end
+
+    log(string.format(
+        "Hidden command '%s' known-module dispatch failed: %s",
+        tostring(command_name),
+        tostring(last_error)
+    ))
+    return false, last_error
+end
+
+local function execute_hidden_via_pal_ui_chat(command_name, args_text)
+    local targets = find_pal_ui_chat_targets()
+    if #targets < 1 then
+        log(string.format(
+            "Hidden command '%s' PalUIChat dispatch skipped: no targets",
+            tostring(command_name)
+        ))
+        return false, "pal_ui_chat_missing"
+    end
+
+    local command_text = build_hidden_command_text(command_name, args_text)
+    local attempts = {}
+
+    local function add_attempt(label, fn)
+        table.insert(attempts, {
+            label = label,
+            fn = fn,
+        })
+    end
+
+    for _, target in ipairs(targets) do
+        local widget = target.object
+        local prefix = tostring(target.class_name)
+        add_attempt(prefix .. ":method_ftext", function()
+            return widget:OnReceivedChat(FText(command_text))
+        end)
+        add_attempt(prefix .. ":method_text", function()
+            return widget:OnReceivedChat(command_text)
+        end)
+        add_attempt(prefix .. ":raw_ftext", function()
+            return widget.OnReceivedChat(widget, FText(command_text))
+        end)
+        add_attempt(prefix .. ":raw_text", function()
+            return widget.OnReceivedChat(widget, command_text)
+        end)
+    end
+
+    local last_error = "pal_ui_chat_failed"
+    for _, attempt in ipairs(attempts) do
+        local ok, result = pcall(attempt.fn)
+        if ok and result ~= false then
+            log(string.format(
+                "Hidden command '%s' dispatched via PalUIChat / %s",
+                tostring(command_name),
+                tostring(attempt.label)
+            ))
+            return true, nil
+        end
+        last_error = ok and "returned false" or tostring(result)
+    end
+
+    log(string.format(
+        "Hidden command '%s' PalUIChat dispatch failed: %s",
+        tostring(command_name),
+        tostring(last_error)
+    ))
+    return false, last_error
+end
+
 local function run_hidden_commands(request)
     local commands_text = trim(request.commands_text)
     if commands_text == "" then
@@ -1920,7 +2176,13 @@ local function run_hidden_commands(request)
         if command_name ~= nil then
             local ok, error_message = execute_hidden_command(command_name, args_text, args)
             if not ok then
+                ok, error_message = execute_hidden_via_known_modules(command_name, args_text, args)
+            end
+            if not ok then
                 ok, error_message = execute_hidden_via_chat_hook(command_name, args_text)
+            end
+            if not ok then
+                ok, error_message = execute_hidden_via_pal_ui_chat(command_name, args_text)
             end
             if not ok then
                 return false, string.format("%s (%s)", command_name, tostring(error_message))
@@ -1942,12 +2204,15 @@ local function write_status()
         return false
     end
 
+    local controller = get_player_controller()
     local player = get_player()
     if not player:IsValid() then
         handle:write(string.format(
-            '{\n  "player_valid": false,\n  "bridge_version": "%s",\n  "hidden_registry_ready": %s,\n  "chat_suppression_ready": %s\n}\n',
+            '{\n  "player_valid": false,\n  "controller_valid": %s,\n  "bridge_version": "%s",\n  "hidden_registry_ready": %s,\n  "hidden_dispatch_ready": %s,\n  "chat_suppression_ready": %s\n}\n',
+            tostring(controller:IsValid()),
             Version,
             tostring(HiddenRegistryReady),
+            tostring(HiddenDispatchReady),
             tostring(ChatSuppressionReady)
         ))
         handle:close()
@@ -1956,9 +2221,11 @@ local function write_status()
 
     local location = player:K2_GetActorLocation()
     handle:write(string.format(
-        '{\n  "player_valid": true,\n  "bridge_version": "%s",\n  "hidden_registry_ready": %s,\n  "chat_suppression_ready": %s,\n  "position_x": %.3f,\n  "position_y": %.3f,\n  "position_z": %.3f\n}\n',
+        '{\n  "player_valid": true,\n  "controller_valid": %s,\n  "bridge_version": "%s",\n  "hidden_registry_ready": %s,\n  "hidden_dispatch_ready": %s,\n  "chat_suppression_ready": %s,\n  "position_x": %.3f,\n  "position_y": %.3f,\n  "position_z": %.3f\n}\n',
+        tostring(controller:IsValid()),
         Version,
         tostring(HiddenRegistryReady),
+        tostring(HiddenDispatchReady),
         tostring(ChatSuppressionReady),
         location.X,
         location.Y,
@@ -2045,7 +2312,29 @@ local function process_request()
     elseif request.action == "set_fly" then
         local player = get_player()
         if not player:IsValid() then
-            log(string.format("Fly request #%d ignored: local player not ready.", request.request_id))
+            local controller = get_player_controller()
+            if not controller:IsValid() then
+                log(string.format("Fly request #%d ignored: local player/controller not ready.", request.request_id))
+                return
+            end
+
+            local hidden_ok, hidden_detail = run_hidden_commands({
+                commands_text = request.enabled and "@!fly on" or "@!fly off",
+            })
+            if hidden_ok then
+                log(string.format(
+                    "Fly request #%d delegated to hidden command path (%s).",
+                    request.request_id,
+                    tostring(hidden_detail)
+                ))
+            else
+                log(string.format(
+                    "Fly request #%d hidden fallback failed: %s",
+                    request.request_id,
+                    tostring(hidden_detail)
+                ))
+            end
+            pcall(write_status)
             return
         end
 
@@ -2071,9 +2360,9 @@ local function process_request()
         end
         pcall(write_status)
     elseif request.action == "run_hidden_commands" then
-        local player = get_player()
-        if not player:IsValid() then
-            log(string.format("Hidden-command request #%d ignored: local player not ready.", request.request_id))
+        local controller = get_player_controller()
+        if not controller:IsValid() then
+            log(string.format("Hidden-command request #%d ignored: local controller not ready.", request.request_id))
             return
         end
 

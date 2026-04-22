@@ -14,12 +14,59 @@ from palworld_trainer.game_control import (
     CHAT_HELPER_PAYLOAD_ENV,
     CHAT_HELPER_RESULT_ENV,
     SendResult,
+    send_chat_command,
     run_chat_helper_from_env,
     send_chat_commands_isolated,
 )
 
 
 class GameControlHelperTests(unittest.TestCase):
+    def test_send_chat_command_clears_chat_before_typing(self) -> None:
+        events: list[str] = []
+
+        with (
+            mock.patch(
+                "palworld_trainer.game_control.find_palworld_window",
+                return_value=123,
+            ),
+            mock.patch(
+                "palworld_trainer.game_control._focus_window",
+                return_value=True,
+            ),
+            mock.patch(
+                "palworld_trainer.game_control.user32.GetForegroundWindow",
+                return_value=0,
+            ),
+            mock.patch(
+                "palworld_trainer.game_control._tap_vk",
+                side_effect=lambda vk, delay_ms=30: events.append(f"tap:{vk}:{delay_ms}"),
+            ),
+            mock.patch(
+                "palworld_trainer.game_control._tap_chord",
+                side_effect=lambda modifiers, vk, delay_ms=30: events.append(
+                    f"chord:{modifiers}:{vk}:{delay_ms}"
+                ),
+            ),
+            mock.patch(
+                "palworld_trainer.game_control._type_unicode",
+                side_effect=lambda text, delay_ms=5: events.append(f"type:{text}:{delay_ms}"),
+            ),
+            mock.patch("palworld_trainer.game_control.time.sleep"),
+        ):
+            result = send_chat_command("@!unlocktech BreedFarm", restore_focus=False)
+
+        self.assertEqual(SendResult(True, "Sent: @!unlocktech BreedFarm", "@!unlocktech BreedFarm"), result)
+        self.assertEqual(
+            [
+                "tap:13:30",
+                "chord:[17]:65:20",
+                "tap:8:20",
+                "type:@!unlocktech BreedFarm:8",
+                "tap:13:30",
+            ],
+            events,
+        )
+
     def test_send_chat_commands_isolated_reads_helper_results(self) -> None:
         def fake_run(_command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
             env = kwargs["env"]

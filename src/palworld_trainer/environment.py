@@ -223,6 +223,85 @@ def _ensure_mod_enabled(mods_root: Path, mod_name: str) -> None:
     _write_mods_json_enabled(mods_root / "mods.json", mod_name)
 
 
+def _ensure_pal_mod_settings(path: Path, required_mods: tuple[str, ...]) -> bool:
+    lines: list[str]
+    if path.exists():
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            lines = []
+    else:
+        lines = []
+
+    changed = False
+    if not any(line.strip().lower() == "[palmodsettings]" for line in lines):
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.append("[PalModSettings]")
+        changed = True
+
+    section_index = next(
+        (index for index, line in enumerate(lines) if line.strip().lower() == "[palmodsettings]"),
+        0,
+    )
+    section_end = len(lines)
+    for index in range(section_index + 1, len(lines)):
+        stripped = lines[index].strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section_end = index
+            break
+
+    found_toggle = False
+    for index in range(section_index + 1, section_end):
+        if not lines[index].strip().lower().startswith("bglobalenablemod="):
+            continue
+        found_toggle = True
+        if lines[index].strip() != "bGlobalEnableMod=True":
+            lines[index] = "bGlobalEnableMod=True"
+            changed = True
+        break
+
+    if not found_toggle:
+        lines.insert(section_index + 1, "bGlobalEnableMod=True")
+        section_end += 1
+        changed = True
+
+    existing_mods = {
+        line.split("=", 1)[1].strip().casefold()
+        for line in lines[section_index + 1 : section_end]
+        if line.strip().lower().startswith("activemodlist=") and "=" in line
+    }
+    insert_index = section_end
+    for mod_name in required_mods:
+        if mod_name.casefold() in existing_mods:
+            continue
+        lines.insert(insert_index, f"ActiveModList={mod_name}")
+        insert_index += 1
+        changed = True
+
+    if changed:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    return changed
+
+
+def deploy_bridge_and_fix_settings(report: EnvironmentReport) -> tuple[bool, str]:
+    ok, message = deploy_bridge(report)
+    if not ok:
+        return ok, message
+
+    if report.game_root is None:
+        return ok, message
+
+    settings_changed = _ensure_pal_mod_settings(
+        report.game_root / "Mods" / "PalModSettings.ini",
+        required_mods=(CLIENT_CHEAT_COMMANDS_MOD_NAME,),
+    )
+    if not settings_changed:
+        return ok, message
+    return True, message + "；已自动打开模组总开关并确保聊天命令模组启用"
+
+
 def _bridge_runtime_candidates(game_root: Path, deployed_target: Path) -> list[Path]:
     win64_root = game_root / "Pal" / "Binaries" / "Win64"
     raw_candidates = [

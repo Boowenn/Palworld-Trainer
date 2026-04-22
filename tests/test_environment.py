@@ -13,6 +13,7 @@ from palworld_trainer.environment import (
     _detect_bridge_runtime_target,
     _looks_like_game_root,
     deploy_bridge,
+    deploy_bridge_and_fix_settings,
     scan_environment,
 )
 
@@ -228,6 +229,39 @@ class DeployBridgeTests(unittest.TestCase):
                 (target / "toggles.json").read_text(encoding="utf-8"),
             )
             self.assertEqual("live session", (target / "session.log").read_text(encoding="utf-8"))
+
+    def test_deploy_bridge_and_fix_settings_enables_global_mod_toggle(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo_root = root / "repo"
+            game_root = root / "game"
+            source = repo_root / "integrations" / "ue4ss" / BRIDGE_MOD_NAME
+            scripts = source / "Scripts"
+            scripts.mkdir(parents=True, exist_ok=True)
+            (scripts / "main.lua").write_text("-- bridge", encoding="utf-8")
+
+            target = (
+                game_root / "Mods" / "NativeMods" / "UE4SS" / "Mods" / BRIDGE_MOD_NAME
+            )
+            settings_path = game_root / "Mods" / "PalModSettings.ini"
+            settings_path.parent.mkdir(parents=True, exist_ok=True)
+            settings_path.write_text(
+                "[PalModSettings]\n"
+                "bGlobalEnableMod=False\n"
+                "ActiveModList=UE4SSExperimentalPW\n",
+                encoding="utf-8",
+            )
+            report = EnvironmentReport(game_root=game_root, trainer_bridge_target=target)
+
+            with patch("palworld_trainer.environment.get_repo_root", return_value=repo_root):
+                ok, message = deploy_bridge_and_fix_settings(report)
+
+            self.assertTrue(ok, message)
+            self.assertTrue((target / "Scripts" / "main.lua").exists())
+            contents = settings_path.read_text(encoding="utf-8")
+            self.assertIn("bGlobalEnableMod=True", contents)
+            self.assertIn("ActiveModList=UE4SSExperimentalPW", contents)
+            self.assertIn("ActiveModList=ClientCheatCommands", contents)
 
 
 class BridgeRuntimeTargetTests(unittest.TestCase):

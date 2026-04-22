@@ -68,8 +68,10 @@ class CheatState:
 @dataclass
 class BridgeStatus:
     player_valid: bool = False
+    controller_valid: bool = False
     bridge_version: str = ""
     hidden_registry_ready: bool = False
+    hidden_dispatch_ready: bool = False
     chat_suppression_ready: bool = False
     position_x: float = 0.0
     position_y: float = 0.0
@@ -81,12 +83,18 @@ class BridgeStatus:
         player_valid = payload.get("player_valid")
         if isinstance(player_valid, bool):
             status.player_valid = player_valid
+        controller_valid = payload.get("controller_valid")
+        if isinstance(controller_valid, bool):
+            status.controller_valid = controller_valid
         bridge_version = payload.get("bridge_version")
         if isinstance(bridge_version, str):
             status.bridge_version = bridge_version
         hidden_registry_ready = payload.get("hidden_registry_ready")
         if isinstance(hidden_registry_ready, bool):
             status.hidden_registry_ready = hidden_registry_ready
+        hidden_dispatch_ready = payload.get("hidden_dispatch_ready")
+        if isinstance(hidden_dispatch_ready, bool):
+            status.hidden_dispatch_ready = hidden_dispatch_ready
         chat_suppression_ready = payload.get("chat_suppression_ready")
         if isinstance(chat_suppression_ready, bool):
             status.chat_suppression_ready = chat_suppression_ready
