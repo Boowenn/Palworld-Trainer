@@ -190,6 +190,45 @@ class DeployBridgeTests(unittest.TestCase):
             self.assertIn(str(deployed), message)
             self.assertIn(str(runtime), message)
 
+    def test_deploy_bridge_preserves_live_runtime_artifacts(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo_root = root / "repo"
+            source = repo_root / "integrations" / "ue4ss" / BRIDGE_MOD_NAME
+            scripts = source / "Scripts"
+            scripts.mkdir(parents=True, exist_ok=True)
+            (scripts / "main.lua").write_text("-- new bridge", encoding="utf-8")
+            (source / "README.md").write_text("bridge readme", encoding="utf-8")
+
+            target = root / "game" / "Mods" / "NativeMods" / "UE4SS" / "Mods" / BRIDGE_MOD_NAME
+            (target / "Scripts").mkdir(parents=True, exist_ok=True)
+            (target / "Scripts" / "main.lua").write_text("-- old bridge", encoding="utf-8")
+            (target / "status.json").write_text('{"bridge_version":"1.2.5"}', encoding="utf-8")
+            (target / "request.json").write_text('{"action":"teleport"}', encoding="utf-8")
+            (target / "toggles.json").write_text('{"godmode":true}', encoding="utf-8")
+            (target / "session.log").write_text("live session", encoding="utf-8")
+
+            report = EnvironmentReport(game_root=root / "game", trainer_bridge_target=target)
+
+            with patch("palworld_trainer.environment.get_repo_root", return_value=repo_root):
+                ok, message = deploy_bridge(report)
+
+            self.assertTrue(ok, message)
+            self.assertEqual("-- new bridge", (target / "Scripts" / "main.lua").read_text(encoding="utf-8"))
+            self.assertEqual(
+                '{"bridge_version":"1.2.5"}',
+                (target / "status.json").read_text(encoding="utf-8"),
+            )
+            self.assertEqual(
+                '{"action":"teleport"}',
+                (target / "request.json").read_text(encoding="utf-8"),
+            )
+            self.assertEqual(
+                '{"godmode":true}',
+                (target / "toggles.json").read_text(encoding="utf-8"),
+            )
+            self.assertEqual("live session", (target / "session.log").read_text(encoding="utf-8"))
+
 
 class BridgeRuntimeTargetTests(unittest.TestCase):
     def test_prefers_runtime_artifact_under_shipping_workdir(self) -> None:

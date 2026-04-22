@@ -18,6 +18,10 @@ def _smoke_test() -> int:
 def main() -> int:
     if "--smoke-test" in sys.argv or os.environ.get("PALWORLD_TRAINER_SMOKE_TEST") == "1":
         return _smoke_test()
+    if "--chat-helper" in sys.argv or os.environ.get("PALWORLD_TRAINER_CHAT_HELPER_PAYLOAD"):
+        from palworld_trainer.game_control import run_chat_helper_from_env
+
+        return run_chat_helper_from_env()
 
     from palworld_trainer.app import run
 

@@ -67,6 +67,7 @@ from .mem_engine import (
 from .teleport_points import BOSS_TELEPORT_POINTS, BossTeleportPoint
 from .reference_parity import (
     REFERENCE_ADD_PAL_DETAIL_TABS,
+    REFERENCE_ADD_PAL_SPAWN_TABS,
     REFERENCE_ADD_PAL_TABS,
     REFERENCE_ITEM_TABS,
     REFERENCE_ONLINE_TABS,
@@ -165,6 +166,11 @@ class TrainerApp:
         self._pal_reference_groups = build_reference_spawn_groups(
             self.pal_entries,
             self.npc_entries,
+        )
+        self._pal_reference_spawn_tab = (
+            "帕鲁"
+            if "帕鲁" in self._pal_reference_groups
+            else REFERENCE_ADD_PAL_SPAWN_TABS[0]
         )
         self._pal_item_reference_groups = build_reference_pal_item_groups(self.item_entries)
         self._pal_skill_item_entries = self._pal_item_reference_groups["skill_fruits"]
@@ -499,6 +505,8 @@ class TrainerApp:
         self.bridge_godmode_var = tk.BooleanVar(value=self.cheat_state.godmode)
         self.bridge_stamina_var = tk.BooleanVar(value=self.cheat_state.inf_stamina)
         self.bridge_weight_var = tk.BooleanVar(value=self.cheat_state.weight_zero)
+        self.bridge_ammo_var = tk.BooleanVar(value=self.cheat_state.inf_ammo)
+        self.bridge_dura_var = tk.BooleanVar(value=self.cheat_state.no_durability)
         ttk.Checkbutton(
             toggles_row, text="无敌", variable=self.bridge_godmode_var
         ).pack(side="left", padx=(0, 12))
@@ -1117,6 +1125,10 @@ class TrainerApp:
             self.bridge_stamina_var.set(self.cheat_state.inf_stamina)
         if hasattr(self, "bridge_weight_var"):
             self.bridge_weight_var.set(self.cheat_state.weight_zero)
+        if hasattr(self, "bridge_ammo_var"):
+            self.bridge_ammo_var.set(self.cheat_state.inf_ammo)
+        if hasattr(self, "bridge_dura_var"):
+            self.bridge_dura_var.set(self.cheat_state.no_durability)
         if hasattr(self, "bridge_speed_var"):
             self.bridge_speed_var.set(f"{self.cheat_state.speed_multiplier:g}")
         if hasattr(self, "bridge_jump_var"):
@@ -1479,7 +1491,15 @@ class TrainerApp:
             return
 
         if dispatch_mode == "fallback":
-            results = game_control.send_chat_commands(normalized)
+            restore_focus = True
+            try:
+                restore_focus = self.root.state() != "withdrawn"
+            except tk.TclError:
+                restore_focus = True
+            results = game_control.send_chat_commands_isolated(
+                normalized,
+                restore_focus=restore_focus,
+            )
             if results and all(result.ok for result in results):
                 self._show_result(f"已按参考版兼容模式执行：{label}", ok=True)
             else:
@@ -1520,6 +1540,8 @@ class TrainerApp:
             godmode=bool(self.bridge_godmode_var.get()),
             inf_stamina=bool(self.bridge_stamina_var.get()),
             weight_zero=bool(self.bridge_weight_var.get()),
+            inf_ammo=bool(self.bridge_ammo_var.get()),
+            no_durability=bool(self.bridge_dura_var.get()),
             speed_multiplier=speed,
             jump_multiplier=jump,
         )
@@ -2531,6 +2553,35 @@ class TrainerApp:
             )
         return REFERENCE_ADD_PAL_TABS[0]
 
+    def _selected_pal_source_entries(self) -> list[CatalogEntry]:
+        current_tab = self._selected_pal_reference_tab()
+        if current_tab in REFERENCE_ADD_PAL_SPAWN_TABS:
+            self._pal_reference_spawn_tab = current_tab
+            return list(self._pal_reference_groups.get(current_tab, []))
+        if current_tab == "收藏夹":
+            results: list[CatalogEntry] = []
+            for key in self.settings.favorite_pal_ids:
+                entry = self._pal_entry_by_key.get(key) or self._npc_entry_by_key.get(key)
+                if entry is not None:
+                    results.append(entry)
+            return results
+        return list(self._pal_reference_groups.get(self._pal_reference_spawn_tab, []))
+
+    def _sync_pal_reference_detail_tab(self) -> None:
+        if not hasattr(self, "pal_detail_notebook"):
+            return
+        current_tab = self._selected_pal_reference_tab()
+        if current_tab in REFERENCE_ADD_PAL_DETAIL_TABS:
+            self.pal_detail_notebook.select(
+                REFERENCE_ADD_PAL_DETAIL_TABS.index(current_tab)
+            )
+        elif self.pal_detail_notebook.tabs():
+            self.pal_detail_notebook.select(0)
+
+    def _on_pal_reference_tab_changed(self, _event: tk.Event | None = None) -> None:
+        self._sync_pal_reference_detail_tab()
+        self._refresh_pal_list()
+
     def _catalog_display(self, entry: CatalogEntry) -> str:
         label = cmd.display_name(entry.kind, entry.key, entry.label)
         if label != entry.label:
@@ -2997,7 +3048,7 @@ class TrainerApp:
     def _refresh_pal_list(self) -> None:
         query = self.pal_search_var.get().strip() if hasattr(self, "pal_search_var") else ""
         if hasattr(self, "pal_spawn_listbox"):
-            source_entries = list(self._pal_reference_groups.get(self._selected_pal_reference_tab(), []))
+            source_entries = self._selected_pal_source_entries()
             if query:
                 results = search_catalog(source_entries, query, limit=400)
             else:
@@ -3261,11 +3312,49 @@ class TrainerApp:
         count = self._parse_count(self.pal_count_var.get())
         self.settings.custom_pal_count = count
         self._remember_recent(self.settings.recent_pal_ids, entry.key)
+        self._last_spawn_pal_key = entry.key
         save_settings(self.settings)
         self._refresh_pal_shortcuts()
         self._dispatch_hidden_commands(
             [cmd.spawn_pal(entry.key, count)],
             label=f"生成帕鲁：{entry.label} x{count}",
+        )
+
+    def _on_enable_no_durability_shortcut(self) -> None:
+        self.bridge_dura_var.set(True)
+        self._apply_player_cheats()
+        self._show_result("已启用：耐久度不减", ok=True)
+
+    def _on_enable_inf_ammo_shortcut(self) -> None:
+        self.bridge_ammo_var.set(True)
+        self._apply_player_cheats()
+        self._show_result("已启用：无限弹药", ok=True)
+
+    def _on_unlock_recipes_shortcut(self) -> None:
+        self._dispatch_hidden_commands(
+            [cmd.unlock_all_tech()],
+            label="解锁全部配方",
+        )
+
+    def _on_give_all_statues_shortcut(self) -> None:
+        self._dispatch_hidden_commands(
+            [cmd.giveme("Relic", 999)],
+            label="给满绿胖子像",
+        )
+
+    def _on_duplicate_current_pal(self, *, label: str = "复制当前帕鲁") -> None:
+        recent_key = getattr(self, "_last_spawn_pal_key", "")
+        if not recent_key and self.settings.recent_pal_ids:
+            recent_key = self.settings.recent_pal_ids[0]
+        if not recent_key:
+            self._show_result(f"{label} 失败：先在“添加帕鲁”页生成一次目标帕鲁。", ok=False)
+            return
+
+        entry = self._pal_entry_by_key.get(recent_key)
+        display = entry.label if entry is not None else recent_key
+        self._dispatch_hidden_commands(
+            [cmd.spawn_pal(recent_key, 1)],
+            label=f"{label}：{display} x1",
         )
 
     def _load_recent_item_into_search(self) -> None:
@@ -3998,7 +4087,7 @@ class TrainerApp:
             self.pal_category_notebook.add(ttk.Frame(self.pal_category_notebook), text=title)
         self.pal_category_notebook.bind(
             "<<NotebookTabChanged>>",
-            lambda _event: self._refresh_pal_list(),
+            self._on_pal_reference_tab_changed,
         )
 
         content = ttk.Frame(tab)
@@ -4065,11 +4154,11 @@ class TrainerApp:
         pal_scroll.pack(side="right", fill="y")
         self.pal_spawn_listbox.bind("<Double-Button-1>", lambda _event: self._on_spawn_selected_pal())
 
-        detail_tabs = ttk.Notebook(right)
-        detail_tabs.pack(fill="x", pady=(8, 0))
+        self.pal_detail_notebook = ttk.Notebook(right)
+        self.pal_detail_notebook.pack(fill="x", pady=(8, 0))
         for title in REFERENCE_ADD_PAL_DETAIL_TABS:
-            frame = ttk.Frame(detail_tabs, padding=12)
-            detail_tabs.add(frame, text=title)
+            frame = ttk.Frame(self.pal_detail_notebook, padding=12)
+            self.pal_detail_notebook.add(frame, text=title)
             ttk.Label(
                 frame,
                 text="这一轮先对齐分类与生成主流程；生成参数细项会继续补齐到参考版。",
@@ -4088,6 +4177,7 @@ class TrainerApp:
         ).pack(side="left")
 
         self._refresh_pal_reference_favorites()
+        self._sync_pal_reference_detail_tab()
         self._refresh_pal_list()
 
     def _refresh_pal_reference_favorites(self) -> None:
@@ -4658,25 +4748,25 @@ class TrainerApp:
             command_row,
             text="耐久度不减",
             style="Quiet.TButton",
-            command=lambda: self._send_with_label("@!nodur", "耐久度不减"),
+            command=self._on_enable_no_durability_shortcut,
         ).pack(side="left", padx=(0, 6))
         ttk.Button(
             command_row,
             text="无限弹药",
             style="Quiet.TButton",
-            command=lambda: self._send_with_label("@!infammo", "无限弹药"),
+            command=self._on_enable_inf_ammo_shortcut,
         ).pack(side="left", padx=(0, 6))
         ttk.Button(
             command_row,
             text="解锁全部配方",
             style="Quiet.TButton",
-            command=lambda: self._send_with_label("@!unlockrecipes", "解锁全部配方"),
+            command=self._on_unlock_recipes_shortcut,
         ).pack(side="left", padx=(0, 6))
         ttk.Button(
             command_row,
             text="给满绿胖子像",
             style="Quiet.TButton",
-            command=lambda: self._send_with_label("@!giveallstatues", "给满绿胖子像"),
+            command=self._on_give_all_statues_shortcut,
         ).pack(side="left")
 
         shortcut_row = ttk.Frame(supported)
@@ -4893,10 +4983,7 @@ class TrainerApp:
             actions,
             text="复制当前帕鲁",
             style="Big.TButton",
-            command=lambda: self._dispatch_hidden_commands(
-                [cmd.duplicate_last_pal()],
-                label="复制当前帕鲁",
-            ),
+            command=self._on_duplicate_current_pal,
         ).pack(side="left", padx=(0, 6))
         ttk.Button(
             actions,
@@ -4973,10 +5060,7 @@ class TrainerApp:
             basic_actions,
             text="复制当前帕鲁",
             style="Big.TButton",
-            command=lambda: self._dispatch_hidden_commands(
-                [cmd.duplicate_last_pal()],
-                label="复制当前帕鲁",
-            ),
+            command=self._on_duplicate_current_pal,
         ).pack(side="left", padx=(0, 6))
         ttk.Button(
             basic_actions,
@@ -5082,10 +5166,7 @@ class TrainerApp:
             top_actions,
             text="复制当前准心帕鲁",
             style="Big.TButton",
-            command=lambda: self._dispatch_hidden_commands(
-                [cmd.duplicate_last_pal()],
-                label="联机复制当前帕鲁",
-            ),
+            command=lambda: self._on_duplicate_current_pal(label="联机复制当前帕鲁"),
         ).pack(side="left", padx=(0, 6))
         ttk.Button(
             top_actions,

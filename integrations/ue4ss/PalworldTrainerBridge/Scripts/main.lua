@@ -1,7 +1,7 @@
 local UEHelpers = require("UEHelpers")
 
 local ModName = "PalworldTrainerBridge"
-local Version = "1.2.5"
+local Version = "1.2.7"
 local LastFindQuery = nil
 local LogWriteHealthy = true
 local LastLogFailureShown = false
@@ -10,6 +10,20 @@ local HiddenCommandRegistryPath = nil
 local HiddenRegistryReady = false
 local ChatSuppressionReady = false
 local ChatSuppressionProbeLogged = false
+local ClientCheatModulesLogged = false
+local ClientCheatPackagePathConfigured = false
+local ClientCheatScriptsRoot = nil
+local KnownClientCheatModules = nil
+local KnownClientCheatModuleNames = {
+    "core.commands",
+    "core.handler",
+    "core.logic",
+    "core.technology",
+    "enums.itemdata",
+    "enums.npcdata",
+    "enums.paldata",
+    "enums.technologydata",
+}
 
 local function normalize_path(path)
     return tostring(path or ""):gsub("\\", "/")
@@ -51,11 +65,22 @@ local function detect_mod_root()
     return script_dir:match("^(.*)/Scripts$") or script_dir
 end
 
+local function path_dirname(path)
+    local normalized = normalize_path(path)
+    return normalized:match("^(.*)/[^/]+$") or ""
+end
+
 local ModRoot = detect_mod_root()
+local ModsRoot = path_dirname(ModRoot)
 local PathRoots = dedupe_paths({
     ModRoot,
     "Mods/PalworldTrainerBridge",
     "Mods/NativeMods/UE4SS/Mods/PalworldTrainerBridge",
+})
+local ClientCheatRootCandidates = dedupe_paths({
+    ModsRoot ~= "" and string.format("%s/ClientCheatCommands", ModsRoot) or "",
+    "Mods/ClientCheatCommands",
+    "Mods/NativeMods/UE4SS/Mods/ClientCheatCommands",
 })
 
 local function candidate_paths(filename)
@@ -88,6 +113,47 @@ local function resolve_write_path(filename)
         end
     end
     return candidates[1]
+end
+
+local function detect_client_cheat_scripts_root()
+    for _, root in ipairs(ClientCheatRootCandidates) do
+        local candidate = string.format("%s/Scripts/main.lua", root)
+        local handle = io.open(candidate, "r")
+        if handle then
+            handle:close()
+            return string.format("%s/Scripts", root)
+        end
+    end
+    return nil
+end
+
+local function ensure_client_cheat_package_path()
+    if ClientCheatPackagePathConfigured and ClientCheatScriptsRoot then
+        return true, ClientCheatScriptsRoot
+    end
+    if type(package) ~= "table" then
+        return false, nil
+    end
+
+    local scripts_root = ClientCheatScriptsRoot or detect_client_cheat_scripts_root()
+    if not scripts_root then
+        return false, nil
+    end
+
+    local patterns = {
+        string.format("%s/?.lua", scripts_root),
+        string.format("%s/?/init.lua", scripts_root),
+    }
+    local package_path = tostring(package.path or "")
+    for _, pattern in ipairs(patterns) do
+        if not package_path:find(pattern, 1, true) then
+            package_path = pattern .. ";" .. package_path
+        end
+    end
+    package.path = package_path
+    ClientCheatScriptsRoot = scripts_root
+    ClientCheatPackagePathConfigured = true
+    return true, scripts_root
 end
 local PresetQueries = {
     {
@@ -789,6 +855,106 @@ local function describe_hidden_entry(value)
     return "table{" .. table.concat(parts, ", ") .. "}"
 end
 
+local function log_client_cheat_module_summary(module_name, value)
+    log(string.format("CCC module loaded: %s => %s", tostring(module_name), describe_hidden_entry(value)))
+
+    if type(value) == "table" then
+        local count = 0
+        for key, entry in next, value do
+            count = count + 1
+            if count > 12 then
+                log("  ...")
+                break
+            end
+
+            local suffix = ""
+            if type(entry) == "function" and debug and debug.getinfo then
+                local ok, info = pcall(debug.getinfo, entry, "S")
+                if ok and type(info) == "table" then
+                    local source = tostring(info.source or "")
+                    if source ~= "" then
+                        suffix = " @" .. normalize_path(source)
+                    end
+                end
+            end
+            log(string.format("  %s => %s%s", tostring(key), describe_hidden_entry(entry), suffix))
+        end
+    elseif type(value) == "function" and debug and debug.getupvalue then
+        for index = 1, 12 do
+            local upvalue_name, upvalue_value = debug.getupvalue(value, index)
+            if upvalue_name == nil then
+                break
+            end
+            log(string.format(
+                "  upvalue[%d] %s => %s",
+                index,
+                tostring(upvalue_name),
+                describe_hidden_entry(upvalue_value)
+            ))
+        end
+    end
+end
+
+local function load_client_cheat_module(module_name)
+    local ok_path, scripts_root = ensure_client_cheat_package_path()
+    if not ok_path or not scripts_root then
+        return false, "scripts_root_missing", "bootstrap"
+    end
+
+    local ok_require, required_value = pcall(require, module_name)
+    if ok_require and required_value ~= nil then
+        return true, required_value, "require"
+    end
+
+    if not loadfile then
+        return false, tostring(required_value), "require"
+    end
+
+    local module_path = string.format("%s/%s.lua", scripts_root, module_name:gsub("%.", "/"))
+    local chunk, chunk_error = loadfile(module_path)
+    if not chunk then
+        return false, tostring(chunk_error or required_value), "loadfile"
+    end
+
+    local ok_chunk, result = pcall(chunk)
+    if not ok_chunk then
+        return false, tostring(result), "loadfile"
+    end
+
+    if type(package) == "table" and type(package.loaded) == "table" then
+        package.loaded[module_name] = result
+    end
+    return true, result, "loadfile"
+end
+
+local function load_known_client_cheat_modules()
+    if KnownClientCheatModules ~= nil then
+        return KnownClientCheatModules
+    end
+
+    KnownClientCheatModules = {}
+    for _, module_name in ipairs(KnownClientCheatModuleNames) do
+        local ok, value, mode = load_client_cheat_module(module_name)
+        if ok and value ~= nil then
+            KnownClientCheatModules[module_name] = value
+            if not ClientCheatModulesLogged then
+                log(string.format("CCC module bootstrap via %s: %s", tostring(mode), tostring(module_name)))
+                log_client_cheat_module_summary(module_name, value)
+            end
+        elseif not ClientCheatModulesLogged then
+            log(string.format(
+                "CCC module bootstrap failed via %s: %s => %s",
+                tostring(mode),
+                tostring(module_name),
+                tostring(value)
+            ))
+        end
+    end
+
+    ClientCheatModulesLogged = true
+    return KnownClientCheatModules
+end
+
 local function get_function_source(func)
     if type(func) ~= "function" or not debug or not debug.getinfo then
         return nil
@@ -922,6 +1088,21 @@ end
 
 local function seed_hidden_client_cheat_roots(queue, seen_tables, seen_functions)
     local seeded = 0
+
+    local known_modules = load_known_client_cheat_modules()
+    if type(known_modules) == "table" then
+        for _, module_name in ipairs(KnownClientCheatModuleNames) do
+            local value = known_modules[module_name]
+            if type(value) == "table" then
+                enqueue_hidden_table(queue, seen_tables, "ccc.module." .. module_name, value, 0)
+                enqueue_hidden_metatable(queue, seen_tables, "ccc.module." .. module_name, value, 1)
+                seeded = seeded + 1
+            elseif type(value) == "function" then
+                enqueue_hidden_function(queue, seen_functions, "ccc.module." .. module_name, value, 0)
+                seeded = seeded + 1
+            end
+        end
+    end
 
     if package and type(package.loaded) == "table" then
         for key, value in next, package.loaded do
@@ -1256,6 +1437,31 @@ local function discover_hidden_registry()
         return HiddenCommandRegistry, HiddenCommandRegistryPath
     end
 
+    local known_modules = load_known_client_cheat_modules()
+    local known_handler = type(known_modules) == "table" and known_modules["core.handler"] or nil
+    if type(known_handler) == "table" then
+        local matched, direct_hits, indexed_hits, descriptor_hits = looks_like_hidden_registry(known_handler)
+        if matched then
+            HiddenCommandRegistry = known_handler
+            HiddenCommandRegistryPath = "ccc.module.core.handler"
+            HiddenRegistryReady = true
+            log(string.format(
+                "Hidden registry found: %s (direct=%s indexed=%s descriptor=%s)",
+                HiddenCommandRegistryPath,
+                join_hidden_hits(direct_hits),
+                join_hidden_hits(indexed_hits),
+                join_hidden_hits(descriptor_hits)
+            ))
+            for _, command_name in ipairs(HiddenCommandNames) do
+                local entry = rawget(known_handler, command_name)
+                if entry ~= nil then
+                    log(string.format("  %s => %s", command_name, describe_hidden_entry(entry)))
+                end
+            end
+            return HiddenCommandRegistry, HiddenCommandRegistryPath
+        end
+    end
+
     local max_depth = 8
     local max_nodes = 16384
     local queue = {}
@@ -1394,6 +1600,14 @@ local function parse_hidden_command_line(line)
     end
 
     return string.lower(command_name), args_text or "", args
+end
+
+local function build_hidden_command_text(command_name, args_text)
+    local normalized_args = trim(args_text or "")
+    if normalized_args ~= "" then
+        return string.format("@!%s %s", tostring(command_name), normalized_args)
+    end
+    return string.format("@!%s", tostring(command_name))
 end
 
 local function collect_hidden_callables(entry, label)
@@ -1612,6 +1826,88 @@ local function execute_hidden_command(command_name, args_text, args)
     return false, last_error
 end
 
+local function execute_hidden_via_chat_hook(command_name, args_text)
+    local known_modules = load_known_client_cheat_modules()
+    local logic = type(known_modules) == "table" and known_modules["core.logic"] or nil
+    local chat_hook = type(logic) == "table" and logic.chatHook or nil
+    if type(chat_hook) ~= "function" then
+        return false, "chat_hook_missing"
+    end
+
+    local command_text = build_hidden_command_text(command_name, args_text)
+    local controller = get_player_controller()
+    local attempts = {
+        {
+            label = "text_only",
+            fn = function()
+                return chat_hook(command_text)
+            end,
+        },
+        {
+            label = "message_table",
+            fn = function()
+                return chat_hook({ Message = command_text })
+            end,
+        },
+        {
+            label = "controller_and_message_table",
+            fn = function()
+                return chat_hook(controller, { Message = command_text })
+            end,
+        },
+        {
+            label = "nil_and_message_table",
+            fn = function()
+                return chat_hook(nil, { Message = command_text })
+            end,
+        },
+        {
+            label = "controller_and_param_like",
+            fn = function()
+                local payload = { Message = command_text }
+                return chat_hook(controller, {
+                    get = function()
+                        return payload
+                    end,
+                    set = function(new_value)
+                        payload = new_value
+                    end,
+                })
+            end,
+        },
+        {
+            label = "nil_and_param_like",
+            fn = function()
+                local payload = { Message = command_text }
+                return chat_hook(nil, {
+                    get = function()
+                        return payload
+                    end,
+                    set = function(new_value)
+                        payload = new_value
+                    end,
+                })
+            end,
+        },
+    }
+
+    local last_error = "chat_hook_failed"
+    for _, attempt in ipairs(attempts) do
+        local ok, result = pcall(attempt.fn)
+        if ok and result ~= false then
+            log(string.format(
+                "Hidden command '%s' dispatched via core.logic.chatHook / %s",
+                tostring(command_name),
+                tostring(attempt.label)
+            ))
+            return true, nil
+        end
+        last_error = ok and "returned false" or tostring(result)
+    end
+
+    return false, last_error
+end
+
 local function run_hidden_commands(request)
     local commands_text = trim(request.commands_text)
     if commands_text == "" then
@@ -1623,6 +1919,9 @@ local function run_hidden_commands(request)
         local command_name, args_text, args = parse_hidden_command_line(line)
         if command_name ~= nil then
             local ok, error_message = execute_hidden_command(command_name, args_text, args)
+            if not ok then
+                ok, error_message = execute_hidden_via_chat_hook(command_name, args_text)
+            end
             if not ok then
                 return false, string.format("%s (%s)", command_name, tostring(error_message))
             end
@@ -2203,43 +2502,53 @@ RegisterHook("/Script/Engine.PlayerController:ClientRestart", function(self, new
     end)
 end)
 
+local function handle_chat_suppression(message_param, phase)
+    local hook_ok, hook_error = pcall(function()
+        local suppressed, message_text, detail = suppress_chat_param_message(message_param)
+        if not message_text or not starts_with_hidden_chat_command(message_text) then
+            return
+        end
+
+        if not ChatSuppressionProbeLogged then
+            ChatSuppressionProbeLogged = true
+            log(string.format(
+                "Chat suppression probe => phase=%s detail=%s text=%s",
+                tostring(phase),
+                tostring(detail),
+                tostring(message_text)
+            ))
+        end
+
+        if suppressed then
+            log(string.format(
+                "Suppressed visible chat command via %s/%s: %s",
+                tostring(phase),
+                tostring(detail),
+                tostring(message_text)
+            ))
+        else
+            log(string.format(
+                "Visible chat command suppression failed (%s/%s): %s",
+                tostring(phase),
+                tostring(detail),
+                tostring(message_text)
+            ))
+        end
+    end)
+    if not hook_ok then
+        log("Chat suppression hook error: " .. tostring(hook_error))
+    end
+end
+
 do
     local ok, pre_id, post_id = pcall(
         RegisterHook,
         "/Script/Pal.PalUIChat:OnReceivedChat",
         function(context, message_param)
-            local hook_ok, hook_error = pcall(function()
-                local suppressed, message_text, detail = suppress_chat_param_message(message_param)
-                if not message_text or not starts_with_hidden_chat_command(message_text) then
-                    return
-                end
-
-                if not ChatSuppressionProbeLogged then
-                    ChatSuppressionProbeLogged = true
-                    log(string.format(
-                        "Chat suppression probe => detail=%s text=%s",
-                        tostring(detail),
-                        tostring(message_text)
-                    ))
-                end
-
-                if suppressed then
-                    log(string.format(
-                        "Suppressed visible chat command via %s: %s",
-                        tostring(detail),
-                        tostring(message_text)
-                    ))
-                else
-                    log(string.format(
-                        "Visible chat command suppression failed (%s): %s",
-                        tostring(detail),
-                        tostring(message_text)
-                    ))
-                end
-            end)
-            if not hook_ok then
-                log("Chat suppression hook error: " .. tostring(hook_error))
-            end
+            return
+        end,
+        function(context, message_param)
+            handle_chat_suppression(message_param, "post")
         end
     )
 

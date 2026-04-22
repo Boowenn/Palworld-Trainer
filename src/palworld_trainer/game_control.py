@@ -17,10 +17,17 @@ and start with ``@!``. The trainer only types them, it does not interpret them.
 
 from __future__ import annotations
 
+import base64
 import ctypes
+import json
+import os
+import subprocess
+import sys
+import tempfile
 import time
 from ctypes import wintypes
 from dataclasses import dataclass
+from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Win32 plumbing
@@ -39,6 +46,10 @@ VK_RETURN = 0x0D
 VK_MENU = 0x12  # Alt key, used as the "unblock SetForegroundWindow" tap.
 VK_BACK = 0x08
 VK_ESCAPE = 0x1B
+
+CHAT_HELPER_FLAG = "--chat-helper"
+CHAT_HELPER_PAYLOAD_ENV = "PALWORLD_TRAINER_CHAT_HELPER_PAYLOAD"
+CHAT_HELPER_RESULT_ENV = "PALWORLD_TRAINER_CHAT_HELPER_RESULT"
 
 
 ULONG_PTR = ctypes.c_size_t
@@ -141,6 +152,58 @@ class SendResult:
     ok: bool
     message: str
     command: str
+
+
+def _result_to_dict(result: SendResult) -> dict[str, object]:
+    return {
+        "ok": bool(result.ok),
+        "message": str(result.message),
+        "command": str(result.command),
+    }
+
+
+def _result_from_dict(payload: object) -> SendResult:
+    if not isinstance(payload, dict):
+        return SendResult(False, "Invalid helper payload.", "")
+    return SendResult(
+        bool(payload.get("ok")),
+        str(payload.get("message", "")),
+        str(payload.get("command", "")),
+    )
+
+
+def _results_from_json_text(text: str) -> list[SendResult]:
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return [SendResult(False, "Invalid helper result JSON.", "")]
+
+    if not isinstance(payload, list):
+        return [SendResult(False, "Invalid helper result payload.", "")]
+    return [_result_from_dict(item) for item in payload]
+
+
+def _serialize_results(results: list[SendResult]) -> str:
+    return json.dumps([_result_to_dict(result) for result in results], ensure_ascii=False)
+
+
+def _helper_command() -> list[str]:
+    if getattr(sys, "frozen", False):
+        return [sys.executable, CHAT_HELPER_FLAG]
+    return [sys.executable, "-m", "palworld_trainer", CHAT_HELPER_FLAG]
+
+
+def _helper_env(payload_b64: str, result_path: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    env[CHAT_HELPER_PAYLOAD_ENV] = payload_b64
+    env[CHAT_HELPER_RESULT_ENV] = str(result_path)
+    if not getattr(sys, "frozen", False):
+        src_root = Path(__file__).resolve().parents[1]
+        existing = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = (
+            str(src_root) if not existing else str(src_root) + os.pathsep + existing
+        )
+    return env
 
 
 # ---------------------------------------------------------------------------
@@ -338,7 +401,12 @@ def send_chat_command(
     return SendResult(True, f"Sent: {stripped}", stripped)
 
 
-def send_chat_commands(commands: list[str], *, between_ms: int = 250) -> list[SendResult]:
+def send_chat_commands(
+    commands: list[str],
+    *,
+    between_ms: int = 250,
+    restore_focus: bool = True,
+) -> list[SendResult]:
     """Send a batch of commands one after another, focusing once per command.
 
     A small pause between commands keeps Palworld's chat pipeline happy.
@@ -346,10 +414,101 @@ def send_chat_commands(commands: list[str], *, between_ms: int = 250) -> list[Se
 
     results: list[SendResult] = []
     for index, command in enumerate(commands):
-        result = send_chat_command(command)
+        result = send_chat_command(command, restore_focus=restore_focus)
         results.append(result)
         if not result.ok:
             break
         if index < len(commands) - 1:
             time.sleep(between_ms / 1000.0)
     return results
+
+
+def send_chat_commands_isolated(
+    commands: list[str],
+    *,
+    between_ms: int = 250,
+    restore_focus: bool = True,
+    timeout_ms: int = 20000,
+) -> list[SendResult]:
+    """Send commands from a helper process to avoid Tk/input contention."""
+
+    normalized = [command.strip() for command in commands if command and command.strip()]
+    if not normalized:
+        return []
+
+    payload = {
+        "commands": normalized,
+        "between_ms": int(between_ms),
+        "restore_focus": bool(restore_focus),
+    }
+    payload_b64 = base64.b64encode(
+        json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    ).decode("ascii")
+
+    with tempfile.TemporaryDirectory(prefix="palworld-chat-helper-") as tmp:
+        result_path = Path(tmp) / "result.json"
+        env = _helper_env(payload_b64, result_path)
+        kwargs: dict[str, object] = {
+            "check": False,
+            "env": env,
+            "timeout": max(timeout_ms / 1000.0, 1.0),
+        }
+        if os.name == "nt":
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+        try:
+            completed = subprocess.run(_helper_command(), **kwargs)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            fallback_results = send_chat_commands(
+                normalized,
+                between_ms=between_ms,
+                restore_focus=restore_focus,
+            )
+            if fallback_results:
+                return fallback_results
+            return [SendResult(False, f"Chat helper failed to start: {error}", normalized[0])]
+
+        if result_path.exists():
+            return _results_from_json_text(result_path.read_text(encoding="utf-8"))
+
+        message = f"Chat helper exited with code {completed.returncode}."
+        return [SendResult(False, message, normalized[0])]
+
+
+def run_chat_helper_from_env() -> int:
+    """CLI helper entry point used by the GUI process for clean SendInput."""
+
+    result_path_text = os.environ.get(CHAT_HELPER_RESULT_ENV, "").strip()
+    payload_b64 = os.environ.get(CHAT_HELPER_PAYLOAD_ENV, "").strip()
+    if not result_path_text or not payload_b64:
+        return 2
+
+    result_path = Path(result_path_text)
+    try:
+        payload = json.loads(base64.b64decode(payload_b64).decode("utf-8"))
+    except (ValueError, json.JSONDecodeError):
+        results = [SendResult(False, "Chat helper received invalid payload.", "")]
+        result_path.write_text(_serialize_results(results), encoding="utf-8")
+        return 1
+
+    raw_commands = payload.get("commands", [])
+    commands = [
+        str(command).strip()
+        for command in raw_commands
+        if isinstance(command, str) and command.strip()
+    ]
+    between_ms = int(payload.get("between_ms", 250))
+    restore_focus = bool(payload.get("restore_focus", True))
+
+    try:
+        results = send_chat_commands(
+            commands,
+            between_ms=between_ms,
+            restore_focus=restore_focus,
+        )
+    except Exception as error:  # noqa: BLE001
+        first_command = commands[0] if commands else ""
+        results = [SendResult(False, f"Chat helper crashed: {error}", first_command)]
+
+    result_path.write_text(_serialize_results(results), encoding="utf-8")
+    return 0 if results and all(result.ok for result in results) else 1

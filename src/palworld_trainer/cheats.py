@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -172,19 +173,22 @@ def read_toggles(path: Path) -> CheatState:
 def read_status(path: Path) -> BridgeStatus:
     if not path.exists():
         return BridgeStatus()
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except OSError:
-        return BridgeStatus()
-    if not raw.strip():
-        return BridgeStatus()
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
-        return BridgeStatus()
-    if not isinstance(payload, dict):
-        return BridgeStatus()
-    return BridgeStatus.from_payload(payload)
+
+    for attempt in range(3):
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError:
+            raw = ""
+        if raw.strip():
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                payload = None
+            if isinstance(payload, dict):
+                return BridgeStatus.from_payload(payload)
+        if attempt < 2:
+            time.sleep(0.02)
+    return BridgeStatus()
 
 
 def write_request(

@@ -5,6 +5,8 @@ import unittest
 from tests import _bootstrap  # noqa: F401
 from palworld_trainer.catalog import CatalogEntry
 from palworld_trainer.reference_parity import (
+    REFERENCE_ADD_PAL_DETAIL_TABS,
+    REFERENCE_ADD_PAL_SPAWN_TABS,
     REFERENCE_ADD_PAL_TABS,
     REFERENCE_ITEM_TABS,
     REFERENCE_PAL_ITEM_GROUP_KEYS,
@@ -53,11 +55,29 @@ class ReferenceParityTests(unittest.TestCase):
         groups = build_reference_spawn_groups(pal_entries, npc_entries)
 
         self.assertEqual(set(REFERENCE_ADD_PAL_TABS), set(groups))
-        self.assertEqual(["GYM_SnowTigerBeastman"], [entry.key for entry in groups["塔主"]])
-        self.assertEqual(["Lamball"], [entry.key for entry in groups["帕鲁"]])
-        self.assertEqual(["PREDATOR_Ronin_Dark"], [entry.key for entry in groups["狂暴"]])
-        self.assertEqual(["Hunter_Rifle"], [entry.key for entry in groups["NPC 人类"]])
-        self.assertEqual(["BOSS_Hunter_Rifle"], [entry.key for entry in groups["NPC 通缉犯"]])
+        self.assertEqual(
+            ["GYM_SnowTigerBeastman"],
+            [entry.key for entry in groups[REFERENCE_ADD_PAL_SPAWN_TABS[0]]],
+        )
+        self.assertEqual(
+            ["Lamball"],
+            [entry.key for entry in groups[REFERENCE_ADD_PAL_SPAWN_TABS[1]]],
+        )
+        self.assertEqual(
+            ["PREDATOR_Ronin_Dark"],
+            [entry.key for entry in groups[REFERENCE_ADD_PAL_SPAWN_TABS[2]]],
+        )
+        self.assertEqual(
+            ["Hunter_Rifle"],
+            [entry.key for entry in groups[REFERENCE_ADD_PAL_SPAWN_TABS[3]]],
+        )
+        self.assertEqual(
+            ["BOSS_Hunter_Rifle"],
+            [entry.key for entry in groups[REFERENCE_ADD_PAL_SPAWN_TABS[4]]],
+        )
+        self.assertEqual([], groups["收藏夹"])
+        for title in REFERENCE_ADD_PAL_DETAIL_TABS:
+            self.assertEqual([], groups[title])
 
     def test_reference_coord_entry_stores_workspace_payload(self) -> None:
         entry = ReferenceCoordEntry(group="默认", label="Home", x=1.0, y=2.0, z=3.0)

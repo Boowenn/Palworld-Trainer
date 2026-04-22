@@ -425,10 +425,8 @@ def deploy_bridge(report: EnvironmentReport) -> tuple[bool, str]:
     try:
         deployed_paths: list[str] = []
         for target in targets:
-            if target.exists():
-                shutil.rmtree(target)
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(source, target)
+            shutil.copytree(source, target, dirs_exist_ok=True)
             _ensure_mod_enabled(target.parent, BRIDGE_MOD_NAME)
             deployed_paths.append(str(target))
         return True, "增强模块已部署并启用: " + " / ".join(deployed_paths)

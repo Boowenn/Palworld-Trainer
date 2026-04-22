@@ -31,12 +31,20 @@ REFERENCE_ITEM_TABS: tuple[str, ...] = (
     "全部",
 )
 
-REFERENCE_ADD_PAL_TABS: tuple[str, ...] = (
+REFERENCE_ADD_PAL_SPAWN_TABS: tuple[str, ...] = (
     "塔主",
     "帕鲁",
     "狂暴",
     "NPC 人类",
     "NPC 通缉犯",
+)
+
+REFERENCE_ADD_PAL_TABS: tuple[str, ...] = (
+    *REFERENCE_ADD_PAL_SPAWN_TABS,
+    "收藏夹",
+    "基础",
+    "习得技能",
+    "更多数据",
 )
 
 REFERENCE_ONLINE_TABS: tuple[str, ...] = (

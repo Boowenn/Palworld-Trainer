@@ -4,6 +4,7 @@ import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest import mock
 
 from tests import _bootstrap  # noqa: F401 - ensures src on sys.path
 
@@ -184,6 +185,30 @@ class BridgeStatusTests(unittest.TestCase):
             self.assertAlmostEqual(status.position_x, -123.5)
             self.assertAlmostEqual(status.position_y, 456.0)
             self.assertAlmostEqual(status.position_z, 789.25)
+
+    def test_read_status_retries_transient_empty_read(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "status.json"
+            path.write_text("{}", encoding="utf-8")
+            with mock.patch(
+                "pathlib.Path.read_text",
+                autospec=True,
+                side_effect=[
+                    "",
+                    json.dumps(
+                        {
+                            "player_valid": True,
+                            "bridge_version": "1.2.7",
+                            "hidden_registry_ready": True,
+                        }
+                    ),
+                ],
+            ):
+                status = read_status(path)
+
+        self.assertTrue(status.player_valid)
+        self.assertEqual(status.bridge_version, "1.2.7")
+        self.assertTrue(status.hidden_registry_ready)
 
 
 class WriteRequestTests(unittest.TestCase):
