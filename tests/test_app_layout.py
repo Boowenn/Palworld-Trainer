@@ -279,15 +279,26 @@ class AppLayoutTests(unittest.TestCase):
             status = BridgeStatus(
                 player_valid=True,
                 controller_valid=True,
+                camera_valid=True,
                 position_x=0.0,
                 position_y=0.0,
                 position_z=0.0,
+                camera_x=0.0,
+                camera_y=0.0,
+                camera_z=0.0,
+                camera_pitch=0.0,
+                camera_yaw=0.0,
+                camera_roll=0.0,
+                camera_fov=90.0,
                 nearby_players=(
                     BridgeNearbyEntry(
                         name="BP_PlayerPawn_C_12",
                         class_name="BP_PlayerPawn_C",
                         location="(100,0,0)",
                         distance_meters=1.0,
+                        world_x=100.0,
+                        world_y=0.0,
+                        world_z=0.0,
                     ),
                 ),
             )
@@ -305,21 +316,74 @@ class AppLayoutTests(unittest.TestCase):
         root = _make_root()
         try:
             app = TrainerApp(root, "test")
-            with mock.patch.object(
-                app,
-                "_read_bridge_status",
-                return_value=BridgeStatus(player_valid=True, controller_valid=True),
+            status = BridgeStatus(
+                player_valid=True,
+                controller_valid=True,
+                camera_valid=True,
+                camera_x=0.0,
+                camera_y=0.0,
+                camera_z=0.0,
+                camera_pitch=0.0,
+                camera_yaw=0.0,
+                camera_roll=0.0,
+                camera_fov=90.0,
+                nearby_players=(
+                    BridgeNearbyEntry(
+                        name="BP_PlayerPawn_C_12",
+                        class_name="BP_PlayerPawn_C",
+                        location="(100,0,0)",
+                        distance_meters=1.0,
+                        world_x=100.0,
+                        world_y=0.0,
+                        world_z=0.0,
+                    ),
+                ),
+            )
+            with (
+                mock.patch.object(app, "_read_bridge_status", return_value=status),
+                mock.patch(
+                    "palworld_trainer.app.game_control.get_palworld_window_client_rect",
+                    return_value=(0, 0, 1280, 720),
+                ),
+                mock.patch("palworld_trainer.app.game_control.make_window_clickthrough"),
             ):
                 app._open_esp_overlay()
 
             assert app._esp_overlay_window is not None
             self.assertTrue(app._esp_overlay_window.winfo_exists())
-            self.assertIsNotNone(app._esp_overlay_text)
+            self.assertIsNone(app._esp_overlay_canvas)
+            self.assertGreater(app._esp_overlay_marker_count(), 0)
 
             app._close_esp_overlay()
 
             self.assertIsNone(app._esp_overlay_window)
-            self.assertIsNone(app._esp_overlay_text)
+            self.assertIsNone(app._esp_overlay_canvas)
+            self.assertEqual(0, app._esp_overlay_marker_count())
+        finally:
+            root.destroy()
+
+    def test_project_world_to_viewport_centers_forward_target(self) -> None:
+        root = _make_root()
+        try:
+            app = TrainerApp(root, "test")
+            status = BridgeStatus(
+                camera_valid=True,
+                camera_x=0.0,
+                camera_y=0.0,
+                camera_z=0.0,
+                camera_pitch=0.0,
+                camera_yaw=0.0,
+                camera_roll=0.0,
+                camera_fov=90.0,
+            )
+
+            projected = app._project_world_to_viewport(status, 100.0, 0.0, 0.0, 1000, 600)
+
+            assert projected is not None
+            screen_x, screen_y, depth_meters = projected
+            self.assertAlmostEqual(500.0, screen_x, delta=0.5)
+            self.assertAlmostEqual(300.0, screen_y, delta=0.5)
+            self.assertGreater(depth_meters, 0.0)
         finally:
             root.destroy()
 

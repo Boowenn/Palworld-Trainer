@@ -71,6 +71,9 @@ class BridgeNearbyEntry:
     class_name: str = ""
     location: str = ""
     distance_meters: float = 0.0
+    world_x: float = 0.0
+    world_y: float = 0.0
+    world_z: float = 0.0
 
     @classmethod
     def from_payload(cls, payload: dict[str, object]) -> "BridgeNearbyEntry":
@@ -89,6 +92,12 @@ class BridgeNearbyEntry:
             entry.distance_meters = float(distance)
         except (TypeError, ValueError):
             entry.distance_meters = 0.0
+        for key in ("world_x", "world_y", "world_z"):
+            value = payload.get(key)
+            try:
+                setattr(entry, key, float(value))
+            except (TypeError, ValueError):
+                continue
         return entry
 
 
@@ -100,10 +109,36 @@ class BridgeStatus:
     hidden_registry_ready: bool = False
     hidden_dispatch_ready: bool = False
     chat_suppression_ready: bool = False
+    camera_valid: bool = False
     position_x: float = 0.0
     position_y: float = 0.0
     position_z: float = 0.0
+    camera_x: float = 0.0
+    camera_y: float = 0.0
+    camera_z: float = 0.0
+    camera_pitch: float = 0.0
+    camera_yaw: float = 0.0
+    camera_roll: float = 0.0
+    camera_fov: float = 90.0
+    runtime_godmode: bool = False
+    runtime_inf_stamina: bool = False
+    runtime_weight_zero: bool = False
+    runtime_inf_ammo: bool = False
+    runtime_no_durability: bool = False
+    runtime_speed_multiplier: float = 1.0
+    runtime_jump_multiplier: float = 1.0
     nearby_players: tuple[BridgeNearbyEntry, ...] = ()
+
+    def runtime_cheat_state(self) -> CheatState:
+        return CheatState(
+            godmode=self.runtime_godmode,
+            inf_stamina=self.runtime_inf_stamina,
+            weight_zero=self.runtime_weight_zero,
+            inf_ammo=self.runtime_inf_ammo,
+            no_durability=self.runtime_no_durability,
+            speed_multiplier=self.runtime_speed_multiplier,
+            jump_multiplier=self.runtime_jump_multiplier,
+        )
 
     @classmethod
     def from_payload(cls, payload: dict[str, object]) -> "BridgeStatus":
@@ -126,12 +161,38 @@ class BridgeStatus:
         chat_suppression_ready = payload.get("chat_suppression_ready")
         if isinstance(chat_suppression_ready, bool):
             status.chat_suppression_ready = chat_suppression_ready
-        for key in ("position_x", "position_y", "position_z"):
+        camera_valid = payload.get("camera_valid")
+        if isinstance(camera_valid, bool):
+            status.camera_valid = camera_valid
+        for key in (
+            "position_x",
+            "position_y",
+            "position_z",
+            "camera_x",
+            "camera_y",
+            "camera_z",
+            "camera_pitch",
+            "camera_yaw",
+            "camera_roll",
+            "camera_fov",
+            "runtime_speed_multiplier",
+            "runtime_jump_multiplier",
+        ):
             value = payload.get(key)
             try:
                 setattr(status, key, float(value))
             except (TypeError, ValueError):
                 continue
+        for key in (
+            "runtime_godmode",
+            "runtime_inf_stamina",
+            "runtime_weight_zero",
+            "runtime_inf_ammo",
+            "runtime_no_durability",
+        ):
+            value = payload.get(key)
+            if isinstance(value, bool):
+                setattr(status, key, value)
         nearby_players = payload.get("nearby_players")
         if isinstance(nearby_players, list):
             rows: list[BridgeNearbyEntry] = []

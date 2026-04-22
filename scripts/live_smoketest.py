@@ -183,6 +183,14 @@ class LiveSmokeHarness:
     def text_widget_text(self, widget: tk.Text) -> str:
         return widget.get("1.0", "end").strip()
 
+    def canvas_item_count(self, widget: tk.Canvas | None) -> int:
+        if widget is None:
+            return 0
+        return len(widget.find_all())
+
+    def overlay_marker_count(self) -> int:
+        return int(getattr(self.app, "_esp_overlay_marker_count", lambda: 0)())
+
     def run_case(
         self,
         group: str,
@@ -1281,12 +1289,12 @@ def main() -> int:
             lambda: (
                 harness.app._esp_overlay_window is not None
                 and harness.app._esp_overlay_window.winfo_exists()
-                and harness.app._esp_overlay_text is not None
-                and bool(harness.text_widget_text(harness.app._esp_overlay_text)),
+                and harness.overlay_marker_count() > 0,
                 "esp overlay opened",
                 [
                     f"overlay_exists={bool(harness.app._esp_overlay_window and harness.app._esp_overlay_window.winfo_exists())}",
-                    f"overlay_text={ascii(harness.text_widget_text(harness.app._esp_overlay_text) if harness.app._esp_overlay_text is not None else '')}",
+                    f"overlay_markers={harness.overlay_marker_count()}",
+                    f"overlay_snapshot={ascii(harness.app._esp_overlay_snapshot_text)}",
                 ],
             ),
             settle=0.25,
@@ -1296,11 +1304,14 @@ def main() -> int:
             "esp_overlay_close",
             harness.app._close_esp_overlay,
             lambda: (
-                harness.app._esp_overlay_window is None and harness.app._esp_overlay_text is None,
+                harness.app._esp_overlay_window is None
+                and harness.app._esp_overlay_canvas is None
+                and harness.overlay_marker_count() == 0,
                 "esp overlay closed",
                 [
                     f"overlay_window={harness.app._esp_overlay_window!r}",
-                    f"overlay_text={harness.app._esp_overlay_text!r}",
+                    f"overlay_canvas={harness.app._esp_overlay_canvas!r}",
+                    f"overlay_markers={harness.overlay_marker_count()}",
                 ],
             ),
             settle=0.2,

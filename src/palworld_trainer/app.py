@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import math
 import os
 import json
@@ -131,9 +132,35 @@ ESP_STATIC_CATEGORY_RULES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("notes", "漂流者手记", ("手记", "漂流者")),
 )
 
-ESP_OVERLAY_REFRESH_MS = 900
+ESP_OVERLAY_REFRESH_MS = 120
 ESP_MAX_PLAYER_RESULTS = 8
 ESP_MAX_STATIC_RESULTS = 18
+ESP_OVERLAY_BG = "#ff00ff"
+ESP_OVERLAY_MARGIN = 18
+ESP_OVERLAY_ALPHA = 0.85
+ESP_PLAYER_LINE_THICKNESS = 3
+ESP_STATIC_MARKER_THICKNESS = 3
+ESP_PLAYER_BOX_COLOR = "#ff6b6b"
+ESP_PLAYERS_TEXT_COLOR = "#ffd7d7"
+ESP_CATEGORY_COLORS: dict[str, tuple[str, str]] = {
+    "players": (ESP_PLAYER_BOX_COLOR, ESP_PLAYERS_TEXT_COLOR),
+    "eggs": ("#35d0ff", "#d9fbff"),
+    "chests": ("#ffcc3d", "#fff4c7"),
+    "statues": ("#52e38a", "#dffff0"),
+    "notes": ("#ffffff", "#f5f5f5"),
+}
+
+
+@dataclass(frozen=True)
+class EspOverlayTarget:
+    kind: str
+    label: str
+    world_x: float
+    world_y: float
+    world_z: float
+    distance_meters: float
+    color: str
+    text_color: str
 
 
 def _parse_version_tuple(text: str) -> tuple[int, ...]:
@@ -228,7 +255,10 @@ class TrainerApp:
         self._result_clear_job: str | None = None
         self._esp_overlay_window: tk.Toplevel | None = None
         self._esp_overlay_text: tk.Text | None = None
+        self._esp_overlay_canvas: tk.Canvas | None = None
+        self._esp_overlay_markers: list[tk.Toplevel] = []
         self._esp_overlay_job: str | None = None
+        self._esp_overlay_snapshot_text = ""
 
         # Direct memory-attach engine — no UE4SS, no in-game mod needed.
         # The engine owns a ticker thread that freezes enabled slots every
@@ -1193,8 +1223,17 @@ class TrainerApp:
             text = "无限弹药：开" if self.cheat_state.inf_ammo else "无限弹药：关"
             self.common_ref_ammo_button.configure(text=text)
         if hasattr(self, "common_ref_state_label"):
+            status = self._read_bridge_status()
+            runtime_state = status.runtime_cheat_state()
+            if status.player_valid or status.controller_valid or status.camera_valid:
+                runtime_text = describe_state(runtime_state)
+            else:
+                runtime_text = "桥接未进入可验证状态"
             self.common_ref_state_label.configure(
-                text=f"当前常驻增强：{describe_state(self.cheat_state)}",
+                text=(
+                    f"当前常驻增强：{describe_state(self.cheat_state)}\n"
+                    f"bridge运行态：{runtime_text}"
+                ),
             )
 
     def _coord_search_entries(self) -> list[CoordPreset]:
@@ -5755,6 +5794,583 @@ class TrainerApp:
                 pass
         self._esp_overlay_window = None
         self._esp_overlay_text = None
+
+    def _esp_player_targets(self, status: BridgeStatus) -> list[EspOverlayTarget]:
+        if not getattr(self, "esp_show_players_var", None) or not self.esp_show_players_var.get():
+            return []
+        color, text_color = ESP_CATEGORY_COLORS["players"]
+        targets: list[EspOverlayTarget] = []
+        for row in list(getattr(status, "nearby_players", ()))[:ESP_MAX_PLAYER_RESULTS]:
+            targets.append(
+                EspOverlayTarget(
+                    kind="players",
+                    label=self._format_esp_object_name(getattr(row, "name", "")),
+                    world_x=float(getattr(row, "world_x", 0.0)),
+                    world_y=float(getattr(row, "world_y", 0.0)),
+                    world_z=float(getattr(row, "world_z", 0.0)),
+                    distance_meters=float(getattr(row, "distance_meters", 0.0)),
+                    color=color,
+                    text_color=text_color,
+                )
+            )
+        return targets
+
+    def _esp_static_targets(self, status: BridgeStatus) -> list[EspOverlayTarget]:
+        if not status.player_valid:
+            return []
+        selected = self._esp_selected_static_categories()
+        if not selected:
+            return []
+
+        player_pos = (status.position_x, status.position_y, status.position_z)
+        radius_meters = self._esp_search_radius_meters()
+        targets: list[EspOverlayTarget] = []
+        for entry in self._coord_entries:
+            category_key = ""
+            category_label = ""
+            for key, label, _tokens in ESP_STATIC_CATEGORY_RULES:
+                if key in selected and self._esp_entry_matches_category(entry, key):
+                    category_key = key
+                    category_label = label
+                    break
+            if not category_key:
+                continue
+            distance_meters = math.dist(player_pos, (entry.x, entry.y, entry.z)) / 100.0
+            if distance_meters > radius_meters:
+                continue
+            color, text_color = ESP_CATEGORY_COLORS.get(category_key, ("#ffffff", "#ffffff"))
+            targets.append(
+                EspOverlayTarget(
+                    kind=category_key,
+                    label=f"[{category_label}] {entry.name}",
+                    world_x=entry.x,
+                    world_y=entry.y,
+                    world_z=entry.z,
+                    distance_meters=distance_meters,
+                    color=color,
+                    text_color=text_color,
+                )
+            )
+        targets.sort(key=lambda item: (item.distance_meters, item.kind, item.label))
+        return targets[:ESP_MAX_STATIC_RESULTS]
+
+    def _esp_targets(self, status: BridgeStatus) -> list[EspOverlayTarget]:
+        return [*self._esp_player_targets(status), *self._esp_static_targets(status)]
+
+    def _esp_player_lines(self, targets: list[EspOverlayTarget]) -> list[str]:
+        if not getattr(self, "esp_show_players_var", None) or not self.esp_show_players_var.get():
+            return []
+        players = [target for target in targets if target.kind == "players"]
+        if not players:
+            return ["玩家：附近没有其他玩家"]
+        lines = ["玩家："]
+        for target in players:
+            lines.append(f"  - {target.label} | {target.distance_meters:.1f}m")
+        return lines
+
+    def _esp_static_lines(self, status: BridgeStatus, targets: list[EspOverlayTarget]) -> list[str]:
+        if not status.player_valid:
+            return ["坐标库目标：先进入世界后才能计算蛋 / 宝箱 / 雕像 / 手记"]
+        if not self._esp_selected_static_categories():
+            return ["坐标库目标：当前没有勾选任何分类"]
+        radius_meters = self._esp_search_radius_meters()
+        static_targets = [target for target in targets if target.kind != "players"]
+        if not static_targets:
+            return [f"坐标库目标：{radius_meters:.0f}m 内没有匹配到已勾选点位"]
+        lines = [f"坐标库目标（{radius_meters:.0f}m 内）："]
+        for target in static_targets:
+            lines.append(f"  - {target.label} | {target.distance_meters:.1f}m")
+        return lines
+
+    def _esp_lines(self, status: BridgeStatus, targets: list[EspOverlayTarget]) -> list[str]:
+        if not status.player_valid:
+            return [
+                "游戏角色还没进入可操作状态。",
+                "进入世界后再点“刷新透视”或“开启窗口透视”。",
+            ]
+        if not status.camera_valid:
+            return [
+                "桥接已连接，但还没拿到相机信息。",
+                "切回游戏移动一下视角后再刷新透视。",
+            ]
+        lines: list[str] = []
+        lines.extend(self._esp_player_lines(targets))
+        if lines:
+            lines.append("")
+        lines.extend(self._esp_static_lines(status, targets))
+        return lines or ["透视已运行，但附近没有可显示目标。"]
+
+    def _camera_axes(
+        self,
+        status: BridgeStatus,
+    ) -> tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]:
+        pitch = math.radians(status.camera_pitch)
+        yaw = math.radians(status.camera_yaw)
+        roll = math.radians(status.camera_roll)
+        sp = math.sin(pitch)
+        cp = math.cos(pitch)
+        sy = math.sin(yaw)
+        cy = math.cos(yaw)
+        sr = math.sin(roll)
+        cr = math.cos(roll)
+        forward = (cp * cy, cp * sy, sp)
+        right = (cy * sp * sr - cr * sy, sy * sp * sr + cr * cy, -cp * sr)
+        up = (-cr * cy * sp - sr * sy, -cr * sy * sp + sr * cy, cp * cr)
+        return forward, right, up
+
+    def _project_world_to_viewport(
+        self,
+        status: BridgeStatus,
+        world_x: float,
+        world_y: float,
+        world_z: float,
+        viewport_width: int,
+        viewport_height: int,
+    ) -> tuple[float, float, float] | None:
+        if not status.camera_valid or viewport_width <= 0 or viewport_height <= 0:
+            return None
+        forward, right, up = self._camera_axes(status)
+        delta_x = world_x - status.camera_x
+        delta_y = world_y - status.camera_y
+        delta_z = world_z - status.camera_z
+        cam_forward = delta_x * forward[0] + delta_y * forward[1] + delta_z * forward[2]
+        if cam_forward <= 1.0:
+            return None
+        cam_right = delta_x * right[0] + delta_y * right[1] + delta_z * right[2]
+        cam_up = delta_x * up[0] + delta_y * up[1] + delta_z * up[2]
+        horizontal_fov = math.radians(max(40.0, min(140.0, status.camera_fov)))
+        projection_scale = (viewport_width * 0.5) / math.tan(horizontal_fov * 0.5)
+        screen_x = viewport_width * 0.5 + (cam_right * projection_scale / cam_forward)
+        screen_y = viewport_height * 0.5 - (cam_up * projection_scale / cam_forward)
+        return screen_x, screen_y, cam_forward / 100.0
+
+    def _draw_overlay_label(
+        self,
+        canvas: tk.Canvas,
+        x: float,
+        y: float,
+        text: str,
+        *,
+        text_color: str,
+    ) -> None:
+        text_id = canvas.create_text(
+            x,
+            y,
+            text=text,
+            fill=text_color,
+            anchor="s",
+            font=("Microsoft YaHei UI", 10, "bold"),
+        )
+        bbox = canvas.bbox(text_id)
+        if bbox is not None:
+            canvas.create_rectangle(
+                bbox[0] - 4,
+                bbox[1] - 2,
+                bbox[2] + 4,
+                bbox[3] + 2,
+                fill="#111111",
+                outline="",
+            )
+            canvas.tag_raise(text_id)
+
+    def _draw_player_overlay(
+        self,
+        canvas: tk.Canvas,
+        target: EspOverlayTarget,
+        x: float,
+        y: float,
+        depth_meters: float,
+    ) -> None:
+        box_height = max(42.0, min(180.0, 1900.0 / max(depth_meters, 8.0)))
+        box_width = box_height * 0.58
+        left = x - box_width * 0.5
+        right = x + box_width * 0.5
+        top = y - box_height * 0.9
+        bottom = y + box_height * 0.1
+        canvas.create_rectangle(left, top, right, bottom, outline=target.color, width=2)
+        canvas.create_line(x, top, x, bottom, fill=target.color, width=1)
+        canvas.create_line(left, y, right, y, fill=target.color, width=1)
+        self._draw_overlay_label(
+            canvas,
+            x,
+            top - 6,
+            f"{target.label} {target.distance_meters:.0f}m",
+            text_color=target.text_color,
+        )
+
+    def _draw_static_overlay(self, canvas: tk.Canvas, target: EspOverlayTarget, x: float, y: float) -> None:
+        radius = max(6.0, min(13.0, 800.0 / max(target.distance_meters, 12.0)))
+        canvas.create_polygon(
+            x,
+            y - radius,
+            x + radius,
+            y,
+            x,
+            y + radius,
+            x - radius,
+            y,
+            outline=target.color,
+            fill="",
+            width=2,
+        )
+        canvas.create_oval(x - 2, y - 2, x + 2, y + 2, fill=target.color, outline="")
+        self._draw_overlay_label(
+            canvas,
+            x,
+            y - radius - 6,
+            f"{target.label} {target.distance_meters:.0f}m",
+            text_color=target.text_color,
+        )
+
+    def _sync_esp_overlay_geometry(self) -> tuple[int, int, int, int] | None:
+        if self._esp_overlay_window is None:
+            return None
+        rect = game_control.get_palworld_window_client_rect()
+        if rect is None:
+            return None
+        left, top, width, height = rect
+        if width <= 1 or height <= 1:
+            return None
+        try:
+            self._esp_overlay_window.geometry(f"{width}x{height}+{left}+{top}")
+        except tk.TclError:
+            return None
+        return rect
+
+    def _render_esp_overlay(self, status: BridgeStatus, targets: list[EspOverlayTarget]) -> None:
+        if self._esp_overlay_window is None or self._esp_overlay_canvas is None:
+            return
+        rect = self._sync_esp_overlay_geometry()
+        if rect is None:
+            return
+        _left, _top, width, height = rect
+        canvas = self._esp_overlay_canvas
+        try:
+            canvas.configure(width=width, height=height)
+            canvas.delete("all")
+        except tk.TclError:
+            self._close_esp_overlay()
+            return
+        if not status.player_valid or not status.camera_valid:
+            return
+        for target in targets:
+            projected = self._project_world_to_viewport(
+                status,
+                target.world_x,
+                target.world_y,
+                target.world_z,
+                width,
+                height,
+            )
+            if projected is None:
+                continue
+            screen_x, screen_y, depth_meters = projected
+            if (
+                screen_x < -ESP_OVERLAY_MARGIN
+                or screen_x > width + ESP_OVERLAY_MARGIN
+                or screen_y < -ESP_OVERLAY_MARGIN
+                or screen_y > height + ESP_OVERLAY_MARGIN
+            ):
+                continue
+            if target.kind == "players":
+                self._draw_player_overlay(canvas, target, screen_x, screen_y, depth_meters)
+            else:
+                self._draw_static_overlay(canvas, target, screen_x, screen_y)
+
+    def _refresh_esp_views(self) -> None:
+        status = self._read_bridge_status()
+        targets = self._esp_targets(status)
+        text = "\n".join(self._esp_lines(status, targets))
+        self._esp_overlay_snapshot_text = text
+        if hasattr(self, "online_esp_text"):
+            self.online_esp_text.configure(state="normal")
+            self.online_esp_text.delete("1.0", "end")
+            self.online_esp_text.insert("1.0", text)
+            self.online_esp_text.configure(state="disabled")
+        self._render_esp_overlay(status, targets)
+
+    def _schedule_esp_overlay_refresh(self) -> None:
+        if self._esp_overlay_window is None:
+            return
+        self._esp_overlay_job = self.root.after(ESP_OVERLAY_REFRESH_MS, self._refresh_esp_overlay)
+
+    def _refresh_esp_overlay(self) -> None:
+        self._esp_overlay_job = None
+        if self._esp_overlay_window is None:
+            return
+        self._refresh_esp_views()
+        if self._esp_overlay_window.winfo_exists():
+            self._schedule_esp_overlay_refresh()
+
+    def _open_esp_overlay(self) -> None:
+        if self._esp_overlay_window is not None and self._esp_overlay_window.winfo_exists():
+            self._esp_overlay_window.deiconify()
+            self._esp_overlay_window.lift()
+            self._refresh_esp_views()
+            return
+
+        top = tk.Toplevel(self.root)
+        top.title("窗口透视")
+        top.overrideredirect(True)
+        top.attributes("-topmost", True)
+        top.configure(bg=ESP_OVERLAY_BG)
+        try:
+            top.attributes("-transparentcolor", ESP_OVERLAY_BG)
+        except tk.TclError:
+            pass
+        top.protocol("WM_DELETE_WINDOW", self._close_esp_overlay)
+
+        canvas = tk.Canvas(top, bg=ESP_OVERLAY_BG, highlightthickness=0, bd=0)
+        canvas.pack(fill="both", expand=True)
+        self._esp_overlay_window = top
+        self._esp_overlay_text = None
+        self._esp_overlay_canvas = canvas
+        top.update_idletasks()
+        game_control.make_window_clickthrough(top.winfo_id())
+        self._refresh_esp_views()
+        self._schedule_esp_overlay_refresh()
+
+    def _close_esp_overlay(self) -> None:
+        if self._esp_overlay_job is not None:
+            try:
+                self.root.after_cancel(self._esp_overlay_job)
+            except tk.TclError:
+                pass
+            self._esp_overlay_job = None
+        if self._esp_overlay_window is not None:
+            try:
+                self._esp_overlay_window.destroy()
+            except tk.TclError:
+                pass
+        self._esp_overlay_window = None
+        self._esp_overlay_text = None
+        self._esp_overlay_canvas = None
+
+    def _sync_esp_overlay_geometry(self) -> tuple[int, int, int, int] | None:
+        if self._esp_overlay_window is None:
+            return None
+        rect = game_control.get_palworld_window_client_rect()
+        if rect is None:
+            return None
+        left, top, width, height = rect
+        if width <= 1 or height <= 1:
+            return None
+        return rect
+
+    def _esp_overlay_marker_specs(
+        self,
+        status: BridgeStatus,
+        targets: list[EspOverlayTarget],
+        width: int,
+        height: int,
+    ) -> list[tuple[int, int, int, int, str]]:
+        specs: list[tuple[int, int, int, int, str]] = []
+        if not status.player_valid or not status.camera_valid:
+            return specs
+        for target in targets:
+            projected = self._project_world_to_viewport(
+                status,
+                target.world_x,
+                target.world_y,
+                target.world_z,
+                width,
+                height,
+            )
+            if projected is None:
+                continue
+            screen_x, screen_y, depth_meters = projected
+            if (
+                screen_x < -ESP_OVERLAY_MARGIN
+                or screen_x > width + ESP_OVERLAY_MARGIN
+                or screen_y < -ESP_OVERLAY_MARGIN
+                or screen_y > height + ESP_OVERLAY_MARGIN
+            ):
+                continue
+
+            if target.kind == "players":
+                box_height = max(42.0, min(150.0, 900.0 / max(depth_meters, 8.0)))
+                box_width = max(24.0, box_height * 0.58)
+                left = int(round(screen_x - box_width * 0.5))
+                right = int(round(screen_x + box_width * 0.5))
+                top = int(round(screen_y - box_height * 0.88))
+                bottom = int(round(screen_y + box_height * 0.12))
+                thickness = ESP_PLAYER_LINE_THICKNESS
+                specs.extend(
+                    [
+                        (left, top, max(1, right - left), thickness, target.color),
+                        (left, bottom - thickness, max(1, right - left), thickness, target.color),
+                        (left, top, thickness, max(1, bottom - top), target.color),
+                        (right - thickness, top, thickness, max(1, bottom - top), target.color),
+                    ]
+                )
+            else:
+                size = max(8.0, min(16.0, 450.0 / max(target.distance_meters, 12.0)))
+                half = int(round(size * 0.5))
+                center_x = int(round(screen_x))
+                center_y = int(round(screen_y))
+                thickness = ESP_STATIC_MARKER_THICKNESS
+                specs.extend(
+                    [
+                        (
+                            center_x - half,
+                            center_y - thickness // 2,
+                            max(1, half * 2),
+                            thickness,
+                            target.color,
+                        ),
+                        (
+                            center_x - thickness // 2,
+                            center_y - half,
+                            thickness,
+                            max(1, half * 2),
+                            target.color,
+                        ),
+                    ]
+                )
+        return specs
+
+    def _hide_esp_marker_window(self, marker: tk.Toplevel) -> None:
+        try:
+            marker.withdraw()
+            marker.geometry("1x1+-32000+-32000")
+        except tk.TclError:
+            return
+
+    def _ensure_esp_overlay_host(self) -> tk.Toplevel:
+        if self._esp_overlay_window is not None and self._esp_overlay_window.winfo_exists():
+            return self._esp_overlay_window
+        host = tk.Toplevel(self.root)
+        host.title("ESP Overlay Host")
+        host.overrideredirect(True)
+        host.attributes("-topmost", True)
+        try:
+            host.attributes("-alpha", 0.0)
+        except tk.TclError:
+            pass
+        host.geometry("1x1+-32000+-32000")
+        host.protocol("WM_DELETE_WINDOW", self._close_esp_overlay)
+        host.withdraw()
+        self._esp_overlay_window = host
+        self._esp_overlay_canvas = None
+        return host
+
+    def _create_esp_marker_window(self) -> tk.Toplevel:
+        marker = tk.Toplevel(self.root)
+        marker.overrideredirect(True)
+        marker.attributes("-topmost", True)
+        try:
+            marker.attributes("-alpha", ESP_OVERLAY_ALPHA)
+        except tk.TclError:
+            pass
+        marker.configure(bg=ESP_PLAYER_BOX_COLOR)
+        marker.geometry("1x1+-32000+-32000")
+        marker.update_idletasks()
+        game_control.make_window_clickthrough(marker.winfo_id())
+        marker.withdraw()
+        return marker
+
+    def _ensure_esp_marker_windows(self, count: int) -> None:
+        while len(self._esp_overlay_markers) < count:
+            self._esp_overlay_markers.append(self._create_esp_marker_window())
+
+    def _esp_overlay_marker_count(self) -> int:
+        count = 0
+        for marker in self._esp_overlay_markers:
+            try:
+                if marker.winfo_exists() and marker.state() != "withdrawn":
+                    count += 1
+            except tk.TclError:
+                continue
+        return count
+
+    def _render_esp_overlay(self, status: BridgeStatus, targets: list[EspOverlayTarget]) -> None:
+        if self._esp_overlay_window is None:
+            return
+        rect = self._sync_esp_overlay_geometry()
+        if rect is None:
+            for marker in self._esp_overlay_markers:
+                self._hide_esp_marker_window(marker)
+            return
+        left, top, width, height = rect
+        specs = self._esp_overlay_marker_specs(status, targets, width, height)
+        self._ensure_esp_marker_windows(len(specs))
+        for index, spec in enumerate(specs):
+            marker = self._esp_overlay_markers[index]
+            offset_x, offset_y, marker_width, marker_height, color = spec
+            try:
+                marker.configure(bg=color)
+                marker.geometry(
+                    f"{max(1, marker_width)}x{max(1, marker_height)}+"
+                    f"{left + offset_x}+{top + offset_y}"
+                )
+                marker.deiconify()
+                marker.lift()
+            except tk.TclError:
+                continue
+        for marker in self._esp_overlay_markers[len(specs):]:
+            self._hide_esp_marker_window(marker)
+
+    def _refresh_esp_views(self) -> None:
+        status = self._read_bridge_status()
+        targets = self._esp_targets(status)
+        text = "\n".join(self._esp_lines(status, targets))
+        self._esp_overlay_snapshot_text = text
+        if hasattr(self, "online_esp_text"):
+            self.online_esp_text.configure(state="normal")
+            self.online_esp_text.delete("1.0", "end")
+            self.online_esp_text.insert("1.0", text)
+            self.online_esp_text.configure(state="disabled")
+        self._render_esp_overlay(status, targets)
+
+    def _schedule_esp_overlay_refresh(self) -> None:
+        if self._esp_overlay_window is None:
+            return
+        self._esp_overlay_job = self.root.after(ESP_OVERLAY_REFRESH_MS, self._refresh_esp_overlay)
+
+    def _refresh_esp_overlay(self) -> None:
+        self._esp_overlay_job = None
+        if self._esp_overlay_window is None:
+            return
+        self._refresh_esp_views()
+        try:
+            overlay_exists = self._esp_overlay_window.winfo_exists()
+        except tk.TclError:
+            overlay_exists = False
+        if overlay_exists:
+            self._schedule_esp_overlay_refresh()
+
+    def _open_esp_overlay(self) -> None:
+        if self._esp_overlay_window is not None and self._esp_overlay_window.winfo_exists():
+            self._refresh_esp_views()
+            return
+
+        self._ensure_esp_overlay_host()
+        self._esp_overlay_text = None
+        self._esp_overlay_canvas = None
+        self._refresh_esp_views()
+        self._schedule_esp_overlay_refresh()
+
+    def _close_esp_overlay(self) -> None:
+        if self._esp_overlay_job is not None:
+            try:
+                self.root.after_cancel(self._esp_overlay_job)
+            except tk.TclError:
+                pass
+            self._esp_overlay_job = None
+        for marker in self._esp_overlay_markers:
+            try:
+                marker.destroy()
+            except tk.TclError:
+                pass
+        self._esp_overlay_markers = []
+        if self._esp_overlay_window is not None:
+            try:
+                self._esp_overlay_window.destroy()
+            except tk.TclError:
+                pass
+        self._esp_overlay_window = None
+        self._esp_overlay_text = None
+        self._esp_overlay_canvas = None
 
     def _on_close(self) -> None:
         try:

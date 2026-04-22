@@ -1,7 +1,7 @@
 local UEHelpers = require("UEHelpers")
 
 local ModName = "PalworldTrainerBridge"
-local Version = "1.2.11"
+local Version = "1.2.15"
 local LastFindQuery = nil
 local LogWriteHealthy = true
 local LastLogFailureShown = false
@@ -318,6 +318,27 @@ local function try_get_location(object)
         return nil
     end
 
+    local direct_callers = {
+        function(target)
+            return target:K2_GetActorLocation()
+        end,
+        function(target)
+            return target:GetCameraLocation()
+        end,
+        function(target)
+            return target:K2_GetComponentLocation()
+        end,
+        function(target)
+            return target:GetFocalLocation()
+        end,
+    }
+    for _, caller in ipairs(direct_callers) do
+        local ok, value = pcall(caller, object)
+        if ok and value ~= nil then
+            return value
+        end
+    end
+
     local ok, value = pcall(function()
         return object:K2_GetActorLocation()
     end)
@@ -398,6 +419,9 @@ local function build_rows(objects, limit)
                 class_name = safe_class_name(object),
                 location = location and format_vector(location) or "n/a",
                 distance_meters = distance_meters,
+                world_x = location and location.X or 0.0,
+                world_y = location and location.Y or 0.0,
+                world_z = location and location.Z or 0.0,
             })
         end
     end
@@ -432,11 +456,14 @@ local function format_rows_json(rows)
     for _, row in ipairs(rows) do
         local distance_text = row.distance_meters and string.format("%.1f", row.distance_meters) or "null"
         table.insert(parts, string.format(
-            '    {"name":"%s","class_name":"%s","location":"%s","distance_meters":%s}',
+            '    {"name":"%s","class_name":"%s","location":"%s","distance_meters":%s,"world_x":%.3f,"world_y":%.3f,"world_z":%.3f}',
             json_escape(row.name),
             json_escape(row.class_name),
             json_escape(row.location),
-            distance_text
+            distance_text,
+            row.world_x or 0.0,
+            row.world_y or 0.0,
+            row.world_z or 0.0
         ))
     end
     return "[\n" .. table.concat(parts, ",\n") .. "\n  ]"
@@ -703,6 +730,228 @@ local function safe_set_prop(object, name, value)
         object[name] = value
     end)
     return ok
+end
+
+local function try_field(value, field_name)
+    if value == nil then
+        return nil
+    end
+    local ok, field_value = pcall(function()
+        return value[field_name]
+    end)
+    if ok then
+        return field_value
+    end
+    return nil
+end
+
+local function coerce_number(value)
+    if type(value) == "number" then
+        return value
+    end
+    if value == nil then
+        return nil
+    end
+    local ok, numeric = pcall(tonumber, value)
+    if ok and type(numeric) == "number" then
+        return numeric
+    end
+    return nil
+end
+
+local function parse_number_from_text(text, keys)
+    if type(text) ~= "string" or text == "" then
+        return nil
+    end
+    for _, key in ipairs(keys or {}) do
+        local value = text:match(key .. "%s*[=:]%s*([%-%.%d]+)")
+        local numeric = tonumber(value)
+        if type(numeric) == "number" then
+            return numeric
+        end
+    end
+    return nil
+end
+
+local function coerce_vector(value)
+    if value == nil then
+        return nil
+    end
+    local x = coerce_number(try_field(value, "X") or try_field(value, "x"))
+    local y = coerce_number(try_field(value, "Y") or try_field(value, "y"))
+    local z = coerce_number(try_field(value, "Z") or try_field(value, "z"))
+    if x == nil or y == nil or z == nil then
+        local text = tostring(value)
+        x = x or parse_number_from_text(text, { "X", "x" })
+        y = y or parse_number_from_text(text, { "Y", "y" })
+        z = z or parse_number_from_text(text, { "Z", "z" })
+    end
+    if x == nil or y == nil or z == nil then
+        return nil
+    end
+    return {
+        X = x,
+        Y = y,
+        Z = z,
+    }
+end
+
+local function coerce_rotation(value)
+    if value == nil then
+        return nil
+    end
+    local pitch = coerce_number(try_field(value, "Pitch") or try_field(value, "pitch"))
+    local yaw = coerce_number(try_field(value, "Yaw") or try_field(value, "yaw"))
+    local roll = coerce_number(try_field(value, "Roll") or try_field(value, "roll"))
+    if pitch == nil or yaw == nil or roll == nil then
+        local text = tostring(value)
+        pitch = pitch or parse_number_from_text(text, { "Pitch", "pitch", "P" })
+        yaw = yaw or parse_number_from_text(text, { "Yaw", "yaw", "Y" })
+        roll = roll or parse_number_from_text(text, { "Roll", "roll", "R" })
+    end
+    if pitch == nil or yaw == nil or roll == nil then
+        return nil
+    end
+    return {
+        Pitch = pitch,
+        Yaw = yaw,
+        Roll = roll,
+    }
+end
+
+local function try_call_noargs(object, method_names)
+    if not object or not object:IsValid() then
+        return nil
+    end
+
+    for _, method_name in ipairs(method_names or {}) do
+        local ok, value = pcall(function()
+            local method = object[method_name]
+            if type(method) ~= "function" then
+                return nil
+            end
+            return method(object)
+        end)
+        if ok and value ~= nil then
+            return value
+        end
+    end
+
+    return nil
+end
+
+local function try_get_rotation(object)
+    if not object or not object:IsValid() then
+        return nil
+    end
+
+    local direct_callers = {
+        function(target)
+            return target:GetCameraRotation()
+        end,
+        function(target)
+            return target:GetControlRotation()
+        end,
+        function(target)
+            return target:K2_GetActorRotation()
+        end,
+        function(target)
+            return target:K2_GetComponentRotation()
+        end,
+        function(target)
+            return target:GetActorRotation()
+        end,
+    }
+    for _, caller in ipairs(direct_callers) do
+        local ok, value = pcall(caller, object)
+        if ok and value ~= nil then
+            local coerced = coerce_rotation(value)
+            if coerced then
+                return coerced
+            end
+        end
+    end
+
+    local rotation = try_call_noargs(object, {
+        "GetCameraRotation",
+        "GetControlRotation",
+        "K2_GetActorRotation",
+        "K2_GetComponentRotation",
+        "GetActorRotation",
+    })
+    if rotation then
+        return coerce_rotation(rotation)
+    end
+
+    local prop_candidates = {
+        "ControlRotation",
+        "TargetViewRotation",
+        "BlendedTargetViewRotation",
+        "RelativeRotation",
+        "BaseAimRotation",
+        "ActorRotation",
+        "Rotation",
+    }
+    for _, prop_name in ipairs(prop_candidates) do
+        local coerced = coerce_rotation(safe_get_prop(object, prop_name))
+        if coerced then
+            return coerced
+        end
+    end
+    return nil
+end
+
+local function try_get_fov(object)
+    if not object or not object:IsValid() then
+        return nil
+    end
+
+    local ok_direct, direct_fov = pcall(function()
+        return object:GetFOVAngle()
+    end)
+    local fov = ok_direct and direct_fov or try_call_noargs(object, { "GetFOVAngle" })
+    fov = coerce_number(fov)
+    if type(fov) == "number" and fov > 0 then
+        return fov
+    end
+
+    local candidates = {
+        safe_get_prop(object, "DefaultFOV"),
+        safe_get_prop(object, "FOVAngle"),
+        safe_get_prop(object, "LockedFOV"),
+    }
+    for _, value in ipairs(candidates) do
+        if type(value) == "number" and value > 0 then
+            return value
+        end
+    end
+
+    return nil
+end
+
+local function get_camera_snapshot(controller, player)
+    local camera = controller and safe_get_prop(controller, "PlayerCameraManager") or nil
+    if camera and camera:IsValid() then
+        local location = coerce_vector(try_get_location(camera) or try_call_noargs(camera, { "GetCameraLocation" }))
+        local rotation = try_get_rotation(camera)
+        local fov = try_get_fov(camera)
+        if location and rotation and fov then
+            return true, location, rotation, fov
+        end
+    end
+
+    local control_rotation = try_get_rotation(controller)
+    local pawn_location = coerce_vector(try_get_location(player))
+    if control_rotation and pawn_location then
+        return true, pawn_location, control_rotation, 90.0
+    end
+
+    local actor_rotation = try_get_rotation(player)
+    if actor_rotation and pawn_location then
+        return true, pawn_location, actor_rotation, 90.0
+    end
+
+    return false, nil, nil, nil
 end
 
 local function try_components(player, class_names)
@@ -2336,14 +2585,23 @@ local function write_status()
 
     local controller = get_player_controller()
     local player = get_player()
+    local camera_valid, camera_location, camera_rotation, camera_fov = get_camera_snapshot(controller, player)
     if not player:IsValid() then
         handle:write(string.format(
-            '{\n  "player_valid": false,\n  "controller_valid": %s,\n  "bridge_version": "%s",\n  "hidden_registry_ready": %s,\n  "hidden_dispatch_ready": %s,\n  "chat_suppression_ready": %s,\n  "nearby_players": []\n}\n',
+            '{\n  "player_valid": false,\n  "controller_valid": %s,\n  "bridge_version": "%s",\n  "hidden_registry_ready": %s,\n  "hidden_dispatch_ready": %s,\n  "chat_suppression_ready": %s,\n  "camera_valid": %s,\n  "runtime_godmode": %s,\n  "runtime_inf_stamina": %s,\n  "runtime_weight_zero": %s,\n  "runtime_inf_ammo": %s,\n  "runtime_no_durability": %s,\n  "runtime_speed_multiplier": %.3f,\n  "runtime_jump_multiplier": %.3f,\n  "nearby_players": []\n}\n',
             tostring(controller:IsValid()),
             Version,
             tostring(HiddenRegistryReady),
             tostring(HiddenDispatchReady),
-            tostring(ChatSuppressionReady)
+            tostring(ChatSuppressionReady),
+            tostring(camera_valid),
+            tostring(Cheats.godmode),
+            tostring(Cheats.inf_stamina),
+            tostring(Cheats.weight_zero),
+            tostring(Cheats.inf_ammo),
+            tostring(Cheats.no_durability),
+            Cheats.speed_multiplier,
+            Cheats.jump_multiplier
         ))
         handle:close()
         return true
@@ -2353,15 +2611,30 @@ local function write_status()
     local nearby_players, nearby_total = build_nearby_player_rows(8)
     local nearby_players_json = format_rows_json(nearby_players)
     handle:write(string.format(
-        '{\n  "player_valid": true,\n  "controller_valid": %s,\n  "bridge_version": "%s",\n  "hidden_registry_ready": %s,\n  "hidden_dispatch_ready": %s,\n  "chat_suppression_ready": %s,\n  "position_x": %.3f,\n  "position_y": %.3f,\n  "position_z": %.3f,\n  "nearby_player_total": %d,\n  "nearby_players": %s\n}\n',
+        '{\n  "player_valid": true,\n  "controller_valid": %s,\n  "bridge_version": "%s",\n  "hidden_registry_ready": %s,\n  "hidden_dispatch_ready": %s,\n  "chat_suppression_ready": %s,\n  "camera_valid": %s,\n  "position_x": %.3f,\n  "position_y": %.3f,\n  "position_z": %.3f,\n  "camera_x": %.3f,\n  "camera_y": %.3f,\n  "camera_z": %.3f,\n  "camera_pitch": %.3f,\n  "camera_yaw": %.3f,\n  "camera_roll": %.3f,\n  "camera_fov": %.3f,\n  "runtime_godmode": %s,\n  "runtime_inf_stamina": %s,\n  "runtime_weight_zero": %s,\n  "runtime_inf_ammo": %s,\n  "runtime_no_durability": %s,\n  "runtime_speed_multiplier": %.3f,\n  "runtime_jump_multiplier": %.3f,\n  "nearby_player_total": %d,\n  "nearby_players": %s\n}\n',
         tostring(controller:IsValid()),
         Version,
         tostring(HiddenRegistryReady),
         tostring(HiddenDispatchReady),
         tostring(ChatSuppressionReady),
+        tostring(camera_valid),
         location.X,
         location.Y,
         location.Z,
+        camera_location and camera_location.X or location.X,
+        camera_location and camera_location.Y or location.Y,
+        camera_location and camera_location.Z or location.Z,
+        camera_rotation and camera_rotation.Pitch or 0.0,
+        camera_rotation and camera_rotation.Yaw or 0.0,
+        camera_rotation and camera_rotation.Roll or 0.0,
+        camera_fov or 90.0,
+        tostring(Cheats.godmode),
+        tostring(Cheats.inf_stamina),
+        tostring(Cheats.weight_zero),
+        tostring(Cheats.inf_ammo),
+        tostring(Cheats.no_durability),
+        Cheats.speed_multiplier,
+        Cheats.jump_multiplier,
         nearby_total,
         nearby_players_json
     ))

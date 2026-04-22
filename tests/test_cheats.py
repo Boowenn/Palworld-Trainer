@@ -203,6 +203,9 @@ class BridgeStatusTests(unittest.TestCase):
                                 "class_name": "BP_PlayerPawn_C",
                                 "location": "X=-10.0 Y=20.0 Z=30.0",
                                 "distance_meters": 42.5,
+                                "world_x": -10.0,
+                                "world_y": 20.0,
+                                "world_z": 30.0,
                             }
                         ],
                     }
@@ -217,6 +220,57 @@ class BridgeStatusTests(unittest.TestCase):
         self.assertEqual("BP_PlayerPawn_C", status.nearby_players[0].class_name)
         self.assertEqual("X=-10.0 Y=20.0 Z=30.0", status.nearby_players[0].location)
         self.assertAlmostEqual(42.5, status.nearby_players[0].distance_meters)
+        self.assertAlmostEqual(-10.0, status.nearby_players[0].world_x)
+        self.assertAlmostEqual(20.0, status.nearby_players[0].world_y)
+        self.assertAlmostEqual(30.0, status.nearby_players[0].world_z)
+
+    def test_read_status_parses_camera_and_runtime_state(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "status.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "player_valid": True,
+                        "camera_valid": True,
+                        "camera_x": 1.0,
+                        "camera_y": 2.0,
+                        "camera_z": 3.0,
+                        "camera_pitch": 4.0,
+                        "camera_yaw": 5.0,
+                        "camera_roll": 6.0,
+                        "camera_fov": 75.0,
+                        "runtime_godmode": True,
+                        "runtime_inf_stamina": True,
+                        "runtime_weight_zero": False,
+                        "runtime_inf_ammo": True,
+                        "runtime_no_durability": False,
+                        "runtime_speed_multiplier": 1.7,
+                        "runtime_jump_multiplier": 1.3,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            status = read_status(path)
+
+        self.assertTrue(status.camera_valid)
+        self.assertAlmostEqual(1.0, status.camera_x)
+        self.assertAlmostEqual(2.0, status.camera_y)
+        self.assertAlmostEqual(3.0, status.camera_z)
+        self.assertAlmostEqual(4.0, status.camera_pitch)
+        self.assertAlmostEqual(5.0, status.camera_yaw)
+        self.assertAlmostEqual(6.0, status.camera_roll)
+        self.assertAlmostEqual(75.0, status.camera_fov)
+        self.assertTrue(status.runtime_godmode)
+        self.assertTrue(status.runtime_inf_stamina)
+        self.assertFalse(status.runtime_weight_zero)
+        self.assertTrue(status.runtime_inf_ammo)
+        self.assertFalse(status.runtime_no_durability)
+        runtime_state = status.runtime_cheat_state()
+        self.assertTrue(runtime_state.godmode)
+        self.assertTrue(runtime_state.inf_stamina)
+        self.assertAlmostEqual(1.7, runtime_state.speed_multiplier)
+        self.assertAlmostEqual(1.3, runtime_state.jump_multiplier)
 
     def test_read_status_retries_transient_empty_read(self) -> None:
         with TemporaryDirectory() as tmp:

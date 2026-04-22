@@ -52,6 +52,12 @@ VK_ESCAPE = 0x1B
 CHAT_HELPER_FLAG = "--chat-helper"
 CHAT_HELPER_PAYLOAD_ENV = "PALWORLD_TRAINER_CHAT_HELPER_PAYLOAD"
 CHAT_HELPER_RESULT_ENV = "PALWORLD_TRAINER_CHAT_HELPER_RESULT"
+GWL_EXSTYLE = -20
+WS_EX_TRANSPARENT = 0x00000020
+WS_EX_TOOLWINDOW = 0x00000080
+WS_EX_LAYERED = 0x00080000
+WS_EX_NOACTIVATE = 0x08000000
+LWA_ALPHA = 0x00000002
 
 
 ULONG_PTR = ctypes.c_size_t
@@ -83,6 +89,22 @@ class HARDWAREINPUT(ctypes.Structure):
         ("uMsg", wintypes.DWORD),
         ("wParamL", wintypes.WORD),
         ("wParamH", wintypes.WORD),
+    )
+
+
+class POINT(ctypes.Structure):
+    _fields_ = (
+        ("x", wintypes.LONG),
+        ("y", wintypes.LONG),
+    )
+
+
+class RECT(ctypes.Structure):
+    _fields_ = (
+        ("left", wintypes.LONG),
+        ("top", wintypes.LONG),
+        ("right", wintypes.LONG),
+        ("bottom", wintypes.LONG),
     )
 
 
@@ -140,6 +162,21 @@ user32.GetClassNameW.restype = ctypes.c_int
 
 user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
 user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+user32.GetClientRect.argtypes = (wintypes.HWND, ctypes.POINTER(RECT))
+user32.GetClientRect.restype = wintypes.BOOL
+user32.ClientToScreen.argtypes = (wintypes.HWND, ctypes.POINTER(POINT))
+user32.ClientToScreen.restype = wintypes.BOOL
+user32.GetWindowLongW.argtypes = (wintypes.HWND, ctypes.c_int)
+user32.GetWindowLongW.restype = ctypes.c_long
+user32.SetWindowLongW.argtypes = (wintypes.HWND, ctypes.c_int, ctypes.c_long)
+user32.SetWindowLongW.restype = ctypes.c_long
+user32.SetLayeredWindowAttributes.argtypes = (
+    wintypes.HWND,
+    wintypes.DWORD,
+    wintypes.BYTE,
+    wintypes.DWORD,
+)
+user32.SetLayeredWindowAttributes.restype = wintypes.BOOL
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +315,48 @@ def is_game_running() -> bool:
     from . import memory
 
     return memory.find_process_id() is not None
+
+
+def get_window_client_rect(hwnd: int) -> tuple[int, int, int, int] | None:
+    """Return the client-area rect as ``(left, top, width, height)`` in screen space."""
+
+    if not hwnd or not user32.IsWindow(hwnd):
+        return None
+
+    rect = RECT()
+    if not user32.GetClientRect(hwnd, ctypes.byref(rect)):
+        return None
+
+    top_left = POINT(rect.left, rect.top)
+    bottom_right = POINT(rect.right, rect.bottom)
+    if not user32.ClientToScreen(hwnd, ctypes.byref(top_left)):
+        return None
+    if not user32.ClientToScreen(hwnd, ctypes.byref(bottom_right)):
+        return None
+
+    width = max(0, int(bottom_right.x - top_left.x))
+    height = max(0, int(bottom_right.y - top_left.y))
+    return int(top_left.x), int(top_left.y), width, height
+
+
+def get_palworld_window_client_rect() -> tuple[int, int, int, int] | None:
+    hwnd = find_palworld_window()
+    if not hwnd:
+        return None
+    return get_window_client_rect(hwnd)
+
+
+def make_window_clickthrough(hwnd: int) -> bool:
+    """Best-effort: make a trainer overlay window ignore mouse interaction."""
+
+    if not hwnd or not user32.IsWindow(hwnd):
+        return False
+
+    style = int(user32.GetWindowLongW(hwnd, GWL_EXSTYLE))
+    desired = style | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+    if desired != style:
+        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, desired)
+    return True
 
 
 # ---------------------------------------------------------------------------
