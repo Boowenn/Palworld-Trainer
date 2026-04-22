@@ -66,6 +66,33 @@ class CheatState:
 
 
 @dataclass
+class BridgeNearbyEntry:
+    name: str = ""
+    class_name: str = ""
+    location: str = ""
+    distance_meters: float = 0.0
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, object]) -> "BridgeNearbyEntry":
+        entry = cls()
+        name = payload.get("name")
+        if isinstance(name, str):
+            entry.name = name
+        class_name = payload.get("class_name")
+        if isinstance(class_name, str):
+            entry.class_name = class_name
+        location = payload.get("location")
+        if isinstance(location, str):
+            entry.location = location
+        distance = payload.get("distance_meters")
+        try:
+            entry.distance_meters = float(distance)
+        except (TypeError, ValueError):
+            entry.distance_meters = 0.0
+        return entry
+
+
+@dataclass
 class BridgeStatus:
     player_valid: bool = False
     controller_valid: bool = False
@@ -76,6 +103,7 @@ class BridgeStatus:
     position_x: float = 0.0
     position_y: float = 0.0
     position_z: float = 0.0
+    nearby_players: tuple[BridgeNearbyEntry, ...] = ()
 
     @classmethod
     def from_payload(cls, payload: dict[str, object]) -> "BridgeStatus":
@@ -104,6 +132,14 @@ class BridgeStatus:
                 setattr(status, key, float(value))
             except (TypeError, ValueError):
                 continue
+        nearby_players = payload.get("nearby_players")
+        if isinstance(nearby_players, list):
+            rows: list[BridgeNearbyEntry] = []
+            for raw_row in nearby_players:
+                if not isinstance(raw_row, dict):
+                    continue
+                rows.append(BridgeNearbyEntry.from_payload(raw_row))
+            status.nearby_players = tuple(rows)
         return status
 
 

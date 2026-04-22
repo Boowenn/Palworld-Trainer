@@ -1,7 +1,7 @@
 local UEHelpers = require("UEHelpers")
 
 local ModName = "PalworldTrainerBridge"
-local Version = "1.2.10"
+local Version = "1.2.11"
 local LastFindQuery = nil
 local LogWriteHealthy = true
 local LastLogFailureShown = false
@@ -370,6 +370,15 @@ local function safe_class_name(object)
     return "<unknown class>"
 end
 
+local function json_escape(text)
+    local value = tostring(text or "")
+    value = value:gsub("\\", "\\\\")
+    value = value:gsub('"', '\\"')
+    value = value:gsub("\r", "\\r")
+    value = value:gsub("\n", "\\n")
+    return value
+end
+
 local function build_rows(objects, limit)
     local rows = {}
     local player = get_player()
@@ -412,6 +421,25 @@ local function build_rows(objects, limit)
     end
 
     return rows, total
+end
+
+local function format_rows_json(rows)
+    if not rows or #rows == 0 then
+        return "[]"
+    end
+
+    local parts = {}
+    for _, row in ipairs(rows) do
+        local distance_text = row.distance_meters and string.format("%.1f", row.distance_meters) or "null"
+        table.insert(parts, string.format(
+            '    {"name":"%s","class_name":"%s","location":"%s","distance_meters":%s}',
+            json_escape(row.name),
+            json_escape(row.class_name),
+            json_escape(row.location),
+            distance_text
+        ))
+    end
+    return "[\n" .. table.concat(parts, ",\n") .. "\n  ]"
 end
 
 local function print_rows(title, rows, total)
@@ -493,9 +521,26 @@ local function print_world_snapshot()
     end
 end
 
-local function print_player_snapshot(limit)
+local function build_nearby_player_rows(limit)
+    local local_player = get_player()
+    local local_name = local_player:IsValid() and safe_name(local_player) or ""
+    local filtered = {}
     local players = UEHelpers.GetAllPlayers()
-    local rows, total = build_rows(players, limit)
+
+    for _, object in ipairs(players or {}) do
+        if object and object:IsValid() then
+            local object_name = safe_name(object)
+            if local_name == "" or object_name ~= local_name then
+                table.insert(filtered, object)
+            end
+        end
+    end
+
+    return build_rows(filtered, limit)
+end
+
+local function print_player_snapshot(limit)
+    local rows, total = build_nearby_player_rows(limit)
     print_rows("Nearby replicated players", rows, total)
 end
 
@@ -573,6 +618,7 @@ local TickCounter = 0
 local LastTogglesRead = 0
 local LastStatusWrite = 0
 local LastRequestId = nil
+local LastReferenceToggleSyncTick = 0
 local HiddenCommandNames = {
     "settime",
     "giveexp",
@@ -589,10 +635,51 @@ local HiddenCommandNames = {
     "spawn",
     "exp",
     "goto",
+    "godmode",
+    "infstam",
+    "infammo",
+    "nodur",
+    "unlockrecipes",
+    "giveallstatues",
+    "duplast",
 }
 local HiddenCommandLookup = {}
 for _, command_name in ipairs(HiddenCommandNames) do
     HiddenCommandLookup[command_name] = true
+end
+
+local ReferenceToggleCheatKeys = {
+    infammo = "inf_ammo",
+    nodur = "no_durability",
+}
+
+local ReferenceToggleAppliedState = {
+    infammo = false,
+    nodur = false,
+}
+
+local function desired_reference_toggle_state(command_name)
+    local cheat_key = ReferenceToggleCheatKeys[command_name]
+    if cheat_key == nil then
+        return nil
+    end
+    return Cheats[cheat_key] == true
+end
+
+local function note_reference_toggle_applied(command_name)
+    local desired = desired_reference_toggle_state(command_name)
+    if desired == nil then
+        return
+    end
+    ReferenceToggleAppliedState[command_name] = desired
+end
+
+local function reference_toggle_request_is_redundant(command_name)
+    local desired = desired_reference_toggle_state(command_name)
+    if desired == nil then
+        return false
+    end
+    return ReferenceToggleAppliedState[command_name] == desired
 end
 
 local function safe_get_prop(object, name)
@@ -2174,6 +2261,14 @@ local function run_hidden_commands(request)
     for line in commands_text:gmatch("[^\r\n]+") do
         local command_name, args_text, args = parse_hidden_command_line(line)
         if command_name ~= nil then
+            if reference_toggle_request_is_redundant(command_name) then
+                executed = executed + 1
+                log(string.format(
+                    "Hidden command '%s' skipped because bridge state already matches toggles.json.",
+                    tostring(command_name)
+                ))
+                goto continue
+            end
             local ok, error_message = execute_hidden_command(command_name, args_text, args)
             if not ok then
                 ok, error_message = execute_hidden_via_known_modules(command_name, args_text, args)
@@ -2187,14 +2282,49 @@ local function run_hidden_commands(request)
             if not ok then
                 return false, string.format("%s (%s)", command_name, tostring(error_message))
             end
+            note_reference_toggle_applied(command_name)
             executed = executed + 1
         end
+        ::continue::
     end
 
     if executed < 1 then
         return false, "no_valid_commands"
     end
     return true, tostring(executed)
+end
+
+local function sync_reference_toggle_commands()
+    if TickCounter - LastReferenceToggleSyncTick < 10 then
+        return
+    end
+
+    local pending = {}
+    for command_name, _cheat_key in pairs(ReferenceToggleCheatKeys) do
+        local desired = desired_reference_toggle_state(command_name)
+        if desired ~= nil and ReferenceToggleAppliedState[command_name] ~= desired then
+            table.insert(pending, "@!" .. command_name)
+        end
+    end
+    if #pending < 1 then
+        return
+    end
+
+    LastReferenceToggleSyncTick = TickCounter
+    local ok, detail = run_hidden_commands({
+        commands_text = table.concat(pending, "\n"),
+    })
+    if ok then
+        log(string.format(
+            "Auto-synced reference toggle commands from toggles.json: %s",
+            table.concat(pending, ", ")
+        ))
+    else
+        log(string.format(
+            "Auto-sync reference toggle commands failed: %s",
+            tostring(detail)
+        ))
+    end
 end
 
 local function write_status()
@@ -2208,7 +2338,7 @@ local function write_status()
     local player = get_player()
     if not player:IsValid() then
         handle:write(string.format(
-            '{\n  "player_valid": false,\n  "controller_valid": %s,\n  "bridge_version": "%s",\n  "hidden_registry_ready": %s,\n  "hidden_dispatch_ready": %s,\n  "chat_suppression_ready": %s\n}\n',
+            '{\n  "player_valid": false,\n  "controller_valid": %s,\n  "bridge_version": "%s",\n  "hidden_registry_ready": %s,\n  "hidden_dispatch_ready": %s,\n  "chat_suppression_ready": %s,\n  "nearby_players": []\n}\n',
             tostring(controller:IsValid()),
             Version,
             tostring(HiddenRegistryReady),
@@ -2220,8 +2350,10 @@ local function write_status()
     end
 
     local location = player:K2_GetActorLocation()
+    local nearby_players, nearby_total = build_nearby_player_rows(8)
+    local nearby_players_json = format_rows_json(nearby_players)
     handle:write(string.format(
-        '{\n  "player_valid": true,\n  "controller_valid": %s,\n  "bridge_version": "%s",\n  "hidden_registry_ready": %s,\n  "hidden_dispatch_ready": %s,\n  "chat_suppression_ready": %s,\n  "position_x": %.3f,\n  "position_y": %.3f,\n  "position_z": %.3f\n}\n',
+        '{\n  "player_valid": true,\n  "controller_valid": %s,\n  "bridge_version": "%s",\n  "hidden_registry_ready": %s,\n  "hidden_dispatch_ready": %s,\n  "chat_suppression_ready": %s,\n  "position_x": %.3f,\n  "position_y": %.3f,\n  "position_z": %.3f,\n  "nearby_player_total": %d,\n  "nearby_players": %s\n}\n',
         tostring(controller:IsValid()),
         Version,
         tostring(HiddenRegistryReady),
@@ -2229,7 +2361,9 @@ local function write_status()
         tostring(ChatSuppressionReady),
         location.X,
         location.Y,
-        location.Z
+        location.Z,
+        nearby_total,
+        nearby_players_json
     ))
     handle:close()
     return true
@@ -2366,6 +2500,7 @@ local function process_request()
             return
         end
 
+        pcall(read_toggles)
         local ok, detail = run_hidden_commands(request)
         if ok then
             log(string.format(
@@ -2557,6 +2692,7 @@ local function tick_apply_cheats()
         return
     end
 
+    pcall(sync_reference_toggle_commands)
     pcall(function() apply_godmode(player) end)
     pcall(function() apply_infinite_stamina(player) end)
     pcall(function() apply_weight_zero(player) end)

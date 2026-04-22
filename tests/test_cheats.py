@@ -190,6 +190,34 @@ class BridgeStatusTests(unittest.TestCase):
             self.assertAlmostEqual(status.position_y, 456.0)
             self.assertAlmostEqual(status.position_z, 789.25)
 
+    def test_read_status_parses_nearby_players(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "status.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "player_valid": True,
+                        "nearby_players": [
+                            {
+                                "name": "BP_PlayerPawn_C_214",
+                                "class_name": "BP_PlayerPawn_C",
+                                "location": "X=-10.0 Y=20.0 Z=30.0",
+                                "distance_meters": 42.5,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            status = read_status(path)
+
+        self.assertEqual(1, len(status.nearby_players))
+        self.assertEqual("BP_PlayerPawn_C_214", status.nearby_players[0].name)
+        self.assertEqual("BP_PlayerPawn_C", status.nearby_players[0].class_name)
+        self.assertEqual("X=-10.0 Y=20.0 Z=30.0", status.nearby_players[0].location)
+        self.assertAlmostEqual(42.5, status.nearby_players[0].distance_meters)
+
     def test_read_status_retries_transient_empty_read(self) -> None:
         with TemporaryDirectory() as tmp:
             path = Path(tmp) / "status.json"

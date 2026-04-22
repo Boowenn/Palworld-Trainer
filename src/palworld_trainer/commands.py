@@ -86,6 +86,22 @@ def teleport(x: float, y: float, z: float) -> str:
     return f"@!teleport {int(x)} {int(y)} {int(z)}"
 
 
+def toggle_godmode() -> str:
+    return "@!godmode"
+
+
+def toggle_inf_stamina() -> str:
+    return "@!infstam"
+
+
+def toggle_inf_ammo() -> str:
+    return "@!infammo"
+
+
+def toggle_no_durability() -> str:
+    return "@!nodur"
+
+
 def goto_player(player: str) -> str:
     return f"@!goto {player.strip() or '<player>'}"
 

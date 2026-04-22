@@ -21,6 +21,7 @@ from palworld_trainer import __version__  # noqa: E402
 from palworld_trainer import commands as cmd  # noqa: E402
 from palworld_trainer import game_control  # noqa: E402
 from palworld_trainer.app import TrainerApp  # noqa: E402
+from palworld_trainer.config import get_settings_path  # noqa: E402
 from palworld_trainer.reference_parity import (  # noqa: E402
     REFERENCE_ADD_PAL_TABS,
     REFERENCE_ITEM_TABS,
@@ -61,10 +62,46 @@ class LiveSmokeHarness:
         self.toggles_json = self.bridge_dir / "toggles.json"
         self.status_json = self.bridge_dir / "status.json"
         self.session_log = self.bridge_dir / "session.log"
+        self.settings_path = get_settings_path()
         self._case_context: dict[str, object] = {}
+        self._runtime_backups: dict[Path, str | None] = {
+            self.toggles_json: self._backup_text(self.toggles_json),
+            self.request_json: self._backup_text(self.request_json),
+            self.settings_path: self._backup_text(self.settings_path),
+        }
+
+    def _backup_text(self, path: Path) -> str | None:
+        if not path.exists():
+            return None
+        try:
+            return path.read_text(encoding="utf-8")
+        except OSError:
+            return None
+
+    def _restore_text(self, path: Path, content: str | None) -> None:
+        try:
+            if content is None:
+                if path.exists():
+                    path.unlink()
+                return
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        except OSError:
+            return
 
     def bridge_version(self) -> str:
         return str(self.app._read_bridge_status().bridge_version or "")
+
+    def world_ready(self) -> bool:
+        status = self.app._read_bridge_status()
+        return bool(
+            status.player_valid
+            and status.controller_valid
+            and (status.hidden_dispatch_ready or self.hidden_dispatch_mode() != "none")
+        )
+
+    def wait_for_world_ready(self, timeout: float = 12.0) -> bool:
+        return self.wait_for(self.world_ready, timeout=timeout, step=0.2)
 
     def bridge_supports_hidden_commands(self) -> bool:
         return self.app._bridge_supports_hidden_commands()
@@ -85,6 +122,9 @@ class LiveSmokeHarness:
                 self.root.destroy()
             except Exception:
                 pass
+        finally:
+            for path, content in self._runtime_backups.items():
+                self._restore_text(path, content)
 
     def pump(self, seconds: float = 0.2) -> None:
         deadline = time.time() + seconds
@@ -140,6 +180,9 @@ class LiveSmokeHarness:
     def result_text(self) -> str:
         return str(self.app.result_label.cget("text"))
 
+    def text_widget_text(self, widget: tk.Text) -> str:
+        return widget.get("1.0", "end").strip()
+
     def run_case(
         self,
         group: str,
@@ -149,6 +192,28 @@ class LiveSmokeHarness:
         *,
         settle: float = 0.35,
     ) -> TestResult:
+        world_groups = {
+            "common",
+            "build",
+            "character",
+            "items",
+            "pals",
+            "pal_edit",
+            "online_pal",
+            "coords",
+            "online",
+        }
+        if group in world_groups and not self.wait_for_world_ready():
+            return TestResult(
+                group,
+                name,
+                False,
+                "world/bridge not ready before case",
+                [
+                    f"status={ascii(self.json_obj(self.status_json))}",
+                    f"dispatch_mode={self.hidden_dispatch_mode()}",
+                ],
+            )
         before_result = self.result_text()
         self._case_context = {
             "result_text": before_result,
@@ -410,30 +475,62 @@ class LiveSmokeHarness:
             return True, f"mem attached={expected}", evidence
         return False, f"mem attached expected {expected} got {attached}", evidence
 
+    def verify_reference_toggle_shortcut(
+        self,
+        command_text: str,
+        toggle_key: str,
+        *,
+        timeout: float = 8.0,
+    ) -> tuple[bool, str, list[str]]:
+        ok, details, evidence = self.verify_hidden_command_delivery(
+            [command_text],
+            timeout=timeout,
+        )
+        toggle_data = self.json_obj(self.toggles_json)
+        expected_value = getattr(self.app.cheat_state, toggle_key)
+        evidence.extend(
+            [
+                f"toggle_key={toggle_key}",
+                f"toggle_expected={expected_value!r}",
+                f"toggle_actual={toggle_data.get(toggle_key)!r}",
+            ]
+        )
+        if not ok:
+            return False, details, evidence
+        if toggle_data.get(toggle_key) != expected_value:
+            return False, f"{toggle_key} toggle file mismatch", evidence
+        return True, f"{toggle_key} shortcut synced", evidence
+
     def select_first_item_search(self, query: str) -> None:
         self.app.item_search_var.set(query)
-        self.pump(0.25)
+        self.wait_for(lambda: self.app.item_listbox.size() > 0, timeout=2.0)
+        self.pump(0.15)
         self.app.item_listbox.selection_clear(0, "end")
         if self.app.item_listbox.size() > 0:
             self.app.item_listbox.selection_set(0)
             self.app.item_listbox.activate(0)
             self.app.item_listbox.event_generate("<<ListboxSelect>>")
+            self.pump(0.15)
 
     def select_first_pal_search(self, query: str) -> None:
         self.app.pal_search_var.set(query)
-        self.pump(0.25)
+        self.wait_for(lambda: self.app.pal_listbox.size() > 0, timeout=2.0)
+        self.pump(0.15)
         self.app.pal_listbox.selection_clear(0, "end")
         if self.app.pal_listbox.size() > 0:
             self.app.pal_listbox.selection_set(0)
             self.app.pal_listbox.activate(0)
             self.app.pal_listbox.event_generate("<<ListboxSelect>>")
+            self.pump(0.15)
 
     def select_first_tech_search(self, query: str) -> None:
         self.app.tech_search_var.set(query)
-        self.pump(0.25)
+        self.wait_for(lambda: self.app.tech_listbox.size() > 0, timeout=2.0)
+        self.pump(0.15)
         self.app.tech_listbox.selection_clear(0, "end")
         if self.app.tech_listbox.size() > 0:
             self.app.tech_listbox.selection_set(0)
+            self.pump(0.15)
 
     def select_first_subset_search(
         self,
@@ -444,12 +541,14 @@ class LiveSmokeHarness:
         search_var = getattr(self.app, search_var_name)
         listbox = getattr(self.app, listbox_attr)
         search_var.set(query)
-        self.pump(0.25)
+        self.wait_for(lambda: listbox.size() > 0, timeout=2.0)
+        self.pump(0.15)
         listbox.selection_clear(0, "end")
         if listbox.size() > 0:
             listbox.selection_set(0)
             listbox.activate(0)
             listbox.event_generate("<<ListboxSelect>>")
+            self.pump(0.15)
 
     def select_notebook_tab(self, notebook: ttk.Notebook, text: str) -> None:
         for tab_id in notebook.tabs():
@@ -481,6 +580,7 @@ def main() -> int:
     results: list[TestResult] = []
     harness = LiveSmokeHarness()
     try:
+        initial_world_ready = harness.wait_for_world_ready(timeout=20.0)
         status = harness.json_obj(harness.status_json)
         current_pos = (
             float(status.get("position_x", 0.0)),
@@ -503,11 +603,13 @@ def main() -> int:
             harness.app._refresh_status,
             lambda: (
                 bool(harness.app.report.game_root_exists)
-                and harness.app._read_bridge_status().player_valid
+                and initial_world_ready
+                and harness.wait_for_world_ready(timeout=6.0)
                 and harness.hidden_dispatch_mode() != "none",
                 "status refresh complete",
                 [
                     f"game_root={ascii(str(harness.app.report.game_root))}",
+                    f"initial_world_ready={initial_world_ready}",
                     f"player_valid={harness.app._read_bridge_status().player_valid}",
                     f"dispatch_mode={harness.hidden_dispatch_mode()}",
                     f"bridge_version={harness.bridge_version()}",
@@ -571,14 +673,20 @@ def main() -> int:
             "common",
             "no_durability",
             harness.app._on_enable_no_durability_shortcut,
-            lambda: harness.verify_toggles({"no_durability": True}),
+            lambda: harness.verify_reference_toggle_shortcut(
+                cmd.toggle_no_durability(),
+                "no_durability",
+            ),
             settle=0.6,
         )
         add(
             "common",
             "inf_ammo",
             harness.app._on_enable_inf_ammo_shortcut,
-            lambda: harness.verify_toggles({"inf_ammo": True}),
+            lambda: harness.verify_reference_toggle_shortcut(
+                cmd.toggle_inf_ammo(),
+                "inf_ammo",
+            ),
             settle=0.6,
         )
         add(
@@ -607,14 +715,14 @@ def main() -> int:
             "build",
             "unlockrecipes_shortcut",
             harness.app._on_unlock_recipes_shortcut,
-            lambda: harness.verify_hidden_command_delivery([cmd.unlock_all_tech()]),
+            lambda: harness.verify_hidden_command_delivery([cmd.unlock_recipes()]),
             settle=0.6,
         )
         add(
             "build",
             "giveallstatues_shortcut",
             harness.app._on_give_all_statues_shortcut,
-            lambda: harness.verify_hidden_command_delivery([cmd.giveme("Relic", 999)]),
+            lambda: harness.verify_hidden_command_delivery([cmd.give_all_statues()]),
             settle=0.6,
         )
 
@@ -1150,6 +1258,52 @@ def main() -> int:
             lambda: (harness.app.online_stamina_var.set(True), harness.app._apply_online_stamina_toggle()),
             lambda: harness.verify_toggles({"inf_stamina": True}),
             settle=0.5,
+        )
+        add(
+            "online",
+            "esp_refresh",
+            harness.app._refresh_esp_views,
+            lambda: (
+                bool(harness.text_widget_text(harness.app.online_esp_text))
+                and (
+                    "玩家" in harness.text_widget_text(harness.app.online_esp_text)
+                    or "采集点" in harness.text_widget_text(harness.app.online_esp_text)
+                ),
+                "esp panel refreshed",
+                [f"esp_text={ascii(harness.text_widget_text(harness.app.online_esp_text))}"],
+            ),
+            settle=0.25,
+        )
+        add(
+            "online",
+            "esp_overlay_open",
+            harness.app._open_esp_overlay,
+            lambda: (
+                harness.app._esp_overlay_window is not None
+                and harness.app._esp_overlay_window.winfo_exists()
+                and harness.app._esp_overlay_text is not None
+                and bool(harness.text_widget_text(harness.app._esp_overlay_text)),
+                "esp overlay opened",
+                [
+                    f"overlay_exists={bool(harness.app._esp_overlay_window and harness.app._esp_overlay_window.winfo_exists())}",
+                    f"overlay_text={ascii(harness.text_widget_text(harness.app._esp_overlay_text) if harness.app._esp_overlay_text is not None else '')}",
+                ],
+            ),
+            settle=0.25,
+        )
+        add(
+            "online",
+            "esp_overlay_close",
+            harness.app._close_esp_overlay,
+            lambda: (
+                harness.app._esp_overlay_window is None and harness.app._esp_overlay_text is None,
+                "esp overlay closed",
+                [
+                    f"overlay_window={harness.app._esp_overlay_window!r}",
+                    f"overlay_text={harness.app._esp_overlay_text!r}",
+                ],
+            ),
+            settle=0.2,
         )
 
         existing_root = harness.app.game_root_var.get()

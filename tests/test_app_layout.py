@@ -8,7 +8,8 @@ from unittest import mock
 from tests import _bootstrap  # noqa: F401
 from palworld_trainer import commands as cmd
 from palworld_trainer.app import TAB_NAMES, TrainerApp
-from palworld_trainer.cheats import BridgeStatus
+from palworld_trainer.cheats import BridgeNearbyEntry, BridgeStatus, CheatState
+from palworld_trainer.coord_presets import CoordPreset
 from palworld_trainer.reference_parity import (
     REFERENCE_ADD_PAL_DETAIL_TABS,
     REFERENCE_ADD_PAL_TABS,
@@ -83,6 +84,7 @@ class AppLayoutTests(unittest.TestCase):
             self.assertTrue(hasattr(app, "coord_item_listbox"))
             self.assertTrue(hasattr(app, "common_ref_godmode_var"))
             self.assertTrue(hasattr(app, "online_fly_var"))
+            self.assertTrue(hasattr(app, "online_esp_text"))
             self.assertTrue(hasattr(app, "mem_attach_label"))
             self.assertTrue(hasattr(app, "pal_skill_listbox"))
             self.assertTrue(hasattr(app, "pal_passive_listbox"))
@@ -168,13 +170,17 @@ class AppLayoutTests(unittest.TestCase):
         root = _make_root()
         try:
             app = TrainerApp(root, "test")
+            app.bridge_dura_var.set(False)
+            app.bridge_ammo_var.set(False)
             with mock.patch.object(app, "_apply_player_cheats") as apply_cheats:
                 app._on_enable_no_durability_shortcut()
                 app._on_enable_inf_ammo_shortcut()
+                app._on_enable_no_durability_shortcut()
+                app._on_enable_inf_ammo_shortcut()
 
-            self.assertTrue(app.bridge_dura_var.get())
-            self.assertTrue(app.bridge_ammo_var.get())
-            self.assertEqual(2, apply_cheats.call_count)
+            self.assertFalse(app.bridge_dura_var.get())
+            self.assertFalse(app.bridge_ammo_var.get())
+            self.assertEqual(4, apply_cheats.call_count)
         finally:
             root.destroy()
 
@@ -188,10 +194,49 @@ class AppLayoutTests(unittest.TestCase):
 
             self.assertEqual(
                 [
-                    mock.call([cmd.unlock_all_tech()], label="解锁全部配方"),
-                    mock.call([cmd.giveme("Relic", 999)], label="给满绿胖子像"),
+                    mock.call([cmd.unlock_recipes()], label="解锁全部配方"),
+                    mock.call([cmd.give_all_statues()], label="给满绿胖子像"),
                 ],
                 dispatch.call_args_list,
+            )
+        finally:
+            root.destroy()
+
+    def test_apply_player_cheats_syncs_reference_toggle_commands(self) -> None:
+        root = _make_root()
+        try:
+            app = TrainerApp(root, "test")
+            app.cheat_state = CheatState()
+            app.bridge_godmode_var.set(True)
+            app.bridge_stamina_var.set(True)
+            app.bridge_weight_var.set(False)
+            app.bridge_ammo_var.set(True)
+            app.bridge_dura_var.set(True)
+            app.bridge_speed_var.set("1")
+            app.bridge_jump_var.set("1")
+
+            with (
+                mock.patch.object(app, "_ensure_player_bridge", return_value=(True, "ok")),
+                mock.patch.object(app, "_bridge_toggles_path", return_value=mock.Mock()),
+                mock.patch("palworld_trainer.app.write_toggles", return_value=(True, "ok")),
+                mock.patch.object(app, "_hidden_command_block_reason", return_value=None),
+                mock.patch.object(
+                    app,
+                    "_execute_hidden_commands",
+                    return_value=(True, "ok", "bridge"),
+                ) as execute_hidden,
+                mock.patch.object(app, "_refresh_player_bridge_status"),
+                mock.patch.object(app, "_show_result"),
+            ):
+                app._apply_player_cheats()
+
+            execute_hidden.assert_called_once_with(
+                [
+                    cmd.toggle_godmode(),
+                    cmd.toggle_inf_stamina(),
+                    cmd.toggle_inf_ammo(),
+                    cmd.toggle_no_durability(),
+                ]
             )
         finally:
             root.destroy()
@@ -220,6 +265,61 @@ class AppLayoutTests(unittest.TestCase):
             assert state is not None
             self.assertTrue(state.inf_ammo)
             self.assertTrue(state.no_durability)
+        finally:
+            root.destroy()
+
+    def test_refresh_esp_views_renders_players_and_static_hits(self) -> None:
+        root = _make_root()
+        try:
+            app = TrainerApp(root, "test")
+            app._coord_entries = (
+                CoordPreset(group="帕鲁蛋", name="测试蛋", x=100.0, y=0.0, z=0.0),
+                CoordPreset(group="宝箱", name="测试宝箱", x=200.0, y=0.0, z=0.0),
+            )
+            status = BridgeStatus(
+                player_valid=True,
+                controller_valid=True,
+                position_x=0.0,
+                position_y=0.0,
+                position_z=0.0,
+                nearby_players=(
+                    BridgeNearbyEntry(
+                        name="BP_PlayerPawn_C_12",
+                        class_name="BP_PlayerPawn_C",
+                        location="(100,0,0)",
+                        distance_meters=1.0,
+                    ),
+                ),
+            )
+            with mock.patch.object(app, "_read_bridge_status", return_value=status):
+                app._refresh_esp_views()
+
+            text = app.online_esp_text.get("1.0", "end")
+            self.assertIn("BP_PlayerPawn_C_12", text)
+            self.assertIn("测试蛋", text)
+            self.assertIn("测试宝箱", text)
+        finally:
+            root.destroy()
+
+    def test_esp_overlay_open_and_close_are_safe(self) -> None:
+        root = _make_root()
+        try:
+            app = TrainerApp(root, "test")
+            with mock.patch.object(
+                app,
+                "_read_bridge_status",
+                return_value=BridgeStatus(player_valid=True, controller_valid=True),
+            ):
+                app._open_esp_overlay()
+
+            assert app._esp_overlay_window is not None
+            self.assertTrue(app._esp_overlay_window.winfo_exists())
+            self.assertIsNotNone(app._esp_overlay_text)
+
+            app._close_esp_overlay()
+
+            self.assertIsNone(app._esp_overlay_window)
+            self.assertIsNone(app._esp_overlay_text)
         finally:
             root.destroy()
 

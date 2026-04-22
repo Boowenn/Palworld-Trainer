@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import json
 from queue import Empty, SimpleQueue
@@ -27,6 +28,7 @@ from .catalog import (
 from .cheats import (
     BridgeStatus,
     CheatState,
+    describe_state,
     read_status,
     read_toggles,
     request_path_for,
@@ -114,6 +116,24 @@ PAL_EDIT_MEMORY_SLOTS: tuple[tuple[str, float, str], ...] = (
     ("饥饿度", 100.0, "f32"),
     ("心情", 100.0, "f32"),
 )
+
+REFERENCE_TOGGLE_COMMANDS: tuple[tuple[str, str, Callable[[], str]], ...] = (
+    ("godmode", "无敌/无视伤害判定", cmd.toggle_godmode),
+    ("inf_stamina", "无限体力", cmd.toggle_inf_stamina),
+    ("inf_ammo", "无限弹药", cmd.toggle_inf_ammo),
+    ("no_durability", "耐久度不减", cmd.toggle_no_durability),
+)
+
+ESP_STATIC_CATEGORY_RULES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("eggs", "帕鲁蛋", ("蛋",)),
+    ("chests", "宝箱", ("宝箱",)),
+    ("statues", "翠叶鼠雕像", ("雕像",)),
+    ("notes", "漂流者手记", ("手记", "漂流者")),
+)
+
+ESP_OVERLAY_REFRESH_MS = 900
+ESP_MAX_PLAYER_RESULTS = 8
+ESP_MAX_STATIC_RESULTS = 18
 
 
 def _parse_version_tuple(text: str) -> tuple[int, ...]:
@@ -206,6 +226,9 @@ class TrainerApp:
         self._coord_entry_by_label = {entry.label: entry for entry in self._coord_entries}
         self._current_coord_results: list[CoordPreset] = []
         self._result_clear_job: str | None = None
+        self._esp_overlay_window: tk.Toplevel | None = None
+        self._esp_overlay_text: tk.Text | None = None
+        self._esp_overlay_job: str | None = None
 
         # Direct memory-attach engine — no UE4SS, no in-game mod needed.
         # The engine owns a ticker thread that freezes enabled slots every
@@ -722,6 +745,11 @@ class TrainerApp:
                 (
                     "参考修改器对齐进行中",
                     "",
+                    "本轮更新：",
+                    "1. 常用功能里的“无限弹药 / 耐久度不减”改成 bridge 按 toggles.json 自动同步，重开游戏后不会再丢状态。",
+                    "2. *透视 页补成可用链路：附近玩家来自当前会话，蛋 / 宝箱 / 雕像 / 手记来自参考坐标库，并支持悬浮面板。",
+                    "3. live smoke 现在会备份并恢复 toggles.json / request.json / settings.json，回归不再污染你的实际配置。",
+                    "",
                     "本轮已完成：",
                     "1. 顶层页签顺序和命名开始按 chenstack 参考修改器对齐。",
                     "2. 主流程不再依赖可见聊天命令输入。",
@@ -1153,6 +1181,21 @@ class TrainerApp:
             self.online_stamina_var.set(self.cheat_state.inf_stamina)
         if hasattr(self, "online_speed_var"):
             self.online_speed_var.set(f"{self.cheat_state.speed_multiplier:g}")
+        self._refresh_common_shortcut_buttons()
+        if hasattr(self, "online_esp_text"):
+            self._refresh_esp_views()
+
+    def _refresh_common_shortcut_buttons(self) -> None:
+        if hasattr(self, "common_ref_dura_button"):
+            text = "耐久度不减：开" if self.cheat_state.no_durability else "耐久度不减：关"
+            self.common_ref_dura_button.configure(text=text)
+        if hasattr(self, "common_ref_ammo_button"):
+            text = "无限弹药：开" if self.cheat_state.inf_ammo else "无限弹药：关"
+            self.common_ref_ammo_button.configure(text=text)
+        if hasattr(self, "common_ref_state_label"):
+            self.common_ref_state_label.configure(
+                text=f"当前常驻增强：{describe_state(self.cheat_state)}",
+            )
 
     def _coord_search_entries(self) -> list[CoordPreset]:
         if hasattr(self, "coord_search_var") and self.coord_search_var.get().strip():
@@ -1492,28 +1535,23 @@ class TrainerApp:
             commands_text="\n".join(normalized),
         )
 
-    def _dispatch_hidden_commands(self, commands: list[str], *, label: str) -> None:
+    def _execute_hidden_commands(self, commands: list[str]) -> tuple[bool, str, str]:
         normalized = [
             cmd.sanitize_command(command)
             for command in commands
             if command and command.strip()
         ]
         if not normalized:
-            return
+            return False, "没有可发送的隐藏命令。", "none"
 
         block_reason = self._hidden_command_block_reason()
         if block_reason is not None:
-            self._show_result(f"{label} 当前不能执行：{block_reason}", ok=False)
-            return
+            return False, block_reason, "none"
 
         dispatch_mode = self._hidden_command_dispatch_mode()
         if dispatch_mode == "bridge":
             ok, message = self._write_bridge_hidden_commands(normalized)
-            if ok:
-                self._show_result(f"已提交给 bridge 执行：{label}", ok=True, pending=True)
-            else:
-                self._show_result(f"{label} 发送失败：{message}", ok=False)
-            return
+            return ok, message, dispatch_mode
 
         if dispatch_mode == "fallback":
             restore_focus = True
@@ -1526,27 +1564,65 @@ class TrainerApp:
                 restore_focus=restore_focus,
             )
             if results and all(result.ok for result in results):
-                self._show_result(f"已按参考版兼容模式执行：{label}", ok=True)
-            else:
-                reason = results[-1].message if results else "没有发送任何命令。"
-                self._show_result(f"{label} 兼容模式发送失败：{reason}", ok=False)
-            return
+                return True, "compatibility", dispatch_mode
+            reason = results[-1].message if results else "没有发送任何命令。"
+            return False, reason, dispatch_mode
 
         if self._bridge_runtime_ready():
             version = self._read_bridge_status().bridge_version or "未知版本"
-            self._show_result(
+            return (
+                False,
                 (
-                    f"{label} 当前不能执行：桥接模块版本是 {version}，"
+                    f"桥接模块版本是 {version}，"
                     "原生隐藏指令不可用，参考版兼容模式也不可用。"
                 ),
-                ok=False,
+                dispatch_mode,
             )
+
+        return (
+            False,
+            "需要先让增强模块载入当前游戏会话后再使用；bridge 与兼容链路都未就绪。",
+            dispatch_mode,
+        )
+
+    def _dispatch_hidden_commands(self, commands: list[str], *, label: str) -> None:
+        normalized = [
+            cmd.sanitize_command(command)
+            for command in commands
+            if command and command.strip()
+        ]
+        if not normalized:
             return
 
-        self._show_result(
-            f"{label} 需要先让增强模块载入当前游戏会话后再使用；bridge 与兼容链路都未就绪。",
-            ok=False,
-        )
+        ok, message, dispatch_mode = self._execute_hidden_commands(normalized)
+        if ok and dispatch_mode == "bridge":
+            self._show_result(f"已提交给 bridge 执行：{label}", ok=True, pending=True)
+            return
+        if ok and dispatch_mode == "fallback":
+            self._show_result(f"已按参考版兼容模式执行：{label}", ok=True)
+            return
+        if dispatch_mode == "bridge":
+            self._show_result(f"{label} 发送失败：{message}", ok=False)
+            return
+        if dispatch_mode == "fallback":
+            self._show_result(f"{label} 兼容模式发送失败：{message}", ok=False)
+            return
+        self._show_result(f"{label} 当前不能执行：{message}", ok=False)
+
+    def _reference_toggle_commands_for_state_change(
+        self,
+        before: CheatState,
+        after: CheatState,
+    ) -> tuple[list[str], list[str]]:
+        commands: list[str] = []
+        labels: list[str] = []
+        for field_name, label, command_factory in REFERENCE_TOGGLE_COMMANDS:
+            if getattr(before, field_name) == getattr(after, field_name):
+                continue
+            commands.append(command_factory())
+            enabled = bool(getattr(after, field_name))
+            labels.append(f"{label}{'开启' if enabled else '关闭'}")
+        return commands, labels
 
     def _collect_player_cheat_state_impl(self) -> CheatState | None:
         try:
@@ -1575,6 +1651,7 @@ class TrainerApp:
         state = self._collect_player_cheat_state()
         if state is None:
             return
+        previous_state = self.cheat_state
 
         ok, message = self._ensure_player_bridge()
         if not ok:
@@ -1594,6 +1671,34 @@ class TrainerApp:
         self.cheat_state = state
         self._sync_player_cheat_controls()
         self._refresh_player_bridge_status()
+        toggle_commands, toggle_labels = self._reference_toggle_commands_for_state_change(
+            previous_state,
+            state,
+        )
+        if toggle_commands and self._hidden_command_block_reason() is None:
+            sync_ok, sync_message, sync_mode = self._execute_hidden_commands(toggle_commands)
+            if sync_ok and sync_mode == "bridge":
+                self._show_result(
+                    "玩家增强状态已写入，并已同步参考版开关："
+                    + " / ".join(toggle_labels),
+                    ok=True,
+                    pending=True,
+                )
+                return
+            if sync_ok and sync_mode == "fallback":
+                self._show_result(
+                    "玩家增强状态已写入，并已同步参考版开关："
+                    + " / ".join(toggle_labels),
+                    ok=True,
+                )
+                return
+            if sync_mode in {"bridge", "fallback"}:
+                self._show_result(
+                    "玩家增强状态已写入，但参考版开关同步失败："
+                    + sync_message,
+                    ok=False,
+                )
+                return
         if self._bridge_runtime_ready():
             self._show_result("玩家增强状态已写入并等待桥接脚本持续应用。", ok=True)
         else:
@@ -3346,24 +3451,22 @@ class TrainerApp:
         )
 
     def _on_enable_no_durability_shortcut(self) -> None:
-        self.bridge_dura_var.set(True)
+        self.bridge_dura_var.set(not bool(self.bridge_dura_var.get()))
         self._apply_player_cheats()
-        self._show_result("已启用：耐久度不减", ok=True)
 
     def _on_enable_inf_ammo_shortcut(self) -> None:
-        self.bridge_ammo_var.set(True)
+        self.bridge_ammo_var.set(not bool(self.bridge_ammo_var.get()))
         self._apply_player_cheats()
-        self._show_result("已启用：无限弹药", ok=True)
 
     def _on_unlock_recipes_shortcut(self) -> None:
         self._dispatch_hidden_commands(
-            [cmd.unlock_all_tech()],
+            [cmd.unlock_recipes()],
             label="解锁全部配方",
         )
 
     def _on_give_all_statues_shortcut(self) -> None:
         self._dispatch_hidden_commands(
-            [cmd.giveme("Relic", 999)],
+            [cmd.give_all_statues()],
             label="给满绿胖子像",
         )
 
@@ -4769,18 +4872,20 @@ class TrainerApp:
 
         command_row = ttk.Frame(supported)
         command_row.pack(fill="x", pady=(6, 6))
-        ttk.Button(
+        self.common_ref_dura_button = ttk.Button(
             command_row,
-            text="耐久度不减",
+            text="耐久度不减：关",
             style="Quiet.TButton",
             command=self._on_enable_no_durability_shortcut,
-        ).pack(side="left", padx=(0, 6))
-        ttk.Button(
+        )
+        self.common_ref_dura_button.pack(side="left", padx=(0, 6))
+        self.common_ref_ammo_button = ttk.Button(
             command_row,
-            text="无限弹药",
+            text="无限弹药：关",
             style="Quiet.TButton",
             command=self._on_enable_inf_ammo_shortcut,
-        ).pack(side="left", padx=(0, 6))
+        )
+        self.common_ref_ammo_button.pack(side="left", padx=(0, 6))
         ttk.Button(
             command_row,
             text="解锁全部配方",
@@ -4827,7 +4932,16 @@ class TrainerApp:
             style="Status.TLabel",
             wraplength=860,
             justify="left",
-        ).pack(anchor="w")
+        ).pack(anchor="w", pady=(0, 4))
+        self.common_ref_state_label = ttk.Label(
+            tab,
+            text="当前常驻增强：未启用任何增强",
+            style="Status.TLabel",
+            wraplength=860,
+            justify="left",
+        )
+        self.common_ref_state_label.pack(anchor="w")
+        self._refresh_common_shortcut_buttons()
 
     def _build_tech_tab(self) -> None:
         tab = ttk.Frame(self.notebook, padding=16)
@@ -5267,6 +5381,8 @@ class TrainerApp:
         self.common_ref_godmode_var.set(False)
         self.common_ref_stamina_var.set(False)
         self.common_ref_weight_var.set(False)
+        self.bridge_ammo_var.set(False)
+        self.bridge_dura_var.set(False)
         self.bridge_speed_var.set("1")
         self.bridge_jump_var.set("1")
         self._apply_reference_common_cheats()
@@ -5378,11 +5494,73 @@ class TrainerApp:
 
         ttk.Label(
             esp_tab,
-            text="*透视：当前开源版还没有稳定接出参考版的透视/ESP 链路，所以这一页先只保留结构，不误导成可用功能。",
+            text=(
+                "*透视：这一版先把稳定可测的链路接起来。"
+                "玩家列表来自当前游戏会话，蛋/宝箱/翠叶鼠雕像/漂流者手记来自参考坐标库，"
+                "可直接在页内刷新，也可打开悬浮面板贴在游戏上方。"
+            ),
             style="Status.TLabel",
             wraplength=820,
             justify="left",
-        ).pack(anchor="w")
+        ).pack(anchor="w", pady=(0, 8))
+
+        control_row = ttk.Frame(esp_tab)
+        control_row.pack(fill="x", pady=(0, 8))
+        self.esp_show_players_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(control_row, text="玩家", variable=self.esp_show_players_var).pack(
+            side="left", padx=(0, 8)
+        )
+        self.esp_show_eggs_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(control_row, text="帕鲁蛋", variable=self.esp_show_eggs_var).pack(
+            side="left", padx=(0, 8)
+        )
+        self.esp_show_chests_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(control_row, text="宝箱", variable=self.esp_show_chests_var).pack(
+            side="left", padx=(0, 8)
+        )
+        self.esp_show_statues_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(control_row, text="雕像", variable=self.esp_show_statues_var).pack(
+            side="left", padx=(0, 8)
+        )
+        self.esp_show_notes_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(control_row, text="手记", variable=self.esp_show_notes_var).pack(side="left")
+
+        action_row = ttk.Frame(esp_tab)
+        action_row.pack(fill="x", pady=(0, 8))
+        ttk.Label(action_row, text="范围（米）").pack(side="left")
+        self.esp_distance_var = tk.StringVar(value="350")
+        ttk.Entry(action_row, textvariable=self.esp_distance_var, width=8).pack(side="left", padx=(6, 12))
+        ttk.Button(
+            action_row,
+            text="刷新透视",
+            style="Quiet.TButton",
+            command=self._refresh_esp_views,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            action_row,
+            text="打开悬浮面板",
+            style="Big.TButton",
+            command=self._open_esp_overlay,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            action_row,
+            text="关闭悬浮面板",
+            style="Quiet.TButton",
+            command=self._close_esp_overlay,
+        ).pack(side="left")
+
+        self.online_esp_text = tk.Text(
+            esp_tab,
+            height=16,
+            wrap="word",
+            font=("Microsoft YaHei UI", 10),
+        )
+        self.online_esp_text.pack(fill="both", expand=True)
+        self.online_esp_text.insert(
+            "1.0",
+            "进入世界后点“刷新透视”，这里会显示附近玩家和参考坐标库里的采集点。",
+        )
+        self.online_esp_text.configure(state="disabled")
 
     def _toggle_online_fly(self) -> None:
         enabled = not bool(self.online_fly_var.get())
@@ -5393,12 +5571,198 @@ class TrainerApp:
         self.bridge_stamina_var.set(bool(self.online_stamina_var.get()))
         self._apply_player_cheats()
 
+    def _esp_search_radius_meters(self) -> float:
+        raw = self.esp_distance_var.get().strip() if hasattr(self, "esp_distance_var") else ""
+        try:
+            value = float(raw)
+        except ValueError:
+            value = 350.0
+        value = max(50.0, min(2500.0, value))
+        if hasattr(self, "esp_distance_var"):
+            self.esp_distance_var.set(f"{value:g}")
+        return value
+
+    def _esp_selected_static_categories(self) -> list[str]:
+        selected: list[str] = []
+        for key, _label, _tokens in ESP_STATIC_CATEGORY_RULES:
+            var_name = f"esp_show_{key}_var"
+            var = getattr(self, var_name, None)
+            if isinstance(var, tk.BooleanVar) and var.get():
+                selected.append(key)
+        return selected
+
+    def _esp_entry_matches_category(self, entry: CoordPreset, category_key: str) -> bool:
+        haystack = f"{entry.group} {entry.name}"
+        for key, _label, tokens in ESP_STATIC_CATEGORY_RULES:
+            if key != category_key:
+                continue
+            return any(token in haystack for token in tokens)
+        return False
+
+    def _format_esp_object_name(self, raw_name: str) -> str:
+        text = raw_name.strip()
+        if not text:
+            return "<unknown>"
+        return text.rsplit(".", 1)[-1]
+
+    def _esp_player_lines(self, status: BridgeStatus) -> list[str]:
+        if not getattr(self, "esp_show_players_var", None) or not self.esp_show_players_var.get():
+            return []
+        rows = list(getattr(status, "nearby_players", ()))
+        if not rows:
+            return ["玩家：附近没有其他玩家"]
+
+        lines = ["玩家："]
+        for row in rows[:ESP_MAX_PLAYER_RESULTS]:
+            distance = getattr(row, "distance_meters", 0.0)
+            location = getattr(row, "location", "n/a")
+            lines.append(
+                f"  - {self._format_esp_object_name(getattr(row, 'name', ''))} | "
+                f"{distance:.1f}m | {location}"
+            )
+        return lines
+
+    def _esp_static_lines(self, status: BridgeStatus) -> list[str]:
+        if not status.player_valid:
+            return ["采集点：进入世界后可显示附近蛋/宝箱/雕像/手记"]
+
+        selected = self._esp_selected_static_categories()
+        if not selected:
+            return ["采集点：当前没有勾选任何类别"]
+
+        radius_meters = self._esp_search_radius_meters()
+        player_pos = (status.position_x, status.position_y, status.position_z)
+        matches: list[tuple[float, str, CoordPreset]] = []
+        for entry in self._coord_entries:
+            category_label = ""
+            for key, label, _tokens in ESP_STATIC_CATEGORY_RULES:
+                if key in selected and self._esp_entry_matches_category(entry, key):
+                    category_label = label
+                    break
+            if not category_label:
+                continue
+            distance_meters = math.dist(
+                player_pos,
+                (entry.x, entry.y, entry.z),
+            ) / 100.0
+            if distance_meters > radius_meters:
+                continue
+            matches.append((distance_meters, category_label, entry))
+
+        matches.sort(key=lambda item: (item[0], item[1], item[2].name))
+        if not matches:
+            return [f"采集点：{radius_meters:.0f}m 内没有命中已勾选的参考坐标"]
+
+        lines = [f"采集点（{radius_meters:.0f}m 内）："]
+        for distance_meters, category_label, entry in matches[:ESP_MAX_STATIC_RESULTS]:
+            lines.append(
+                f"  - [{category_label}] {entry.name} | {distance_meters:.1f}m"
+            )
+        return lines
+
+    def _esp_lines(self) -> list[str]:
+        status = self._read_bridge_status()
+        lines: list[str] = []
+        if not status.player_valid:
+            return [
+                "当前还没进入可操作角色状态。",
+                "先进入世界，再点“刷新透视”或打开悬浮面板。",
+            ]
+        lines.extend(self._esp_player_lines(status))
+        lines.append("")
+        lines.extend(self._esp_static_lines(status))
+        return lines
+
+    def _refresh_esp_views(self) -> None:
+        lines = self._esp_lines()
+        text = "\n".join(lines)
+        if hasattr(self, "online_esp_text"):
+            self.online_esp_text.configure(state="normal")
+            self.online_esp_text.delete("1.0", "end")
+            self.online_esp_text.insert("1.0", text)
+            self.online_esp_text.configure(state="disabled")
+        if self._esp_overlay_text is not None and self._esp_overlay_window is not None:
+            try:
+                self._esp_overlay_text.configure(state="normal")
+                self._esp_overlay_text.delete("1.0", "end")
+                self._esp_overlay_text.insert("1.0", text)
+                self._esp_overlay_text.configure(state="disabled")
+            except tk.TclError:
+                self._close_esp_overlay()
+
+    def _schedule_esp_overlay_refresh(self) -> None:
+        if self._esp_overlay_window is None:
+            return
+        self._esp_overlay_job = self.root.after(
+            ESP_OVERLAY_REFRESH_MS,
+            self._refresh_esp_overlay,
+        )
+
+    def _refresh_esp_overlay(self) -> None:
+        self._esp_overlay_job = None
+        if self._esp_overlay_window is None:
+            return
+        self._refresh_esp_views()
+        if self._esp_overlay_window.winfo_exists():
+            self._schedule_esp_overlay_refresh()
+
+    def _open_esp_overlay(self) -> None:
+        if self._esp_overlay_window is not None and self._esp_overlay_window.winfo_exists():
+            self._esp_overlay_window.deiconify()
+            self._esp_overlay_window.lift()
+            self._refresh_esp_views()
+            return
+
+        top = tk.Toplevel(self.root)
+        top.title("透视悬浮面板")
+        top.geometry("420x420")
+        top.attributes("-topmost", True)
+        try:
+            top.attributes("-alpha", 0.92)
+        except tk.TclError:
+            pass
+        top.protocol("WM_DELETE_WINDOW", self._close_esp_overlay)
+
+        frame = ttk.Frame(top, padding=(10, 10))
+        frame.pack(fill="both", expand=True)
+        ttk.Label(
+            frame,
+            text="附近玩家 / 采集点",
+            style="SubHeader.TLabel",
+        ).pack(anchor="w", pady=(0, 6))
+        text = tk.Text(
+            frame,
+            wrap="word",
+            font=("Microsoft YaHei UI", 10),
+        )
+        text.pack(fill="both", expand=True)
+        self._esp_overlay_window = top
+        self._esp_overlay_text = text
+        self._refresh_esp_views()
+        self._schedule_esp_overlay_refresh()
+
+    def _close_esp_overlay(self) -> None:
+        if self._esp_overlay_job is not None:
+            try:
+                self.root.after_cancel(self._esp_overlay_job)
+            except tk.TclError:
+                pass
+            self._esp_overlay_job = None
+        if self._esp_overlay_window is not None:
+            try:
+                self._esp_overlay_window.destroy()
+            except tk.TclError:
+                pass
+        self._esp_overlay_window = None
+        self._esp_overlay_text = None
+
     def _on_close(self) -> None:
         try:
             self.mem.detach()
         except Exception:  # noqa: BLE001 - best effort on shutdown
             pass
         self._route_stop_event.set()
+        self._close_esp_overlay()
         if self._ui_call_job is not None:
             try:
                 self.root.after_cancel(self._ui_call_job)
