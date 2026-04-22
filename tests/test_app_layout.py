@@ -11,10 +11,22 @@ from palworld_trainer.app import TAB_NAMES, TrainerApp
 from palworld_trainer.cheats import BridgeStatus
 
 
+def _make_root() -> tk.Tk:
+    last_error: Exception | None = None
+    for _ in range(3):
+        try:
+            root = tk.Tk()
+            root.withdraw()
+            return root
+        except tk.TclError as error:
+            last_error = error
+            time.sleep(0.1)
+    raise last_error  # type: ignore[misc]
+
+
 class AppLayoutTests(unittest.TestCase):
     def test_main_tabs_follow_reference_style_flow(self) -> None:
-        root = tk.Tk()
-        root.withdraw()
+        root = _make_root()
         try:
             app = TrainerApp(root, "test")
             self.assertEqual(
@@ -51,18 +63,20 @@ class AppLayoutTests(unittest.TestCase):
                 ],
             )
 
-            self.assertTrue(hasattr(app, "item_favorite_box"))
-            self.assertTrue(hasattr(app, "pal_favorite_box"))
-            self.assertTrue(hasattr(app, "coord_favorite_box"))
-            self.assertTrue(hasattr(app, "tech_listbox"))
+            self.assertTrue(hasattr(app, "item_category_notebook"))
+            self.assertTrue(hasattr(app, "pal_category_notebook"))
+            self.assertTrue(hasattr(app, "pal_favorite_listbox"))
+            self.assertTrue(hasattr(app, "coord_group_listbox"))
+            self.assertTrue(hasattr(app, "coord_item_listbox"))
+            self.assertTrue(hasattr(app, "common_ref_godmode_var"))
+            self.assertTrue(hasattr(app, "online_fly_var"))
             self.assertTrue(hasattr(app, "env_text"))
             self.assertTrue(hasattr(app, "changelog_text"))
         finally:
             root.destroy()
 
     def test_fly_prefers_bridge_request_when_runtime_ready(self) -> None:
-        root = tk.Tk()
-        root.withdraw()
+        root = _make_root()
         try:
             app = TrainerApp(root, "test")
             with (
@@ -82,8 +96,7 @@ class AppLayoutTests(unittest.TestCase):
             root.destroy()
 
     def test_fly_requires_bridge_instead_of_visible_chat_fallback(self) -> None:
-        root = tk.Tk()
-        root.withdraw()
+        root = _make_root()
         try:
             app = TrainerApp(root, "test")
             with (
@@ -100,8 +113,7 @@ class AppLayoutTests(unittest.TestCase):
             root.destroy()
 
     def test_bridge_request_ids_seed_from_time(self) -> None:
-        root = tk.Tk()
-        root.withdraw()
+        root = _make_root()
         try:
             with mock.patch("palworld_trainer.app.time.time", return_value=1234.567):
                 app = TrainerApp(root, "test")
@@ -111,8 +123,7 @@ class AppLayoutTests(unittest.TestCase):
             root.destroy()
 
     def test_ui_queue_drains_during_headless_updates(self) -> None:
-        root = tk.Tk()
-        root.withdraw()
+        root = _make_root()
         try:
             app = TrainerApp(root, "test")
             seen: list[str] = []
@@ -127,8 +138,7 @@ class AppLayoutTests(unittest.TestCase):
             root.destroy()
 
     def test_hidden_commands_require_new_enough_bridge_version(self) -> None:
-        root = tk.Tk()
-        root.withdraw()
+        root = _make_root()
         try:
             app = TrainerApp(root, "test")
             with (
@@ -170,8 +180,7 @@ class AppLayoutTests(unittest.TestCase):
             root.destroy()
 
     def test_unlock_fast_travel_prefers_hidden_bridge_request_when_supported(self) -> None:
-        root = tk.Tk()
-        root.withdraw()
+        root = _make_root()
         try:
             app = TrainerApp(root, "test")
             with (
@@ -193,8 +202,7 @@ class AppLayoutTests(unittest.TestCase):
             root.destroy()
 
     def test_hidden_commands_fall_back_to_reference_compatible_chat_path(self) -> None:
-        root = tk.Tk()
-        root.withdraw()
+        root = _make_root()
         try:
             app = TrainerApp(root, "test")
             with (
@@ -219,8 +227,7 @@ class AppLayoutTests(unittest.TestCase):
             root.destroy()
 
     def test_hidden_commands_report_when_bridge_and_fallback_both_unavailable(self) -> None:
-        root = tk.Tk()
-        root.withdraw()
+        root = _make_root()
         try:
             app = TrainerApp(root, "test")
             with (

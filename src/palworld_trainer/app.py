@@ -6,13 +6,14 @@
 from __future__ import annotations
 
 import os
+import json
 from queue import Empty, SimpleQueue
 import subprocess
 import threading
 import time
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, ttk
+from tkinter import filedialog, simpledialog, ttk
 from typing import Callable
 
 from . import commands as cmd
@@ -42,6 +43,12 @@ from .coord_presets import (
     search_coord_presets,
 )
 from .config import TrainerSettings, config_dir, load_settings, save_settings
+from .coord_workspace import (
+    DEFAULT_GROUP_NAME,
+    CoordWorkspaceGroup,
+    load_coord_workspace,
+    save_coord_workspace,
+)
 from .environment import EnvironmentReport, deploy_bridge, scan_environment
 from .mem_engine import (
     CUSTOM_SLOT_TEMPLATES,
@@ -58,6 +65,16 @@ from .mem_engine import (
     MemEngine,
 )
 from .teleport_points import BOSS_TELEPORT_POINTS, BossTeleportPoint
+from .reference_parity import (
+    REFERENCE_ADD_PAL_DETAIL_TABS,
+    REFERENCE_ADD_PAL_TABS,
+    REFERENCE_ITEM_TABS,
+    REFERENCE_ONLINE_TABS,
+    REFERENCE_PAL_EDIT_TABS,
+    ReferenceCoordEntry,
+    build_reference_item_groups,
+    build_reference_spawn_groups,
+)
 
 
 APP_TITLE = "幻兽帕鲁修改器"
@@ -110,9 +127,11 @@ class TrainerApp:
 
         self.item_entries = self.catalogs.get("item", [])
         self.pal_entries = self.catalogs.get("pal", [])
+        self.npc_entries = self.catalogs.get("npc", [])
         self.tech_entries = self.catalogs.get("technology", [])
         self._item_entry_by_key = {entry.key: entry for entry in self.item_entries}
         self._pal_entry_by_key = {entry.key: entry for entry in self.pal_entries}
+        self._npc_entry_by_key = {entry.key: entry for entry in self.npc_entries}
         self._tech_entry_by_key = {entry.key: entry for entry in self.tech_entries}
         self._item_guide_groups = self._resolve_choice_groups(
             cmd.ITEM_GUIDE_GROUPS,
@@ -130,10 +149,21 @@ class TrainerApp:
         self._boss_point_by_label: dict[str, BossTeleportPoint] = {
             point.label: point for point in self.boss_points
         }
+        self._item_reference_groups = build_reference_item_groups(self.item_entries)
+        self._pal_reference_groups = build_reference_spawn_groups(
+            self.pal_entries,
+            self.npc_entries,
+        )
+        self._coord_seed_entries = self._build_reference_coord_seed_entries()
+        self.coord_workspace_groups = load_coord_workspace(self._coord_seed_entries)
+        self._coord_workspace_group_map: dict[str, CoordWorkspaceGroup] = {
+            group.name: group for group in self.coord_workspace_groups
+        }
 
         self._current_item_results: list[CatalogEntry] = []
         self._current_pal_results: list[CatalogEntry] = []
         self._current_tech_results: list[CatalogEntry] = []
+        self._current_coord_workspace_results: list[ReferenceCoordEntry] = []
         self._item_quick_choice_map: dict[str, CatalogEntry] = {}
         self._item_full_choice_map: dict[str, CatalogEntry] = {}
         self._pal_quick_choice_map: dict[str, CatalogEntry] = {}
@@ -1075,6 +1105,22 @@ class TrainerApp:
             self.bridge_speed_var.set(f"{self.cheat_state.speed_multiplier:g}")
         if hasattr(self, "bridge_jump_var"):
             self.bridge_jump_var.set(f"{self.cheat_state.jump_multiplier:g}")
+        if hasattr(self, "coord_run_speed_var"):
+            self.coord_run_speed_var.set(f"{self.cheat_state.speed_multiplier:g}")
+        if hasattr(self, "coord_walk_speed_var"):
+            self.coord_walk_speed_var.set(f"{self.cheat_state.speed_multiplier:g}")
+        if hasattr(self, "coord_jump_speed_var"):
+            self.coord_jump_speed_var.set(f"{self.cheat_state.jump_multiplier:g}")
+        if hasattr(self, "common_ref_godmode_var"):
+            self.common_ref_godmode_var.set(self.cheat_state.godmode)
+        if hasattr(self, "common_ref_stamina_var"):
+            self.common_ref_stamina_var.set(self.cheat_state.inf_stamina)
+        if hasattr(self, "common_ref_weight_var"):
+            self.common_ref_weight_var.set(self.cheat_state.weight_zero)
+        if hasattr(self, "online_stamina_var"):
+            self.online_stamina_var.set(self.cheat_state.inf_stamina)
+        if hasattr(self, "online_speed_var"):
+            self.online_speed_var.set(f"{self.cheat_state.speed_multiplier:g}")
 
     def _coord_search_entries(self) -> list[CoordPreset]:
         if hasattr(self, "coord_search_var") and self.coord_search_var.get().strip():
@@ -2412,6 +2458,63 @@ class TrainerApp:
     def _set_numeric_var(self, variable: tk.StringVar, value: int) -> None:
         variable.set(str(value))
 
+    def _selected_notebook_tab_text(
+        self,
+        notebook: ttk.Notebook,
+        fallback: str,
+    ) -> str:
+        try:
+            current = notebook.select()
+        except tk.TclError:
+            return fallback
+        if not current:
+            return fallback
+        try:
+            return str(notebook.tab(current, "text")) or fallback
+        except tk.TclError:
+            return fallback
+
+    def _build_reference_coord_seed_entries(self) -> list[ReferenceCoordEntry]:
+        entries: list[ReferenceCoordEntry] = []
+        for group in self.coord_groups:
+            for item in group.items:
+                entries.append(
+                    ReferenceCoordEntry(
+                        group=group.name,
+                        label=item.label,
+                        x=item.x,
+                        y=item.y,
+                        z=item.z,
+                    )
+                )
+        for point in self.boss_points:
+            entries.append(
+                ReferenceCoordEntry(
+                    group="Boss 直达",
+                    label=point.label,
+                    x=float(point.world_x),
+                    y=float(point.world_y),
+                    z=float(point.safe_z),
+                )
+            )
+        return entries
+
+    def _selected_item_reference_tab(self) -> str:
+        if hasattr(self, "item_category_notebook"):
+            return self._selected_notebook_tab_text(
+                self.item_category_notebook,
+                REFERENCE_ITEM_TABS[0],
+            )
+        return REFERENCE_ITEM_TABS[0]
+
+    def _selected_pal_reference_tab(self) -> str:
+        if hasattr(self, "pal_category_notebook"):
+            return self._selected_notebook_tab_text(
+                self.pal_category_notebook,
+                REFERENCE_ADD_PAL_TABS[0],
+            )
+        return REFERENCE_ADD_PAL_TABS[0]
+
     def _catalog_display(self, entry: CatalogEntry) -> str:
         label = cmd.display_name(entry.kind, entry.key, entry.label)
         if label != entry.label:
@@ -2849,6 +2952,15 @@ class TrainerApp:
         query = self.item_search_var.get().strip() if hasattr(self, "item_search_var") else ""
         if query:
             results = search_catalog(self.item_entries, query, limit=400)
+            current_tab = self._selected_item_reference_tab()
+            if current_tab != "全部":
+                allowed_keys = {
+                    entry.key for entry in self._item_reference_groups.get(current_tab, [])
+                }
+                results = [entry for entry in results if entry.key in allowed_keys]
+        elif hasattr(self, "item_category_notebook"):
+            current_tab = self._selected_item_reference_tab()
+            results = list(self._item_reference_groups.get(current_tab, []))
         else:
             selected_group = (
                 self.item_quick_group_var.get().strip()
@@ -2868,8 +2980,16 @@ class TrainerApp:
 
     def _refresh_pal_list(self) -> None:
         query = self.pal_search_var.get().strip() if hasattr(self, "pal_search_var") else ""
-        if query:
+        if hasattr(self, "pal_spawn_listbox"):
+            source_entries = list(self._pal_reference_groups.get(self._selected_pal_reference_tab(), []))
+            if query:
+                results = search_catalog(source_entries, query, limit=400)
+            else:
+                results = source_entries
+            target_listbox = self.pal_spawn_listbox
+        elif query:
             results = search_catalog(self.pal_entries, query, limit=400)
+            target_listbox = self.pal_listbox
         else:
             selected_group = (
                 self.pal_quick_group_var.get().strip()
@@ -2877,15 +2997,16 @@ class TrainerApp:
                 else ""
             )
             results = self._preferred_group_entries(self._pal_guide_groups, selected_group)
-        self.pal_listbox.delete(0, "end")
+            target_listbox = self.pal_listbox
+        target_listbox.delete(0, "end")
         for entry in results:
-            self.pal_listbox.insert("end", self._catalog_display(entry))
+            target_listbox.insert("end", self._catalog_display(entry))
         self._current_pal_results = results
-        self.pal_listbox.selection_clear(0, "end")
+        target_listbox.selection_clear(0, "end")
         if results:
-            self.pal_listbox.selection_set(0)
-            self.pal_listbox.activate(0)
-            self.pal_listbox.see(0)
+            target_listbox.selection_set(0)
+            target_listbox.activate(0)
+            target_listbox.see(0)
 
     def _refresh_tech_list(self) -> None:
         query = self.tech_search_var.get().strip() if hasattr(self, "tech_search_var") else ""
@@ -3570,6 +3691,1055 @@ class TrainerApp:
         # currently-written HP/SP/speed without fighting the ticker thread.
         self._refresh_mem_rows()
         self._mem_refresh_job = self.root.after(500, self._schedule_mem_refresh)
+
+    # ------------------------------------------------------------------
+    # Reference-parity overrides
+    # ------------------------------------------------------------------
+
+    def _build_items_tab(self) -> None:
+        tab = ttk.Frame(self.notebook, padding=16)
+        self.notebook.add(tab, text="*添加物品")
+
+        ttk.Label(tab, text="*添加物品", style="SubHeader.TLabel").pack(anchor="w")
+        ttk.Label(
+            tab,
+            text="参考版这一页以分类页签 + 搜索Id、名称 + 数量 + 一键添加为主，因此这里不再把本地快捷预设和收藏入口混在主流程里。",
+            style="Status.TLabel",
+            wraplength=860,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 10))
+
+        self.item_category_notebook = ttk.Notebook(tab)
+        self.item_category_notebook.pack(fill="x", pady=(0, 8))
+        for title in REFERENCE_ITEM_TABS:
+            self.item_category_notebook.add(ttk.Frame(self.item_category_notebook), text=title)
+        self.item_category_notebook.bind(
+            "<<NotebookTabChanged>>",
+            lambda _event: self._refresh_item_list(),
+        )
+
+        search_row = ttk.Frame(tab)
+        search_row.pack(fill="x", pady=(0, 8))
+        ttk.Label(search_row, text="搜索Id、名称").pack(side="left")
+        self.item_search_var = tk.StringVar()
+        self.item_search_var.trace_add("write", lambda *_: self._refresh_item_list())
+        ttk.Entry(search_row, textvariable=self.item_search_var).pack(
+            side="left", padx=(8, 10), fill="x", expand=True
+        )
+        self.item_search_desc_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            search_row,
+            text="搜索描述",
+            variable=self.item_search_desc_var,
+            command=self._refresh_item_list,
+        ).pack(side="left", padx=(0, 10))
+        ttk.Label(search_row, text="数量").pack(side="left")
+        self.item_count_var = tk.StringVar(value=str(self.settings.custom_item_count))
+        ttk.Entry(search_row, textvariable=self.item_count_var, width=8).pack(
+            side="left", padx=(6, 0)
+        )
+
+        list_frame = ttk.Frame(tab)
+        list_frame.pack(fill="both", expand=True, pady=(0, 8))
+        self.item_listbox = tk.Listbox(list_frame, height=14, activestyle="dotbox")
+        item_scroll = ttk.Scrollbar(list_frame, orient="vertical", command=self.item_listbox.yview)
+        self.item_listbox.configure(yscrollcommand=item_scroll.set)
+        self.item_listbox.pack(side="left", fill="both", expand=True)
+        item_scroll.pack(side="right", fill="y")
+        self.item_listbox.bind("<Double-Button-1>", lambda _event: self._on_give_selected_item())
+
+        action_row = ttk.Frame(tab)
+        action_row.pack(fill="x")
+        ttk.Button(
+            action_row,
+            text="添加物品",
+            style="Big.TButton",
+            command=self._on_give_selected_item,
+        ).pack(side="left")
+
+        self._refresh_item_list()
+
+    def _build_pals_tab(self) -> None:
+        tab = ttk.Frame(self.notebook, padding=16)
+        self.notebook.add(tab, text="*添加帕鲁")
+
+        ttk.Label(tab, text="*添加帕鲁", style="SubHeader.TLabel").pack(anchor="w")
+        ttk.Label(
+            tab,
+            text="参考版这一页的重点是分类页签、收藏夹、搜索Id/名称和直接生成。本版先把这些高频流程对齐，生成参数细项会继续并入后续 parity pass。",
+            style="Status.TLabel",
+            wraplength=860,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 10))
+
+        self.pal_category_notebook = ttk.Notebook(tab)
+        self.pal_category_notebook.pack(fill="x", pady=(0, 8))
+        for title in REFERENCE_ADD_PAL_TABS:
+            self.pal_category_notebook.add(ttk.Frame(self.pal_category_notebook), text=title)
+        self.pal_category_notebook.bind(
+            "<<NotebookTabChanged>>",
+            lambda _event: self._refresh_pal_list(),
+        )
+
+        content = ttk.Frame(tab)
+        content.pack(fill="both", expand=True)
+        content.columnconfigure(0, weight=0)
+        content.columnconfigure(1, weight=1)
+        content.rowconfigure(0, weight=1)
+
+        favorites = ttk.LabelFrame(content, text="收藏夹", padding=(10, 8))
+        favorites.grid(row=0, column=0, sticky="nsw", padx=(0, 10))
+        self.pal_favorite_listbox = tk.Listbox(favorites, width=28, height=14, activestyle="dotbox")
+        self.pal_favorite_listbox.pack(fill="both", expand=True)
+        self.pal_favorite_listbox.bind(
+            "<Double-Button-1>",
+            lambda _event: self._spawn_selected_pal_favorite(),
+        )
+        fav_buttons = ttk.Frame(favorites)
+        fav_buttons.pack(fill="x", pady=(8, 0))
+        ttk.Button(
+            fav_buttons,
+            text="添加",
+            style="Quiet.TButton",
+            command=self._add_selected_pal_favorite,
+        ).pack(side="left", padx=(0, 4))
+        ttk.Button(
+            fav_buttons,
+            text="移除",
+            style="Quiet.TButton",
+            command=self._remove_selected_pal_favorite_listbox,
+        ).pack(side="left")
+
+        right = ttk.Frame(content)
+        right.grid(row=0, column=1, sticky="nsew")
+        right.rowconfigure(1, weight=1)
+
+        search_row = ttk.Frame(right)
+        search_row.pack(fill="x", pady=(0, 8))
+        ttk.Label(search_row, text="搜索Id、名称").pack(side="left")
+        self.pal_search_var = tk.StringVar()
+        self.pal_search_var.trace_add("write", lambda *_: self._refresh_pal_list())
+        ttk.Entry(search_row, textvariable=self.pal_search_var).pack(
+            side="left", padx=(8, 10), fill="x", expand=True
+        )
+        self.pal_search_desc_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            search_row,
+            text="搜索描述",
+            variable=self.pal_search_desc_var,
+            command=self._refresh_pal_list,
+        ).pack(side="left", padx=(0, 10))
+        ttk.Label(search_row, text="数量").pack(side="left")
+        self.pal_count_var = tk.StringVar(value=str(self.settings.custom_pal_count))
+        ttk.Entry(search_row, textvariable=self.pal_count_var, width=8).pack(
+            side="left", padx=(6, 0)
+        )
+
+        list_frame = ttk.Frame(right)
+        list_frame.pack(fill="both", expand=True)
+        self.pal_spawn_listbox = tk.Listbox(list_frame, height=14, activestyle="dotbox")
+        self.pal_listbox = self.pal_spawn_listbox
+        pal_scroll = ttk.Scrollbar(list_frame, orient="vertical", command=self.pal_spawn_listbox.yview)
+        self.pal_spawn_listbox.configure(yscrollcommand=pal_scroll.set)
+        self.pal_spawn_listbox.pack(side="left", fill="both", expand=True)
+        pal_scroll.pack(side="right", fill="y")
+        self.pal_spawn_listbox.bind("<Double-Button-1>", lambda _event: self._on_spawn_selected_pal())
+
+        detail_tabs = ttk.Notebook(right)
+        detail_tabs.pack(fill="x", pady=(8, 0))
+        for title in REFERENCE_ADD_PAL_DETAIL_TABS:
+            frame = ttk.Frame(detail_tabs, padding=12)
+            detail_tabs.add(frame, text=title)
+            ttk.Label(
+                frame,
+                text="这一轮先对齐分类与生成主流程；生成参数细项会继续补齐到参考版。",
+                style="Status.TLabel",
+                wraplength=640,
+                justify="left",
+            ).pack(anchor="w")
+
+        action_row = ttk.Frame(right)
+        action_row.pack(fill="x", pady=(8, 0))
+        ttk.Button(
+            action_row,
+            text="添加帕鲁",
+            style="Big.TButton",
+            command=self._on_spawn_selected_pal,
+        ).pack(side="left")
+
+        self._refresh_pal_reference_favorites()
+        self._refresh_pal_list()
+
+    def _refresh_pal_reference_favorites(self) -> None:
+        if not hasattr(self, "pal_favorite_listbox"):
+            return
+        self.pal_favorite_listbox.delete(0, "end")
+        for key in self.settings.favorite_pal_ids:
+            entry = self._pal_entry_by_key.get(key) or self._npc_entry_by_key.get(key)
+            if entry is None:
+                continue
+            self.pal_favorite_listbox.insert("end", self._catalog_display(entry))
+
+    def _selected_pal_favorite_entry(self) -> CatalogEntry | None:
+        if not hasattr(self, "pal_favorite_listbox"):
+            return None
+        selection = self.pal_favorite_listbox.curselection()
+        if not selection:
+            return None
+        display = self.pal_favorite_listbox.get(selection[0])
+        entry = self._catalog_entry_from_display(display, self._pal_entry_by_key)
+        if entry is not None:
+            return entry
+        return self._catalog_entry_from_display(display, self._npc_entry_by_key)
+
+    def _spawn_selected_pal_favorite(self) -> None:
+        entry = self._selected_pal_favorite_entry()
+        if entry is None:
+            self._show_result("请先在收藏夹里选中一个帕鲁。", ok=False)
+            return
+        self._spawn_pal_entry(entry)
+
+    def _remove_selected_pal_favorite_listbox(self) -> None:
+        entry = self._selected_pal_favorite_entry()
+        if entry is None:
+            self._show_result("请先在收藏夹里选中一个帕鲁。", ok=False)
+            return
+        if entry.key not in self.settings.favorite_pal_ids:
+            self._show_result("这个帕鲁不在收藏夹里。", ok=False)
+            return
+        self.settings.favorite_pal_ids.remove(entry.key)
+        save_settings(self.settings)
+        self._refresh_pal_reference_favorites()
+        self._show_result(f"已移除收藏：{entry.label}", ok=True)
+
+    def _add_selected_pal_favorite(self) -> None:
+        selection = self.pal_listbox.curselection()
+        if not selection:
+            self._show_result("请先在列表里选中一个帕鲁。", ok=False)
+            return
+        entry = self._current_pal_results[selection[0]]
+        self._remember_value(self.settings.favorite_pal_ids, entry.key, limit=60)
+        save_settings(self.settings)
+        self._refresh_pal_reference_favorites()
+        self._show_result(f"已加入收藏：{entry.label}", ok=True)
+
+    def _build_coords_tab(self) -> None:
+        tab = ttk.Frame(self.notebook, padding=16)
+        self.notebook.add(tab, text="传送和移速")
+
+        ttk.Label(tab, text="传送和移速", style="SubHeader.TLabel").pack(anchor="w")
+        ttk.Label(
+            tab,
+            text="这一页按参考版改成移速倍率 + 分组/坐标列表 + 坐标读写 + 直接联机传送的流程。原来的 Boss 直达、收藏夹和路径传送已收敛进分组/坐标列表工作区。",
+            style="Status.TLabel",
+            wraplength=860,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 10))
+
+        speed_card = ttk.LabelFrame(tab, text="修改坐标 / 移速倍率", padding=(12, 8))
+        speed_card.pack(fill="x", pady=(0, 10))
+
+        top_toggle_row = ttk.Frame(speed_card)
+        top_toggle_row.pack(fill="x", pady=(0, 6))
+        self.coord_modify_enabled_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            top_toggle_row,
+            text="修改坐标",
+            variable=self.coord_modify_enabled_var,
+        ).pack(side="left", padx=(0, 16))
+
+        ttk.Label(top_toggle_row, text="奔跑速度倍率").pack(side="left")
+        self.coord_run_speed_var = tk.StringVar(
+            value=f"{self.cheat_state.speed_multiplier:g}"
+        )
+        ttk.Entry(top_toggle_row, textvariable=self.coord_run_speed_var, width=8).pack(
+            side="left",
+            padx=(6, 6),
+        )
+        ttk.Button(
+            top_toggle_row,
+            text="写入",
+            style="Quiet.TButton",
+            command=lambda: self._apply_coord_speed_multiplier(self.coord_run_speed_var.get()),
+        ).pack(side="left", padx=(0, 10))
+
+        ttk.Label(top_toggle_row, text="步行速度倍率").pack(side="left")
+        self.coord_walk_speed_var = tk.StringVar(
+            value=f"{self.cheat_state.speed_multiplier:g}"
+        )
+        ttk.Entry(top_toggle_row, textvariable=self.coord_walk_speed_var, width=8).pack(
+            side="left",
+            padx=(6, 6),
+        )
+        ttk.Button(
+            top_toggle_row,
+            text="写入",
+            style="Quiet.TButton",
+            command=lambda: self._apply_coord_speed_multiplier(self.coord_walk_speed_var.get()),
+        ).pack(side="left", padx=(0, 10))
+
+        ttk.Label(top_toggle_row, text="跳跃高度倍率").pack(side="left")
+        self.coord_jump_speed_var = tk.StringVar(
+            value=f"{self.cheat_state.jump_multiplier:g}"
+        )
+        ttk.Entry(top_toggle_row, textvariable=self.coord_jump_speed_var, width=8).pack(
+            side="left",
+            padx=(6, 6),
+        )
+        ttk.Button(
+            top_toggle_row,
+            text="写入",
+            style="Quiet.TButton",
+            command=lambda: self._apply_coord_jump_multiplier(self.coord_jump_speed_var.get()),
+        ).pack(side="left", padx=(0, 10))
+        ttk.Button(
+            top_toggle_row,
+            text="全部关闭",
+            style="Quiet.TButton",
+            command=self._reset_coord_movement_multipliers,
+        ).pack(side="left")
+
+        workspace = ttk.Frame(tab)
+        workspace.pack(fill="both", expand=True)
+        workspace.columnconfigure(0, weight=0)
+        workspace.columnconfigure(1, weight=0)
+        workspace.columnconfigure(2, weight=1)
+        workspace.rowconfigure(0, weight=1)
+
+        group_col = ttk.Frame(workspace)
+        group_col.grid(row=0, column=0, sticky="ns", padx=(0, 8))
+        group_toolbar = ttk.Frame(group_col)
+        group_toolbar.pack(fill="x", pady=(0, 4))
+        ttk.Label(group_toolbar, text="分组").pack(side="left")
+        ttk.Button(group_toolbar, text="添加", style="Quiet.TButton", command=self._add_coord_group).pack(side="left", padx=(8, 4))
+        ttk.Button(group_toolbar, text="重命名", style="Quiet.TButton", command=self._rename_coord_group).pack(side="left", padx=4)
+        ttk.Button(group_toolbar, text="移除", style="Quiet.TButton", command=self._remove_coord_group).pack(side="left", padx=4)
+        ttk.Button(group_toolbar, text="保存", style="Quiet.TButton", command=self._save_coord_workspace_action).pack(side="left", padx=4)
+        ttk.Button(group_toolbar, text="导出", style="Quiet.TButton", command=self._export_coord_workspace).pack(side="left", padx=4)
+        self.coord_group_listbox = tk.Listbox(group_col, width=24, height=16, activestyle="dotbox")
+        self.coord_group_listbox.pack(fill="both", expand=True)
+        self.coord_group_listbox.bind("<<ListboxSelect>>", self._on_select_coord_group)
+
+        item_col = ttk.Frame(workspace)
+        item_col.grid(row=0, column=1, sticky="ns", padx=(0, 8))
+        item_toolbar = ttk.Frame(item_col)
+        item_toolbar.pack(fill="x", pady=(0, 4))
+        ttk.Label(item_toolbar, text="坐标列表").pack(side="left")
+        ttk.Button(item_toolbar, text="添加", style="Quiet.TButton", command=self._add_coord_workspace_item).pack(side="left", padx=(8, 4))
+        ttk.Button(item_toolbar, text="更新", style="Quiet.TButton", command=self._update_coord_workspace_item).pack(side="left", padx=4)
+        ttk.Button(item_toolbar, text="移除", style="Quiet.TButton", command=self._remove_coord_workspace_item).pack(side="left", padx=4)
+        ttk.Button(item_toolbar, text="清空", style="Quiet.TButton", command=self._clear_coord_workspace_group).pack(side="left", padx=4)
+        self.coord_item_listbox = tk.Listbox(item_col, width=36, height=16, activestyle="dotbox")
+        self.coord_item_listbox.pack(fill="both", expand=True)
+        self.coord_item_listbox.bind("<<ListboxSelect>>", self._on_select_coord_item)
+
+        editor_col = ttk.Frame(workspace)
+        editor_col.grid(row=0, column=2, sticky="nsew")
+        editor_toolbar = ttk.Frame(editor_col)
+        editor_toolbar.pack(fill="x", pady=(0, 4))
+        ttk.Label(editor_toolbar, text="坐标").pack(side="left")
+        ttk.Button(editor_toolbar, text="读取", style="Quiet.TButton", command=self._read_coord_into_form).pack(side="left", padx=(8, 4))
+        ttk.Button(editor_toolbar, text="写入", style="Quiet.TButton", command=self._update_coord_workspace_item).pack(side="left", padx=4)
+        ttk.Button(editor_toolbar, text="复制", style="Quiet.TButton", command=self._copy_coord_fields).pack(side="left", padx=4)
+        ttk.Button(editor_toolbar, text="粘贴", style="Quiet.TButton", command=self._paste_coord_fields).pack(side="left", padx=4)
+
+        form = ttk.Frame(editor_col)
+        form.pack(fill="x", pady=(6, 8))
+        self.coord_name_var = tk.StringVar()
+        self.tp_x_var = tk.StringVar()
+        self.tp_y_var = tk.StringVar()
+        self.tp_z_var = tk.StringVar()
+
+        ttk.Label(form, text="名称").grid(row=0, column=0, sticky="w", pady=4)
+        ttk.Entry(form, textvariable=self.coord_name_var).grid(row=0, column=1, sticky="ew", pady=4)
+        ttk.Label(form, text="X坐标").grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Entry(form, textvariable=self.tp_x_var).grid(row=1, column=1, sticky="ew", pady=4)
+        ttk.Label(form, text="Y坐标").grid(row=2, column=0, sticky="w", pady=4)
+        ttk.Entry(form, textvariable=self.tp_y_var).grid(row=2, column=1, sticky="ew", pady=4)
+        ttk.Label(form, text="Z坐标").grid(row=3, column=0, sticky="w", pady=4)
+        ttk.Entry(form, textvariable=self.tp_z_var).grid(row=3, column=1, sticky="ew", pady=4)
+        form.columnconfigure(1, weight=1)
+
+        ttk.Button(
+            editor_col,
+            text="*联机传送(单机也支持)",
+            style="Big.TButton",
+            command=self._on_mem_teleport,
+        ).pack(anchor="w")
+
+        self._refresh_coord_workspace_groups()
+
+    def _apply_coord_speed_multiplier(self, raw: str) -> None:
+        try:
+            value = max(0.1, min(10.0, float(raw.strip())))
+        except ValueError:
+            self._show_result("速度倍率必须是数字。", ok=False)
+            return
+        self.bridge_speed_var.set(f"{value:g}")
+        self.coord_run_speed_var.set(f"{value:g}")
+        self.coord_walk_speed_var.set(f"{value:g}")
+        self._apply_player_cheats()
+
+    def _apply_coord_jump_multiplier(self, raw: str) -> None:
+        try:
+            value = max(0.1, min(10.0, float(raw.strip())))
+        except ValueError:
+            self._show_result("跳跃倍率必须是数字。", ok=False)
+            return
+        self.bridge_jump_var.set(f"{value:g}")
+        self.coord_jump_speed_var.set(f"{value:g}")
+        self._apply_player_cheats()
+
+    def _reset_coord_movement_multipliers(self) -> None:
+        self.bridge_speed_var.set("1")
+        self.bridge_jump_var.set("1")
+        self.coord_run_speed_var.set("1")
+        self.coord_walk_speed_var.set("1")
+        self.coord_jump_speed_var.set("1")
+        self._apply_player_cheats()
+
+    def _reindex_coord_workspace_groups(self) -> None:
+        self._coord_workspace_group_map = {
+            group.name: group for group in self.coord_workspace_groups
+        }
+
+    def _save_coord_workspace_action(self) -> None:
+        save_coord_workspace(self.coord_workspace_groups)
+        self._show_result("坐标工作区已保存。", ok=True)
+
+    def _coord_group_names_workspace(self) -> list[str]:
+        return [group.name for group in self.coord_workspace_groups]
+
+    def _selected_coord_workspace_group(self) -> CoordWorkspaceGroup | None:
+        if not hasattr(self, "coord_group_listbox"):
+            return None
+        selection = self.coord_group_listbox.curselection()
+        if not selection:
+            return self.coord_workspace_groups[0] if self.coord_workspace_groups else None
+        index = selection[0]
+        if 0 <= index < len(self.coord_workspace_groups):
+            return self.coord_workspace_groups[index]
+        return None
+
+    def _selected_coord_workspace_entry(self) -> ReferenceCoordEntry | None:
+        if not hasattr(self, "coord_item_listbox"):
+            return None
+        selection = self.coord_item_listbox.curselection()
+        if not selection:
+            return None
+        index = selection[0]
+        if 0 <= index < len(self._current_coord_workspace_results):
+            return self._current_coord_workspace_results[index]
+        return None
+
+    def _refresh_coord_workspace_groups(self) -> None:
+        if not hasattr(self, "coord_group_listbox"):
+            return
+        self.coord_group_listbox.delete(0, "end")
+        for name in self._coord_group_names_workspace():
+            self.coord_group_listbox.insert("end", name)
+        if self.coord_workspace_groups:
+            self.coord_group_listbox.selection_set(0)
+            self.coord_group_listbox.activate(0)
+            self.coord_group_listbox.see(0)
+        self._refresh_coord_workspace_items()
+
+    def _refresh_coord_workspace_items(self) -> None:
+        if not hasattr(self, "coord_item_listbox"):
+            return
+        group = self._selected_coord_workspace_group()
+        items = list(group.items) if group is not None else []
+        self._current_coord_workspace_results = items
+        self.coord_item_listbox.delete(0, "end")
+        for entry in items:
+            self.coord_item_listbox.insert("end", entry.label)
+        if items:
+            self.coord_item_listbox.selection_set(0)
+            self.coord_item_listbox.activate(0)
+            self.coord_item_listbox.see(0)
+            self._load_coord_workspace_entry(items[0])
+        else:
+            self.coord_name_var.set("")
+            self.tp_x_var.set("")
+            self.tp_y_var.set("")
+            self.tp_z_var.set("")
+
+    def _load_coord_workspace_entry(self, entry: ReferenceCoordEntry) -> None:
+        self.coord_name_var.set(entry.label)
+        self.tp_x_var.set(f"{entry.x:g}")
+        self.tp_y_var.set(f"{entry.y:g}")
+        self.tp_z_var.set(f"{entry.z:g}")
+
+    def _on_select_coord_group(self, _event: tk.Event | None = None) -> None:
+        self._refresh_coord_workspace_items()
+
+    def _on_select_coord_item(self, _event: tk.Event | None = None) -> None:
+        entry = self._selected_coord_workspace_entry()
+        if entry is not None:
+            self._load_coord_workspace_entry(entry)
+
+    def _coord_entry_from_form(self, *, group_name: str) -> ReferenceCoordEntry | None:
+        label = self.coord_name_var.get().strip()
+        if not label:
+            self._show_result("请先填写坐标名称。", ok=False)
+            return None
+        try:
+            x = float(self.tp_x_var.get().strip())
+            y = float(self.tp_y_var.get().strip())
+            z = float(self.tp_z_var.get().strip())
+        except ValueError:
+            self._show_result("X/Y/Z 坐标必须都是数字。", ok=False)
+            return None
+        return ReferenceCoordEntry(group=group_name, label=label, x=x, y=y, z=z)
+
+    def _add_coord_group(self) -> None:
+        name = simpledialog.askstring("添加分组", "输入新分组名称：", parent=self.root)
+        if not name:
+            return
+        name = name.strip()
+        if not name:
+            return
+        if name in self._coord_workspace_group_map:
+            self._show_result("这个分组已经存在。", ok=False)
+            return
+        self.coord_workspace_groups.append(CoordWorkspaceGroup(name=name))
+        self.coord_workspace_groups.sort(
+            key=lambda item: (item.name != DEFAULT_GROUP_NAME, item.name.casefold())
+        )
+        self._reindex_coord_workspace_groups()
+        save_coord_workspace(self.coord_workspace_groups)
+        self._refresh_coord_workspace_groups()
+        self._show_result(f"已添加分组：{name}", ok=True)
+
+    def _rename_coord_group(self) -> None:
+        group = self._selected_coord_workspace_group()
+        if group is None:
+            self._show_result("请先选中一个分组。", ok=False)
+            return
+        new_name = simpledialog.askstring("重命名分组", "输入新的分组名称：", initialvalue=group.name, parent=self.root)
+        if not new_name:
+            return
+        new_name = new_name.strip()
+        if not new_name:
+            return
+        if new_name != group.name and new_name in self._coord_workspace_group_map:
+            self._show_result("这个分组名称已经存在。", ok=False)
+            return
+        group.name = new_name
+        group.items = [
+            ReferenceCoordEntry(
+                group=new_name,
+                label=item.label,
+                x=item.x,
+                y=item.y,
+                z=item.z,
+                editable=item.editable,
+            )
+            for item in group.items
+        ]
+        self.coord_workspace_groups.sort(
+            key=lambda item: (item.name != DEFAULT_GROUP_NAME, item.name.casefold())
+        )
+        self._reindex_coord_workspace_groups()
+        save_coord_workspace(self.coord_workspace_groups)
+        self._refresh_coord_workspace_groups()
+        self._show_result(f"已重命名分组：{new_name}", ok=True)
+
+    def _remove_coord_group(self) -> None:
+        group = self._selected_coord_workspace_group()
+        if group is None:
+            self._show_result("请先选中一个分组。", ok=False)
+            return
+        self.coord_workspace_groups = [
+            item for item in self.coord_workspace_groups if item.name != group.name
+        ]
+        if not self.coord_workspace_groups:
+            self.coord_workspace_groups = [CoordWorkspaceGroup(name=DEFAULT_GROUP_NAME)]
+        self._reindex_coord_workspace_groups()
+        save_coord_workspace(self.coord_workspace_groups)
+        self._refresh_coord_workspace_groups()
+        self._show_result(f"已移除分组：{group.name}", ok=True)
+
+    def _add_coord_workspace_item(self) -> None:
+        group = self._selected_coord_workspace_group()
+        if group is None:
+            self._show_result("请先选中一个分组。", ok=False)
+            return
+        entry = self._coord_entry_from_form(group_name=group.name)
+        if entry is None:
+            return
+        group.items.append(entry)
+        group.items.sort(key=lambda item: item.label.casefold())
+        save_coord_workspace(self.coord_workspace_groups)
+        self._refresh_coord_workspace_items()
+        self._show_result(f"已添加坐标：{entry.label}", ok=True)
+
+    def _update_coord_workspace_item(self) -> None:
+        group = self._selected_coord_workspace_group()
+        current = self._selected_coord_workspace_entry()
+        if group is None or current is None:
+            self._show_result("请先在坐标列表里选中一个条目。", ok=False)
+            return
+        entry = self._coord_entry_from_form(group_name=group.name)
+        if entry is None:
+            return
+        group.items = [
+            entry if item.label == current.label and item.x == current.x and item.y == current.y and item.z == current.z else item
+            for item in group.items
+        ]
+        group.items.sort(key=lambda item: item.label.casefold())
+        save_coord_workspace(self.coord_workspace_groups)
+        self._refresh_coord_workspace_items()
+        self._show_result(f"已更新坐标：{entry.label}", ok=True)
+
+    def _remove_coord_workspace_item(self) -> None:
+        group = self._selected_coord_workspace_group()
+        current = self._selected_coord_workspace_entry()
+        if group is None or current is None:
+            self._show_result("请先在坐标列表里选中一个条目。", ok=False)
+            return
+        group.items = [
+            item for item in group.items
+            if not (
+                item.label == current.label
+                and item.x == current.x
+                and item.y == current.y
+                and item.z == current.z
+            )
+        ]
+        save_coord_workspace(self.coord_workspace_groups)
+        self._refresh_coord_workspace_items()
+        self._show_result(f"已移除坐标：{current.label}", ok=True)
+
+    def _clear_coord_workspace_group(self) -> None:
+        group = self._selected_coord_workspace_group()
+        if group is None:
+            self._show_result("请先选中一个分组。", ok=False)
+            return
+        group.items = []
+        save_coord_workspace(self.coord_workspace_groups)
+        self._refresh_coord_workspace_items()
+        self._show_result(f"已清空分组：{group.name}", ok=True)
+
+    def _read_coord_into_form(self) -> None:
+        self._on_mem_read_pos()
+
+    def _copy_coord_fields(self) -> None:
+        raw = f"{self.coord_name_var.get().strip()}\n{self.tp_x_var.get().strip()},{self.tp_y_var.get().strip()},{self.tp_z_var.get().strip()}"
+        self.root.clipboard_clear()
+        self.root.clipboard_append(raw)
+        self._show_result("已复制当前坐标。", ok=True)
+
+    def _paste_coord_fields(self) -> None:
+        try:
+            text = self.root.clipboard_get()
+        except tk.TclError:
+            self._show_result("剪贴板里没有可用坐标。", ok=False)
+            return
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if not lines:
+            self._show_result("剪贴板里没有可用坐标。", ok=False)
+            return
+        if len(lines) >= 2:
+            self.coord_name_var.set(lines[0])
+            coord_text = lines[1]
+        else:
+            coord_text = lines[0]
+        parts = coord_text.replace(",", " ").split()
+        if len(parts) < 3:
+            self._show_result("剪贴板坐标格式不正确。", ok=False)
+            return
+        self.tp_x_var.set(parts[0])
+        self.tp_y_var.set(parts[1])
+        self.tp_z_var.set(parts[2])
+        self._show_result("已粘贴坐标。", ok=True)
+
+    def _export_coord_workspace(self) -> None:
+        path = filedialog.asksaveasfilename(
+            title="导出坐标工作区",
+            defaultextension=".json",
+            filetypes=[("JSON", "*.json")],
+        )
+        if not path:
+            return
+        try:
+            Path(path).write_text(
+                json.dumps(
+                    [
+                        {
+                            "name": group.name,
+                            "items": [
+                                {
+                                    "label": item.label,
+                                    "group": item.group,
+                                    "x": item.x,
+                                    "y": item.y,
+                                    "z": item.z,
+                                    "editable": item.editable,
+                                }
+                                for item in group.items
+                            ],
+                        }
+                        for group in self.coord_workspace_groups
+                    ],
+                    indent=2,
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+        except OSError as error:
+            self._show_result(f"导出失败：{error}", ok=False)
+            return
+        self._show_result("坐标工作区已导出。", ok=True)
+
+    def _build_common_tab(self) -> None:
+        tab = ttk.Frame(self.notebook, padding=16)
+        self.notebook.add(tab, text="常用功能")
+
+        ttk.Label(tab, text="常用功能", style="SubHeader.TLabel").pack(anchor="w")
+        ttk.Label(
+            tab,
+            text="绿色的项目支持联机。按参考版思路，这一页只保留高频常用功能，不再放启动器、打开目录这类工具入口。",
+            style="Status.TLabel",
+            wraplength=860,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 10))
+
+        supported = ttk.LabelFrame(tab, text="当前已接入的常用功能", padding=(12, 8))
+        supported.pack(fill="x", pady=(0, 10))
+
+        self.common_ref_godmode_var = tk.BooleanVar(value=self.cheat_state.godmode)
+        self.common_ref_stamina_var = tk.BooleanVar(value=self.cheat_state.inf_stamina)
+        self.common_ref_weight_var = tk.BooleanVar(value=self.cheat_state.weight_zero)
+        toggle_row = ttk.Frame(supported)
+        toggle_row.pack(fill="x", pady=(0, 6))
+        ttk.Checkbutton(toggle_row, text="无敌/无视伤害判定", variable=self.common_ref_godmode_var).pack(side="left", padx=(0, 12))
+        ttk.Checkbutton(toggle_row, text="无限体力", variable=self.common_ref_stamina_var).pack(side="left", padx=(0, 12))
+        ttk.Checkbutton(toggle_row, text="负重清零（拖到物品后生效）", variable=self.common_ref_weight_var).pack(side="left")
+
+        toggle_apply_row = ttk.Frame(supported)
+        toggle_apply_row.pack(fill="x", pady=(0, 6))
+        ttk.Button(
+            toggle_apply_row,
+            text="应用当前勾选",
+            style="Big.TButton",
+            command=self._apply_reference_common_cheats,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            toggle_apply_row,
+            text="全部关闭",
+            style="Quiet.TButton",
+            command=self._reset_reference_common_cheats,
+        ).pack(side="left")
+
+        command_row = ttk.Frame(supported)
+        command_row.pack(fill="x", pady=(6, 6))
+        ttk.Button(
+            command_row,
+            text="耐久度不减",
+            style="Quiet.TButton",
+            command=lambda: self._send_with_label("@!nodur", "耐久度不减"),
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            command_row,
+            text="无限弹药",
+            style="Quiet.TButton",
+            command=lambda: self._send_with_label("@!infammo", "无限弹药"),
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            command_row,
+            text="解锁全部配方",
+            style="Quiet.TButton",
+            command=lambda: self._send_with_label("@!unlockrecipes", "解锁全部配方"),
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            command_row,
+            text="给满绿胖子像",
+            style="Quiet.TButton",
+            command=lambda: self._send_with_label("@!giveallstatues", "给满绿胖子像"),
+        ).pack(side="left")
+
+        shortcut_row = ttk.Frame(supported)
+        shortcut_row.pack(fill="x")
+        ttk.Button(
+            shortcut_row,
+            text="解锁传送点",
+            style="Quiet.TButton",
+            command=self._on_unlock_fast_travel,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            shortcut_row,
+            text="解锁全部科技",
+            style="Quiet.TButton",
+            command=self._on_unlock_all_tech,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            shortcut_row,
+            text="白天 6:00",
+            style="Quiet.TButton",
+            command=lambda: self._on_set_time(6),
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            shortcut_row,
+            text="黑夜 0:00",
+            style="Quiet.TButton",
+            command=lambda: self._on_set_time(0),
+        ).pack(side="left")
+
+        ttk.Label(
+            tab,
+            text="参考版里还有食物腐烂、捕获概率、建造限制等更多常驻项；这轮先把当前仓库底层已经真正接上的常用链路摆正，并把额外工具入口从主流程移走。",
+            style="Status.TLabel",
+            wraplength=860,
+            justify="left",
+        ).pack(anchor="w")
+
+    def _build_tech_tab(self) -> None:
+        tab = ttk.Frame(self.notebook, padding=16)
+        self.notebook.add(tab, text="制作和建造")
+
+        ttk.Label(tab, text="制作和建造", style="SubHeader.TLabel").pack(anchor="w")
+        ttk.Label(
+            tab,
+            text="参考版这一页以建造限制和配方相关项为主。当前仓库里已经稳定可用的是“解锁配方/样式”链路，所以先把它放到最前面，不再继续显示旧版科技页那套不对位入口。",
+            style="Status.TLabel",
+            wraplength=860,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 10))
+
+        supported = ttk.LabelFrame(tab, text="当前已接入的制作/建造功能", padding=(12, 8))
+        supported.pack(fill="x", pady=(0, 10))
+        ttk.Button(
+            supported,
+            text="制作和建造无视需求（重启游戏还原）",
+            style="Big.TButton",
+            command=lambda: self._send_with_label("@!unlockrecipes", "制作和建造无视需求"),
+        ).pack(anchor="w", fill="x", pady=(0, 6))
+        ttk.Button(
+            supported,
+            text="*临时解锁全建造和制作样式",
+            style="Big.TButton",
+            command=lambda: self._send_with_label("@!unlockrecipes", "临时解锁全建造和制作样式"),
+        ).pack(anchor="w", fill="x")
+
+        ttk.Label(
+            tab,
+            text="无视重叠、无视地面、无视基地范围等深度建造限制项，当前桥接层还没有稳定接出对应底层，所以这一页先不伪装成全部可用。",
+            style="Status.TLabel",
+            wraplength=860,
+            justify="left",
+        ).pack(anchor="w")
+
+    def _build_pal_edit_tab(self) -> None:
+        tab = ttk.Frame(self.notebook, padding=16)
+        self.notebook.add(tab, text="帕鲁修改")
+
+        ttk.Label(tab, text="帕鲁修改", style="SubHeader.TLabel").pack(anchor="w")
+        ttk.Label(
+            tab,
+            text="参考版这一页会在背包帕鲁详情页里读写更多属性。当前开源版先把页内结构、命名和主流程对齐，避免继续保留旧版占位说明。",
+            style="Status.TLabel",
+            wraplength=860,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 10))
+
+        actions = ttk.Frame(tab)
+        actions.pack(fill="x", pady=(0, 10))
+        ttk.Button(
+            actions,
+            text="打开 *添加帕鲁",
+            style="Big.TButton",
+            command=lambda: self.notebook.select(TAB_NAMES.index("pals")),
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            actions,
+            text="刷新状态",
+            style="Quiet.TButton",
+            command=self._refresh_status,
+        ).pack(side="left")
+
+        inner = ttk.Notebook(tab)
+        inner.pack(fill="both", expand=True)
+        for title in REFERENCE_PAL_EDIT_TABS:
+            frame = ttk.Frame(inner, padding=12)
+            inner.add(frame, text=title)
+            ttk.Label(
+                frame,
+                text="这一页的深度读写功能需要继续并到参考版同等级的底层支持上；当前先完成页面结构和主流程去重，不再保留旧版误导性入口。",
+                style="Status.TLabel",
+                wraplength=820,
+                justify="left",
+            ).pack(anchor="w")
+
+    def _build_online_pal_tab(self) -> None:
+        tab = ttk.Frame(self.notebook, padding=16)
+        self.notebook.add(tab, text="*联机帕鲁修改")
+
+        ttk.Label(tab, text="*联机帕鲁修改", style="SubHeader.TLabel").pack(anchor="w")
+        ttk.Label(
+            tab,
+            text="参考版把联机帕鲁修改单独放成顶层页签。当前开源版先保留这个结构入口，并把常用生成/联机功能页串起来，避免继续显示旧占位说明。",
+            style="Status.TLabel",
+            wraplength=860,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 10))
+
+        row = ttk.Frame(tab)
+        row.pack(fill="x")
+        ttk.Button(
+            row,
+            text="打开 *添加帕鲁",
+            style="Big.TButton",
+            command=lambda: self.notebook.select(TAB_NAMES.index("pals")),
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            row,
+            text="打开 联机功能",
+            style="Quiet.TButton",
+            command=lambda: self.notebook.select(TAB_NAMES.index("online")),
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            row,
+            text="刷新状态",
+            style="Quiet.TButton",
+            command=self._refresh_status,
+        ).pack(side="left")
+
+    def _apply_reference_common_cheats(self) -> None:
+        self.bridge_godmode_var.set(bool(self.common_ref_godmode_var.get()))
+        self.bridge_stamina_var.set(bool(self.common_ref_stamina_var.get()))
+        self.bridge_weight_var.set(bool(self.common_ref_weight_var.get()))
+        self._apply_player_cheats()
+
+    def _reset_reference_common_cheats(self) -> None:
+        self.common_ref_godmode_var.set(False)
+        self.common_ref_stamina_var.set(False)
+        self.common_ref_weight_var.set(False)
+        self.bridge_speed_var.set("1")
+        self.bridge_jump_var.set("1")
+        self._apply_reference_common_cheats()
+
+    def _build_online_tab(self) -> None:
+        tab = ttk.Frame(self.notebook, padding=16)
+        self.notebook.add(tab, text="联机功能")
+
+        ttk.Label(tab, text="联机功能", style="SubHeader.TLabel").pack(anchor="w")
+        ttk.Label(
+            tab,
+            text="下面带 * 的功能需要更深的联机链路。当前开源版先把玩家修改这一页里已经稳定的飞行、经验、移速和体力链路对齐出来。",
+            style="Status.TLabel",
+            wraplength=860,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 10))
+
+        inner = ttk.Notebook(tab)
+        inner.pack(fill="both", expand=True)
+        player_tab = ttk.Frame(inner, padding=12)
+        other_tab = ttk.Frame(inner, padding=12)
+        esp_tab = ttk.Frame(inner, padding=12)
+        inner.add(player_tab, text=REFERENCE_ONLINE_TABS[0])
+        inner.add(other_tab, text=REFERENCE_ONLINE_TABS[1])
+        inner.add(esp_tab, text=REFERENCE_ONLINE_TABS[2])
+
+        top_row = ttk.Frame(player_tab)
+        top_row.pack(fill="x", pady=(0, 8))
+        self.online_fly_var = tk.BooleanVar(value=False)
+        ttk.Button(
+            top_row,
+            text="切换飞行 Alt+F",
+            style="Big.TButton",
+            command=self._toggle_online_fly,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            top_row,
+            text="灵魂出窍（脱困） Alt+G",
+            style="Quiet.TButton",
+            command=lambda: self._send_with_label(cmd.unstuck(), "灵魂出窍/脱困"),
+        ).pack(side="left", padx=(0, 6))
+
+        exp_row = ttk.Frame(player_tab)
+        exp_row.pack(fill="x", pady=(0, 8))
+        ttk.Label(exp_row, text="经验").pack(side="left")
+        self.exp_var = tk.StringVar(value=str(self.settings.custom_exp_amount))
+        ttk.Entry(exp_row, textvariable=self.exp_var, width=12).pack(side="left", padx=(6, 8))
+        ttk.Button(
+            exp_row,
+            text="*增加经验",
+            style="Big.TButton",
+            command=self._on_give_custom_exp,
+        ).pack(side="left")
+
+        speed_row = ttk.Frame(player_tab)
+        speed_row.pack(fill="x", pady=(0, 8))
+        self.online_speed_enabled_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(speed_row, text="速度倍率", variable=self.online_speed_enabled_var).pack(side="left")
+        self.online_speed_var = tk.StringVar(value=f"{self.cheat_state.speed_multiplier:g}")
+        ttk.Entry(speed_row, textvariable=self.online_speed_var, width=10).pack(side="left", padx=(6, 8))
+        ttk.Button(
+            speed_row,
+            text="设置",
+            style="Quiet.TButton",
+            command=lambda: self._apply_coord_speed_multiplier(self.online_speed_var.get()),
+        ).pack(side="left", padx=(0, 16))
+
+        self.online_stamina_var = tk.BooleanVar(value=self.cheat_state.inf_stamina)
+        ttk.Checkbutton(
+            speed_row,
+            text="无限体力",
+            variable=self.online_stamina_var,
+            command=self._apply_online_stamina_toggle,
+        ).pack(side="left")
+
+        ttk.Label(
+            player_tab,
+            text="昵称、攻击增加、防御增加等参考版联机项在当前仓库里还没有稳定底层，这一轮不再伪装成可用按钮。",
+            style="Status.TLabel",
+            wraplength=820,
+            justify="left",
+        ).pack(anchor="w")
+
+        ttk.Label(
+            other_tab,
+            text="其他：先保留常用联机辅助入口。",
+            style="Status.TLabel",
+        ).pack(anchor="w")
+        other_row = ttk.Frame(other_tab)
+        other_row.pack(fill="x", pady=(8, 0))
+        ttk.Button(
+            other_row,
+            text="解锁传送点",
+            style="Quiet.TButton",
+            command=self._on_unlock_fast_travel,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            other_row,
+            text="读取坐标",
+            style="Quiet.TButton",
+            command=self._on_mem_read_pos,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            other_row,
+            text="打开传送页",
+            style="Quiet.TButton",
+            command=lambda: self.notebook.select(TAB_NAMES.index("coords")),
+        ).pack(side="left")
+
+        ttk.Label(
+            esp_tab,
+            text="*透视：当前开源版还没有稳定接出参考版的透视/ESP 链路，所以这一页先只保留结构，不误导成可用功能。",
+            style="Status.TLabel",
+            wraplength=820,
+            justify="left",
+        ).pack(anchor="w")
+
+    def _toggle_online_fly(self) -> None:
+        enabled = not bool(self.online_fly_var.get())
+        self.online_fly_var.set(enabled)
+        self._on_mem_fly(enabled)
+
+    def _apply_online_stamina_toggle(self) -> None:
+        self.bridge_stamina_var.set(bool(self.online_stamina_var.get()))
+        self._apply_player_cheats()
 
     def _on_close(self) -> None:
         try:

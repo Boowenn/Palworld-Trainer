@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "palworld-trainer"
-version = "1.10.1"
+version = "1.11.0"
 description = "幻兽帕鲁点击式修改器，集成常用功能、坐标传送、物品帕鲁科技一键操作与角色增强。"
 readme = "README.md"
 requires-python = ">=3.12"
