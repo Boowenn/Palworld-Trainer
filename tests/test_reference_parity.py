@@ -7,8 +7,10 @@ from palworld_trainer.catalog import CatalogEntry
 from palworld_trainer.reference_parity import (
     REFERENCE_ADD_PAL_TABS,
     REFERENCE_ITEM_TABS,
+    REFERENCE_PAL_ITEM_GROUP_KEYS,
     ReferenceCoordEntry,
     build_reference_item_groups,
+    build_reference_pal_item_groups,
     build_reference_spawn_groups,
 )
 
@@ -64,6 +66,33 @@ class ReferenceParityTests(unittest.TestCase):
         self.assertEqual(1.0, entry.x)
         self.assertEqual(2.0, entry.y)
         self.assertEqual(3.0, entry.z)
+
+    def test_reference_pal_item_groups_split_skill_passive_and_support_items(self) -> None:
+        entries = [
+            CatalogEntry("item", "SkillCard_AirBlade", "Skill Fruit: Air Blade"),
+            CatalogEntry(
+                "item",
+                "PalPassiveSkillChange_PAL_ALLAttack_up1",
+                "Implant: Brave",
+            ),
+            CatalogEntry("item", "ExpBoost_03", "Training Manual (L)"),
+            CatalogEntry("item", "PAL_Growth_Stone_L", "Growth Stone L"),
+            CatalogEntry("item", "PalRevive", "Revival Potion"),
+            CatalogEntry("item", "Wood", "Wood"),
+        ]
+
+        groups = build_reference_pal_item_groups(entries)
+
+        self.assertEqual(set(REFERENCE_PAL_ITEM_GROUP_KEYS), set(groups))
+        self.assertEqual(["SkillCard_AirBlade"], [entry.key for entry in groups["skill_fruits"]])
+        self.assertEqual(
+            ["PalPassiveSkillChange_PAL_ALLAttack_up1"],
+            [entry.key for entry in groups["passive_implants"]],
+        )
+        self.assertEqual(
+            ["PAL_Growth_Stone_L", "PalRevive", "ExpBoost_03"],
+            [entry.key for entry in groups["support_items"]],
+        )
 
 
 if __name__ == "__main__":

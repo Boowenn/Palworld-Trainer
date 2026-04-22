@@ -73,6 +73,7 @@ from .reference_parity import (
     REFERENCE_PAL_EDIT_TABS,
     ReferenceCoordEntry,
     build_reference_item_groups,
+    build_reference_pal_item_groups,
     build_reference_spawn_groups,
 )
 
@@ -96,6 +97,17 @@ TAB_NAMES = (
     "coords",
     "online",
     "changelog",
+)
+
+PAL_EDIT_MEMORY_SLOTS: tuple[tuple[str, float, str], ...] = (
+    ("帕鲁等级", 50.0, "i32"),
+    ("当前经验", 999999.0, "i32"),
+    ("帕鲁IV·近战", 100.0, "u8"),
+    ("帕鲁IV·射击", 100.0, "u8"),
+    ("帕鲁IV·防御", 100.0, "u8"),
+    ("帕鲁信赖度", 100.0, "f32"),
+    ("饥饿度", 100.0, "f32"),
+    ("心情", 100.0, "f32"),
 )
 
 
@@ -154,6 +166,10 @@ class TrainerApp:
             self.pal_entries,
             self.npc_entries,
         )
+        self._pal_item_reference_groups = build_reference_pal_item_groups(self.item_entries)
+        self._pal_skill_item_entries = self._pal_item_reference_groups["skill_fruits"]
+        self._pal_passive_item_entries = self._pal_item_reference_groups["passive_implants"]
+        self._pal_support_item_entries = self._pal_item_reference_groups["support_items"]
         self._coord_seed_entries = self._build_reference_coord_seed_entries()
         self.coord_workspace_groups = load_coord_workspace(self._coord_seed_entries)
         self._coord_workspace_group_map: dict[str, CoordWorkspaceGroup] = {
@@ -3215,15 +3231,30 @@ class TrainerApp:
         except ValueError:
             return default
 
-    def _give_item_entry(self, entry: CatalogEntry) -> None:
-        count = self._parse_count(self.item_count_var.get())
+    def _give_item_entry_with_count(
+        self,
+        entry: CatalogEntry,
+        count_raw: str,
+        *,
+        label_prefix: str,
+    ) -> None:
+        count = self._parse_count(count_raw)
         self.settings.custom_item_count = count
         self._remember_recent(self.settings.recent_item_ids, entry.key)
         save_settings(self.settings)
+        if hasattr(self, "item_count_var"):
+            self.item_count_var.set(str(count))
         self._refresh_item_shortcuts()
         self._dispatch_hidden_commands(
             [cmd.giveme(entry.key, count)],
-            label=f"发放物品：{entry.label} x{count}",
+            label=f"{label_prefix}：{entry.label} x{count}",
+        )
+
+    def _give_item_entry(self, entry: CatalogEntry) -> None:
+        self._give_item_entry_with_count(
+            entry,
+            self.item_count_var.get(),
+            label_prefix="发放物品",
         )
 
     def _spawn_pal_entry(self, entry: CatalogEntry) -> None:
@@ -3555,8 +3586,16 @@ class TrainerApp:
             ok=True,
         )
 
-    def _build_custom_slot_row(self, cs: CustomSlot, *, initial_value: str = "") -> None:
-        container = self._custom_slots_container
+    def _build_custom_slot_row(
+        self,
+        cs: CustomSlot,
+        *,
+        initial_value: str = "",
+        container: ttk.Frame | None = None,
+        allow_remove: bool = True,
+    ) -> None:
+        if container is None:
+            container = self._custom_slots_container
         frame = ttk.Frame(container, padding=(2, 2))
         frame.pack(fill="x", pady=2)
         self._mem_custom_row_frames[cs.key] = frame
@@ -3617,12 +3656,13 @@ class TrainerApp:
             command=lambda s=cs.key: self._on_mem_freeze_toggled(s),
         ).grid(row=0, column=5, sticky="w", padx=4, pady=2)
 
-        ttk.Button(
-            frame,
-            text="✕ 移除",
-            style="Quiet.TButton",
-            command=lambda s=cs.key: self._on_remove_custom_slot(s),
-        ).grid(row=0, column=6, sticky="w", padx=4, pady=2)
+        if allow_remove:
+            ttk.Button(
+                frame,
+                text="✕ 移除",
+                style="Quiet.TButton",
+                command=lambda s=cs.key: self._on_remove_custom_slot(s),
+            ).grid(row=0, column=6, sticky="w", padx=4, pady=2)
 
         frame.columnconfigure(1, weight=1)
 
@@ -3646,6 +3686,186 @@ class TrainerApp:
     def _show_custom_empty_hint(self) -> None:
         if self._custom_empty_hint is not None:
             self._custom_empty_hint.pack(anchor="w", pady=(4, 0))
+
+    def _ensure_named_custom_slot(
+        self,
+        label: str,
+        *,
+        default_target: float,
+        dtype: str,
+    ) -> CustomSlot:
+        for slot in self.mem.custom_slots():
+            if slot.label == label:
+                self.mem.set_slot_target(slot.key, default_target)
+                return slot
+        return self.mem.add_custom_slot(label, default_target=default_target, dtype=dtype)
+
+    def _build_named_custom_slot_row(
+        self,
+        parent: ttk.Frame,
+        *,
+        label: str,
+        default_target: float,
+        dtype: str,
+        initial_value: str = "",
+        allow_remove: bool = False,
+    ) -> CustomSlot:
+        slot = self._ensure_named_custom_slot(
+            label,
+            default_target=default_target,
+            dtype=dtype,
+        )
+        self._build_custom_slot_row(
+            slot,
+            initial_value=initial_value,
+            container=parent,
+            allow_remove=allow_remove,
+        )
+        return slot
+
+    def _refresh_subset_catalog_list(
+        self,
+        source_entries: list[CatalogEntry],
+        *,
+        query_var_name: str,
+        listbox_attr: str,
+        results_attr: str,
+    ) -> None:
+        query = getattr(self, query_var_name).get().strip()
+        results = search_catalog(source_entries, query, limit=400) if query else list(source_entries)
+        listbox = getattr(self, listbox_attr)
+        listbox.delete(0, "end")
+        for entry in results:
+            listbox.insert("end", self._catalog_display(entry))
+        setattr(self, results_attr, results)
+        listbox.selection_clear(0, "end")
+        if results:
+            listbox.selection_set(0)
+            listbox.activate(0)
+            listbox.see(0)
+
+    def _selected_subset_catalog_entry(
+        self,
+        *,
+        listbox_attr: str,
+        results_attr: str,
+    ) -> CatalogEntry | None:
+        listbox = getattr(self, listbox_attr)
+        results: list[CatalogEntry] = getattr(self, results_attr, [])
+        selection = listbox.curselection()
+        if selection:
+            index = selection[0]
+            if 0 <= index < len(results):
+                return results[index]
+        return results[0] if results else None
+
+    def _give_selected_subset_item(
+        self,
+        *,
+        listbox_attr: str,
+        results_attr: str,
+        count_var_name: str,
+        label_prefix: str,
+    ) -> None:
+        entry = self._selected_subset_catalog_entry(
+            listbox_attr=listbox_attr,
+            results_attr=results_attr,
+        )
+        if entry is None:
+            self._show_result("先选择一项再执行。", ok=False)
+            return
+        count_raw = getattr(self, count_var_name).get()
+        self._give_item_entry_with_count(entry, count_raw, label_prefix=label_prefix)
+
+    def _build_catalog_grant_panel(
+        self,
+        parent: ttk.Frame,
+        *,
+        title: str,
+        hint_text: str,
+        source_entries: list[CatalogEntry],
+        search_var_name: str,
+        count_var_name: str,
+        listbox_attr: str,
+        results_attr: str,
+        label_prefix: str,
+        button_text: str,
+    ) -> None:
+        panel = ttk.LabelFrame(parent, text=title, padding=(12, 8))
+        panel.pack(fill="both", expand=True, pady=(0, 8))
+
+        ttk.Label(
+            panel,
+            text=hint_text,
+            style="Status.TLabel",
+            justify="left",
+            wraplength=760,
+        ).pack(anchor="w", pady=(0, 8))
+
+        search_row = ttk.Frame(panel)
+        search_row.pack(fill="x", pady=(0, 8))
+        ttk.Label(search_row, text="搜索").pack(side="left")
+        search_var = tk.StringVar()
+        setattr(self, search_var_name, search_var)
+        search_var.trace_add(
+            "write",
+            lambda *_: self._refresh_subset_catalog_list(
+                source_entries,
+                query_var_name=search_var_name,
+                listbox_attr=listbox_attr,
+                results_attr=results_attr,
+            ),
+        )
+        ttk.Entry(search_row, textvariable=search_var).pack(
+            side="left",
+            padx=(8, 10),
+            fill="x",
+            expand=True,
+        )
+        ttk.Label(search_row, text="数量").pack(side="left")
+        count_var = tk.StringVar(value="1")
+        setattr(self, count_var_name, count_var)
+        ttk.Entry(search_row, textvariable=count_var, width=8).pack(side="left", padx=(6, 0))
+
+        list_frame = ttk.Frame(panel)
+        list_frame.pack(fill="both", expand=True)
+        listbox = tk.Listbox(list_frame, height=10, activestyle="dotbox")
+        setattr(self, listbox_attr, listbox)
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=listbox.yview)
+        listbox.configure(yscrollcommand=scrollbar.set)
+        listbox.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        listbox.bind(
+            "<Double-Button-1>",
+            lambda _event: self._give_selected_subset_item(
+                listbox_attr=listbox_attr,
+                results_attr=results_attr,
+                count_var_name=count_var_name,
+                label_prefix=label_prefix,
+            ),
+        )
+
+        actions = ttk.Frame(panel)
+        actions.pack(fill="x", pady=(8, 0))
+        ttk.Button(
+            actions,
+            text=button_text,
+            style="Big.TButton",
+            command=lambda: self._give_selected_subset_item(
+                listbox_attr=listbox_attr,
+                results_attr=results_attr,
+                count_var_name=count_var_name,
+                label_prefix=label_prefix,
+            ),
+        ).pack(side="left")
+
+        setattr(self, results_attr, [])
+        self._refresh_subset_catalog_list(
+            source_entries,
+            query_var_name=search_var_name,
+            listbox_attr=listbox_attr,
+            results_attr=results_attr,
+        )
 
     # ------------------------------------------------------------------
     # One-click presets
@@ -4501,34 +4721,154 @@ class TrainerApp:
         ttk.Label(tab, text="制作和建造", style="SubHeader.TLabel").pack(anchor="w")
         ttk.Label(
             tab,
-            text="参考版这一页以建造限制和配方相关项为主。当前仓库里已经稳定可用的是“解锁配方/样式”链路，所以先把它放到最前面，不再继续显示旧版科技页那套不对位入口。",
+            text=(
+                "参考版把建造兼容、科技解锁和常用世界快捷都放在这一页。"
+                "这一版把能稳定实测的主链路统一收回这里：建造兼容动作、科技整组解锁、"
+                "科技搜索和世界级快捷，不再保留旧的半成品占位说明。"
+            ),
             style="Status.TLabel",
             wraplength=860,
             justify="left",
         ).pack(anchor="w", pady=(4, 10))
 
-        supported = ttk.LabelFrame(tab, text="当前已接入的制作/建造功能", padding=(12, 8))
-        supported.pack(fill="x", pady=(0, 10))
-        ttk.Button(
-            supported,
-            text="制作和建造无视需求（重启游戏还原）",
-            style="Big.TButton",
-            command=lambda: self._send_with_label("@!unlockrecipes", "制作和建造无视需求"),
-        ).pack(anchor="w", fill="x", pady=(0, 6))
-        ttk.Button(
-            supported,
-            text="*临时解锁全建造和制作样式",
-            style="Big.TButton",
-            command=lambda: self._send_with_label("@!unlockrecipes", "临时解锁全建造和制作样式"),
-        ).pack(anchor="w", fill="x")
+        shortcuts = ttk.LabelFrame(tab, text="建造与世界快捷", padding=(12, 8))
+        shortcuts.pack(fill="x", pady=(0, 10))
+        shortcut_grid = ttk.Frame(shortcuts)
+        shortcut_grid.pack(fill="x")
+        shortcut_buttons: list[tuple[str, Callable[[], None]]] = [
+            (
+                "制作和建造无视需求",
+                lambda: self._dispatch_hidden_commands(
+                    [cmd.unlock_recipes()],
+                    label="制作和建造无视需求",
+                ),
+            ),
+            (
+                "临时解锁全建造和制作样式",
+                lambda: self._dispatch_hidden_commands(
+                    [cmd.unlock_recipes()],
+                    label="临时解锁全建造和制作样式",
+                ),
+            ),
+            ("解锁全部科技", self._on_unlock_all_tech),
+            ("解锁所有传送点", self._on_unlock_fast_travel),
+            (
+                "给满绿胖子像",
+                lambda: self._dispatch_hidden_commands(
+                    [cmd.give_all_statues()],
+                    label="给满绿胖子像",
+                ),
+            ),
+            ("早上 6:00", lambda: self._on_set_time(6)),
+        ]
+        for index, (label, callback) in enumerate(shortcut_buttons):
+            ttk.Button(
+                shortcut_grid,
+                text=label,
+                style="Big.TButton" if index < 2 else "Quiet.TButton",
+                command=callback,
+            ).grid(row=index // 3, column=index % 3, padx=4, pady=4, sticky="ew")
+        for column in range(3):
+            shortcut_grid.columnconfigure(column, weight=1)
 
-        ttk.Label(
-            tab,
-            text="无视重叠、无视地面、无视基地范围等深度建造限制项，当前桥接层还没有稳定接出对应底层，所以这一页先不伪装成全部可用。",
-            style="Status.TLabel",
-            wraplength=860,
-            justify="left",
-        ).pack(anchor="w")
+        tech_tools = ttk.LabelFrame(tab, text="科技快捷 / 搜索", padding=(12, 8))
+        tech_tools.pack(fill="both", expand=True)
+
+        quick_row = ttk.Frame(tech_tools)
+        quick_row.pack(fill="x", pady=(0, 8))
+        ttk.Label(quick_row, text="常用分组").pack(side="left")
+        self.tech_quick_group_var = tk.StringVar(value=next(iter(self._tech_guide_groups), ""))
+        self.tech_quick_group_box = ttk.Combobox(
+            quick_row,
+            textvariable=self.tech_quick_group_var,
+            values=list(self._tech_guide_groups),
+            state="readonly",
+            width=24,
+        )
+        self.tech_quick_group_box.pack(side="left", padx=(6, 12))
+        self.tech_quick_group_box.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self._refresh_tech_quick_choices(),
+        )
+
+        self.tech_quick_choice_var = tk.StringVar()
+        self.tech_quick_choice_box = ttk.Combobox(
+            quick_row,
+            textvariable=self.tech_quick_choice_var,
+            state="readonly",
+            width=34,
+        )
+        self.tech_quick_choice_box.pack(side="left", padx=(6, 10), fill="x", expand=True)
+        ttk.Button(
+            quick_row,
+            text="解锁当前",
+            style="Big.TButton",
+            command=self._unlock_selected_tech_quick,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            quick_row,
+            text="整组解锁",
+            style="Quiet.TButton",
+            command=self._unlock_selected_tech_group,
+        ).pack(side="left")
+
+        full_row = ttk.Frame(tech_tools)
+        full_row.pack(fill="x", pady=(0, 8))
+        ttk.Label(full_row, text="全部科技").pack(side="left")
+        self.tech_full_var = tk.StringVar()
+        self.tech_full_box = ttk.Combobox(
+            full_row,
+            textvariable=self.tech_full_var,
+            state="readonly",
+            width=50,
+        )
+        self.tech_full_box.pack(side="left", padx=(6, 10), fill="x", expand=True)
+        ttk.Button(
+            full_row,
+            text="解锁选中",
+            style="Quiet.TButton",
+            command=self._unlock_selected_tech_full,
+        ).pack(side="left")
+
+        search_row = ttk.Frame(tech_tools)
+        search_row.pack(fill="x", pady=(0, 8))
+        ttk.Label(search_row, text="搜索 Id / 名称").pack(side="left")
+        self.tech_search_var = tk.StringVar()
+        self.tech_search_var.trace_add("write", lambda *_: self._refresh_tech_list())
+        ttk.Entry(search_row, textvariable=self.tech_search_var).pack(
+            side="left",
+            padx=(8, 0),
+            fill="x",
+            expand=True,
+        )
+
+        list_frame = ttk.Frame(tech_tools)
+        list_frame.pack(fill="both", expand=True)
+        self.tech_listbox = tk.Listbox(list_frame, height=12, activestyle="dotbox")
+        tech_scroll = ttk.Scrollbar(list_frame, orient="vertical", command=self.tech_listbox.yview)
+        self.tech_listbox.configure(yscrollcommand=tech_scroll.set)
+        self.tech_listbox.pack(side="left", fill="both", expand=True)
+        tech_scroll.pack(side="right", fill="y")
+        self.tech_listbox.bind("<Double-Button-1>", lambda _event: self._on_unlock_selected_tech())
+
+        bottom_row = ttk.Frame(tech_tools)
+        bottom_row.pack(fill="x", pady=(8, 0))
+        ttk.Button(
+            bottom_row,
+            text="解锁选中科技",
+            style="Big.TButton",
+            command=self._on_unlock_selected_tech,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            bottom_row,
+            text="刷新状态",
+            style="Quiet.TButton",
+            command=self._refresh_status,
+        ).pack(side="left")
+
+        self._refresh_tech_quick_choices()
+        self._refresh_tech_full_choices()
+        self._refresh_tech_list()
 
     def _build_pal_edit_tab(self) -> None:
         tab = ttk.Frame(self.notebook, padding=16)
@@ -4537,7 +4877,11 @@ class TrainerApp:
         ttk.Label(tab, text="帕鲁修改", style="SubHeader.TLabel").pack(anchor="w")
         ttk.Label(
             tab,
-            text="参考版这一页会在背包帕鲁详情页里读写更多属性。当前开源版先把页内结构、命名和主流程对齐，避免继续保留旧版占位说明。",
+            text=(
+                "这一页现在按参考版拆成 5 个子页，但不再只放说明。"
+                "当前稳定可测的是：复制帕鲁、帕鲁培养道具、技能果实、被动植入体，"
+                "以及专门给帕鲁字段准备的内存工作台。"
+            ),
             style="Status.TLabel",
             wraplength=860,
             justify="left",
@@ -4547,8 +4891,17 @@ class TrainerApp:
         actions.pack(fill="x", pady=(0, 10))
         ttk.Button(
             actions,
-            text="打开 *添加帕鲁",
+            text="复制当前帕鲁",
             style="Big.TButton",
+            command=lambda: self._dispatch_hidden_commands(
+                [cmd.duplicate_last_pal()],
+                label="复制当前帕鲁",
+            ),
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            actions,
+            text="打开 *添加帕鲁",
+            style="Quiet.TButton",
             command=lambda: self.notebook.select(TAB_NAMES.index("pals")),
         ).pack(side="left", padx=(0, 6))
         ttk.Button(
@@ -4560,16 +4913,151 @@ class TrainerApp:
 
         inner = ttk.Notebook(tab)
         inner.pack(fill="both", expand=True)
-        for title in REFERENCE_PAL_EDIT_TABS:
-            frame = ttk.Frame(inner, padding=12)
+        basic_tab = ttk.Frame(inner, padding=12)
+        more_tab = ttk.Frame(inner, padding=12)
+        active_tab = ttk.Frame(inner, padding=12)
+        learned_tab = ttk.Frame(inner, padding=12)
+        passive_tab = ttk.Frame(inner, padding=12)
+        for title, frame in zip(
+            REFERENCE_PAL_EDIT_TABS,
+            (basic_tab, more_tab, active_tab, learned_tab, passive_tab),
+        ):
             inner.add(frame, text=title)
-            ttk.Label(
-                frame,
-                text="这一页的深度读写功能需要继续并到参考版同等级的底层支持上；当前先完成页面结构和主流程去重，不再保留旧版误导性入口。",
-                style="Status.TLabel",
-                wraplength=820,
-                justify="left",
-            ).pack(anchor="w")
+
+        mem_frame = ttk.LabelFrame(basic_tab, text="帕鲁字段工作台", padding=(12, 8))
+        mem_frame.pack(fill="x", pady=(0, 8))
+        ttk.Label(
+            mem_frame,
+            text=(
+                "选中背包或据点里的目标帕鲁后，再在这里做扫描。"
+                "这组字段已经按参考版主流程预排好了：等级、经验、三项个体值。"
+            ),
+            style="Status.TLabel",
+            wraplength=760,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+        attach_row = ttk.Frame(mem_frame)
+        attach_row.pack(fill="x", pady=(0, 8))
+        self.mem_attach_label = ttk.Label(
+            attach_row,
+            text="外挂：未连接",
+            style="Warn.TLabel",
+        )
+        self.mem_attach_label.pack(side="left")
+        ttk.Button(
+            attach_row,
+            text="连接游戏",
+            style="Quiet.TButton",
+            command=self._on_mem_attach,
+        ).pack(side="right", padx=(4, 0))
+        ttk.Button(
+            attach_row,
+            text="断开",
+            style="Quiet.TButton",
+            command=self._on_mem_detach,
+        ).pack(side="right")
+
+        basic_slots = ttk.Frame(mem_frame)
+        basic_slots.pack(fill="x")
+        for label, default_target, dtype in PAL_EDIT_MEMORY_SLOTS[:5]:
+            self._build_named_custom_slot_row(
+                basic_slots,
+                label=label,
+                default_target=default_target,
+                dtype=dtype,
+            )
+
+        basic_actions = ttk.Frame(basic_tab)
+        basic_actions.pack(fill="x", pady=(8, 0))
+        ttk.Button(
+            basic_actions,
+            text="复制当前帕鲁",
+            style="Big.TButton",
+            command=lambda: self._dispatch_hidden_commands(
+                [cmd.duplicate_last_pal()],
+                label="复制当前帕鲁",
+            ),
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            basic_actions,
+            text="刷新内存状态",
+            style="Quiet.TButton",
+            command=self._refresh_mem_rows,
+        ).pack(side="left")
+
+        more_slots = ttk.LabelFrame(more_tab, text="更多字段", padding=(12, 8))
+        more_slots.pack(fill="x", pady=(0, 8))
+        ttk.Label(
+            more_slots,
+            text="参考版这块主要是信赖度、饥饿度、心情一类更深的帕鲁字段；这里已经拆成独立扫描行，不再让你回到旧的高级页自己加。",
+            style="Status.TLabel",
+            wraplength=760,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+        more_slot_rows = ttk.Frame(more_slots)
+        more_slot_rows.pack(fill="x")
+        for label, default_target, dtype in PAL_EDIT_MEMORY_SLOTS[5:]:
+            self._build_named_custom_slot_row(
+                more_slot_rows,
+                label=label,
+                default_target=default_target,
+                dtype=dtype,
+            )
+
+        self._build_catalog_grant_panel(
+            more_tab,
+            title="培养补给",
+            hint_text="训练手册、成长石和复活药都集中到这里，方便按参考版的培养流程一页处理。",
+            source_entries=self._pal_support_item_entries,
+            search_var_name="pal_support_search_var",
+            count_var_name="pal_support_count_var",
+            listbox_attr="pal_support_listbox",
+            results_attr="_current_pal_support_results",
+            label_prefix="发放帕鲁补给",
+            button_text="发放选中补给",
+        )
+
+        self._build_catalog_grant_panel(
+            active_tab,
+            title="技能果实",
+            hint_text="按名称搜索技能果实，双击或按钮直接发放。这里对齐的是参考版“主动技能”页的主操作感受。",
+            source_entries=self._pal_skill_item_entries,
+            search_var_name="pal_skill_search_var",
+            count_var_name="pal_skill_count_var",
+            listbox_attr="pal_skill_listbox",
+            results_attr="_current_pal_skill_results",
+            label_prefix="发放技能果实",
+            button_text="发放技能果实",
+        )
+
+        self._build_catalog_grant_panel(
+            learned_tab,
+            title="习得技能道具",
+            hint_text="参考版把主动技能和习得技能拆开显示；这里单独保留一页，方便你按不同培养步骤连续发放。",
+            source_entries=self._pal_skill_item_entries,
+            search_var_name="pal_learned_skill_search_var",
+            count_var_name="pal_learned_skill_count_var",
+            listbox_attr="pal_learned_skill_listbox",
+            results_attr="_current_pal_learned_skill_results",
+            label_prefix="发放习得技能道具",
+            button_text="发放习得技能道具",
+        )
+
+        self._build_catalog_grant_panel(
+            passive_tab,
+            title="被动词条植入体",
+            hint_text="被动词条相关的植入体会全部列在这里，搜索和发放都走主流程，不再藏到物品页里。",
+            source_entries=self._pal_passive_item_entries,
+            search_var_name="pal_passive_search_var",
+            count_var_name="pal_passive_count_var",
+            listbox_attr="pal_passive_listbox",
+            results_attr="_current_pal_passive_results",
+            label_prefix="发放被动植入体",
+            button_text="发放选中词条",
+        )
+
+        if self._mem_refresh_job is None:
+            self._schedule_mem_refresh()
 
     def _build_online_pal_tab(self) -> None:
         tab = ttk.Frame(self.notebook, padding=16)
@@ -4578,32 +5066,90 @@ class TrainerApp:
         ttk.Label(tab, text="*联机帕鲁修改", style="SubHeader.TLabel").pack(anchor="w")
         ttk.Label(
             tab,
-            text="参考版把联机帕鲁修改单独放成顶层页签。当前开源版先保留这个结构入口，并把常用生成/联机功能页串起来，避免继续显示旧占位说明。",
+            text=(
+                "参考版把联机帕鲁修改单独放成顶层页签。"
+                "这一版把目前能稳定联机使用、也能和你当前会话做低风险实测的几条链路单独收在这里："
+                "复制帕鲁、联机培养补给、联机技能/词条补给。"
+            ),
             style="Status.TLabel",
             wraplength=860,
             justify="left",
         ).pack(anchor="w", pady=(4, 10))
 
-        row = ttk.Frame(tab)
-        row.pack(fill="x")
+        top_actions = ttk.Frame(tab)
+        top_actions.pack(fill="x", pady=(0, 10))
         ttk.Button(
-            row,
-            text="打开 *添加帕鲁",
+            top_actions,
+            text="复制当前准心帕鲁",
             style="Big.TButton",
+            command=lambda: self._dispatch_hidden_commands(
+                [cmd.duplicate_last_pal()],
+                label="联机复制当前帕鲁",
+            ),
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            top_actions,
+            text="打开帕鲁修改",
+            style="Quiet.TButton",
+            command=lambda: self.notebook.select(TAB_NAMES.index("pal_edit")),
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            top_actions,
+            text="打开 *添加帕鲁",
+            style="Quiet.TButton",
             command=lambda: self.notebook.select(TAB_NAMES.index("pals")),
         ).pack(side="left", padx=(0, 6))
         ttk.Button(
-            row,
+            top_actions,
             text="打开 联机功能",
             style="Quiet.TButton",
             command=lambda: self.notebook.select(TAB_NAMES.index("online")),
         ).pack(side="left", padx=(0, 6))
         ttk.Button(
-            row,
-            text="刷新状态",
+            top_actions,
+            text="刷新",
             style="Quiet.TButton",
             command=self._refresh_status,
         ).pack(side="left")
+
+        self._build_catalog_grant_panel(
+            tab,
+            title="联机技能果实",
+            hint_text="四人房主/联机会话里需要连续给技能果实时，直接在这里搜名称后发放，不必来回切页。",
+            source_entries=self._pal_skill_item_entries,
+            search_var_name="online_pal_skill_search_var",
+            count_var_name="online_pal_skill_count_var",
+            listbox_attr="online_pal_skill_listbox",
+            results_attr="_current_online_pal_skill_results",
+            label_prefix="联机发放技能果实",
+            button_text="联机发放技能果实",
+        )
+
+        self._build_catalog_grant_panel(
+            tab,
+            title="联机被动词条",
+            hint_text="被动植入体也单独放在联机页，方便和房主复制/培养链路连着用。",
+            source_entries=self._pal_passive_item_entries,
+            search_var_name="online_pal_passive_search_var",
+            count_var_name="online_pal_passive_count_var",
+            listbox_attr="online_pal_passive_listbox",
+            results_attr="_current_online_pal_passive_results",
+            label_prefix="联机发放被动植入体",
+            button_text="联机发放选中词条",
+        )
+
+        self._build_catalog_grant_panel(
+            tab,
+            title="联机培养补给",
+            hint_text="训练手册、成长石、复活药同样保留在联机页，避免只给单机帕鲁页放入口。",
+            source_entries=self._pal_support_item_entries,
+            search_var_name="online_pal_support_search_var",
+            count_var_name="online_pal_support_count_var",
+            listbox_attr="online_pal_support_listbox",
+            results_attr="_current_online_pal_support_results",
+            label_prefix="联机发放帕鲁补给",
+            button_text="联机发放选中补给",
+        )
 
     def _apply_reference_common_cheats(self) -> None:
         self.bridge_godmode_var.set(bool(self.common_ref_godmode_var.get()))

@@ -57,6 +57,10 @@ def unlock_all_tech() -> str:
     return "@!unlockalltech"
 
 
+def unlock_recipes() -> str:
+    return "@!unlockrecipes"
+
+
 def unlock_fast_travel() -> str:
     return "@!unlockft"
 
@@ -88,6 +92,14 @@ def goto_player(player: str) -> str:
 
 def help_command() -> str:
     return "@!help"
+
+
+def duplicate_last_pal() -> str:
+    return "@!duplast"
+
+
+def give_all_statues() -> str:
+    return "@!giveallstatues"
 
 
 def sanitize_command(raw: str) -> str:

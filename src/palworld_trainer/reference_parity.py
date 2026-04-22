@@ -5,6 +5,13 @@ from dataclasses import dataclass
 from .catalog import CatalogEntry
 
 
+REFERENCE_PAL_ITEM_GROUP_KEYS: tuple[str, ...] = (
+    "skill_fruits",
+    "passive_implants",
+    "support_items",
+)
+
+
 REFERENCE_ITEM_TABS: tuple[str, ...] = (
     "新物品(0.7.0)",
     "次新物品(0.6.0)",
@@ -323,4 +330,33 @@ def build_reference_spawn_groups(
 
     for title in groups:
         groups[title].sort(key=lambda item: (item.label.casefold(), item.key.casefold()))
+    return groups
+
+
+def build_reference_pal_item_groups(entries: list[CatalogEntry]) -> dict[str, list[CatalogEntry]]:
+    groups = {key: [] for key in REFERENCE_PAL_ITEM_GROUP_KEYS}
+
+    for entry in entries:
+        key = _fold(entry.key)
+        label = _fold(entry.label)
+        combined = f"{key} {label}"
+
+        if key.startswith("skillcard_") or "skill fruit" in combined:
+            groups["skill_fruits"].append(entry)
+            continue
+        if key.startswith("palpassiveskillchange_") or "implant:" in combined:
+            groups["passive_implants"].append(entry)
+            continue
+        if (
+            key.startswith("expboost_")
+            or key.startswith("pal_growth_stone_")
+            or key == "palrevive"
+            or "training manual" in combined
+            or "growth stone" in combined
+            or "revival potion" in combined
+        ):
+            groups["support_items"].append(entry)
+
+    for group_entries in groups.values():
+        group_entries.sort(key=lambda item: (item.label.casefold(), item.key.casefold()))
     return groups

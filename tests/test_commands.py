@@ -24,8 +24,17 @@ class CommandBuilderTests(unittest.TestCase):
     def test_unlock_all_tech(self) -> None:
         self.assertEqual("@!unlockalltech", cmd.unlock_all_tech())
 
+    def test_unlock_recipes(self) -> None:
+        self.assertEqual("@!unlockrecipes", cmd.unlock_recipes())
+
     def test_unlock_fast_travel(self) -> None:
         self.assertEqual("@!unlockft", cmd.unlock_fast_travel())
+
+    def test_duplicate_last_pal(self) -> None:
+        self.assertEqual("@!duplast", cmd.duplicate_last_pal())
+
+    def test_give_all_statues(self) -> None:
+        self.assertEqual("@!giveallstatues", cmd.give_all_statues())
 
     def test_set_time_clamps_hour(self) -> None:
         self.assertEqual("@!settime 0", cmd.set_time(-1))

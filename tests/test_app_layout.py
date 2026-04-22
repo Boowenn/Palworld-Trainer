@@ -70,6 +70,11 @@ class AppLayoutTests(unittest.TestCase):
             self.assertTrue(hasattr(app, "coord_item_listbox"))
             self.assertTrue(hasattr(app, "common_ref_godmode_var"))
             self.assertTrue(hasattr(app, "online_fly_var"))
+            self.assertTrue(hasattr(app, "mem_attach_label"))
+            self.assertTrue(hasattr(app, "pal_skill_listbox"))
+            self.assertTrue(hasattr(app, "pal_passive_listbox"))
+            self.assertTrue(hasattr(app, "online_pal_skill_listbox"))
+            self.assertTrue(hasattr(app, "tech_quick_group_box"))
             self.assertTrue(hasattr(app, "env_text"))
             self.assertTrue(hasattr(app, "changelog_text"))
         finally:

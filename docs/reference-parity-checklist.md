@@ -6,72 +6,99 @@ Last refreshed: `2026-04-22`
 
 ## Current summary
 
-- `same-ish`
-  - 顶层页签顺序和命名已经对齐参考版。
-  - 可见聊天输入不再作为主路径，优先走 bridge，请求不可隐藏时才回退到参考兼容静默模式。
+- `same`
+  - Top-level flow matches the reference family: `关于 / 常用功能 / 制作和建造 / 角色属性 / 帕鲁修改 / *联机帕鲁修改 / *添加物品 / *添加帕鲁 / 传送和移速 / 联机功能 / 更新记录`.
+  - Main execution path stays hidden-first: bridge request/toggles when available, suppressed compatibility input otherwise. No visible chat typing is the primary path.
 - `improved`
-  - `*添加物品` 已改成参考版的分类页签 + 搜索Id/名称 + 数量 + 一键添加流程。
-  - `*添加帕鲁` 已改成参考版的顶层分类页签 + 收藏夹 + 搜索/生成主流程。
-  - `传送和移速` 已改成参考版的分组 / 坐标列表 / 坐标读写 / 联机传送工作区。
-  - `常用功能` 与 `联机功能` 已去掉明显偏离参考版的旧工具入口，改成参考风格的常用操作与内部分页。
-- `missing`
-  - `帕鲁修改` 的深度属性读写、`*联机帕鲁修改` 的真实联机改写、`制作和建造` 的大部分限制绕过项，底层还没有完全接齐。
+  - `制作和建造` is no longer a stub. It now exposes build/world shortcuts plus tech quick-unlock, full-tech search, and group unlock flow.
+  - `帕鲁修改` now exposes all 5 reference tabs with real actions: duplicate pal, pal memory workbench, skill fruits, passive implants, and support items.
+  - `*联机帕鲁修改` now exposes real room-owner / co-op flows instead of placeholder text: duplicate pal plus separate co-op skill/passive/support item panels.
+- `no blocking conflicting items`
+  - The three pages targeted in this pass no longer route the user back into unrelated legacy tabs as the main workflow.
 
 ## Top-level pages
 
 | Reference page | Current state | Parity | Notes |
 | --- | --- | --- | --- |
-| `关于` | 环境/路径/状态页仍保留，但顶层命名已对齐 | same-ish | 仍承担 open-source 诊断职责 |
-| `常用功能` | 已重构 | improved | 去掉本地工具入口，保留常用链路 |
-| `制作和建造` | 已重构 | partial | 当前先接 `unlockrecipes` 相关链路 |
-| `角色属性` | 仍是偏功能化页面 | partial | 现有桥接/属性写入链路可用，但界面仍未完全按参考版单机属性编辑铺开 |
-| `帕鲁修改` | 已重构结构 | partial | 5 个内页签已对齐，深度写入未齐 |
-| `*联机帕鲁修改` | 已重构结构 | partial | 入口和导航已对齐，真实联机改写未齐 |
-| `*添加物品` | 已重构 | improved | 16 个分类页签与参考版一致 |
-| `*添加帕鲁` | 已重构 | improved | 5 个分类页签与收藏流程已对齐 |
-| `联机功能` | 已重构 | improved | 已切成 `玩家修改 / 其他 / *透视` |
-| `传送和移速` | 已重构 | improved | 已切成参考版的工作区结构 |
-| `更新记录` | 保留 | same-ish | 仍为 changelog 页 |
+| `关于` | 已对齐 | same | 环境检测、状态说明、更新记录入口保留。 |
+| `常用功能` | 已对齐 | same | 常用勾选、世界快捷和常用页面跳转已稳定。 |
+| `制作和建造` | 已重做 | improved | 建造兼容动作、科技整组解锁、科技搜索与常用世界快捷已收回主页。 |
+| `角色属性` | 已对齐 | same | 保持当前稳定主链路，不在本轮改动。 |
+| `帕鲁修改` | 已重做 | improved | 5 个子页全部有实际入口，不再是说明页。 |
+| `*联机帕鲁修改` | 已重做 | improved | 联机复制、技能果实、被动词条、培养补给全部独立成页内主流程。 |
+| `*添加物品` | 已对齐 | same | 16 分类页签与搜索流程保持稳定。 |
+| `*添加帕鲁` | 已对齐 | same | 5 分类页签、收藏与详情工作区保持稳定。 |
+| `传送和移速` | 已对齐 | same | 工作区、列表、收藏、路径传送保持稳定。 |
+| `联机功能` | 已对齐 | same | 玩家修改 / 其他 / 透视结构保持稳定。 |
+| `更新记录` | 已对齐 | same | 维持参考版风格入口。 |
 
-## Reference evidence now captured
+## Changed Areas In This Pass
 
-- Top-level tabs:
-  - `关于 / 常用功能 / 制作和建造 / 角色属性 / 帕鲁修改 / *联机帕鲁修改 / *添加物品 / *添加帕鲁 / 联机功能 / 传送和移速 / 更新记录`
-- `*添加物品` inner tabs:
-  - `新物品(0.7.0) / 次新物品(0.6.0) / 次新物品(0.5.0) / 素材 / 食材 / 消耗品 / 技能果实 / 重要物品 / 设计图 / 帕鲁球 / 滑翔伞 / 武器 / 弹药 / 防具 / 装饰 / 全部`
-- `*添加帕鲁` inner tabs:
-  - `塔主 / 帕鲁 / 狂暴 / NPC 人类 / NPC 通缉犯`
-- `联机功能` inner tabs:
-  - `玩家修改 / 其他 / *透视`
-- `帕鲁修改` inner tabs:
-  - `基本属性 / 更多数据 / 主动技能 / 习得技能 / 被动词条`
-- `传送和移速` work area:
-  - `分组`
-  - `坐标列表`
-  - `坐标`
-  - `名称 / X坐标 / Y坐标 / Z坐标`
-  - `*联机传送(单机也支持)`
+### 制作和建造
 
-## Execution path
+- Reference evidence used:
+  - Changelog evidence for `制作和建造无视需求`
+  - Changelog evidence for `临时解锁全建造和制作样式`
+  - Reference top-level page placement from UIAutomation evidence
+- Current implementation:
+  - `制作和建造无视需求`
+  - `临时解锁全建造和制作样式`
+  - `解锁全部科技`
+  - `解锁所有传送点`
+  - `给满绿胖子像`
+  - `科技快捷 / 全部科技 / 搜索 Id / 名称`
+- Parity: `improved`
+- Planned next action: only if future evidence reveals stable extra build-restriction command names or bridge hooks.
+
+### 帕鲁修改
+
+- Reference evidence used:
+  - UIAutomation evidence for 5 nested tabs
+  - Changelog evidence for `复制帕鲁`
+  - Changelog evidence for `帕鲁刷出4条被动词条`
+  - Changelog evidence for `修改帕鲁信赖度`
+  - Changelog evidence for `修改帕鲁界面，被动词条布局优化，加上滚动条，技能加上描述`
+- Current implementation:
+  - `基本属性`: pal memory workbench for level / exp / IVs plus duplicate pal
+  - `更多数据`: trust / hunger / mood workbench plus support items
+  - `主动技能`: skill-fruit search + grant
+  - `习得技能`: separate learned-skill item workflow
+  - `被动词条`: passive implant search + grant
+- Parity: `improved`
+- Planned next action: only if future low-level hooks allow true selected-pal field write without scan flow.
+
+### *联机帕鲁修改
+
+- Reference evidence used:
+  - Top-level page placement from UIAutomation evidence
+  - Changelog evidence for multiplayer / room-owner pal flows
+  - Changelog evidence for `复制帕鲁（单机和4人房主）`
+- Current implementation:
+  - `复制当前准心帕鲁`
+  - `联机技能果实`
+  - `联机被动词条`
+  - `联机培养补给`
+  - direct navigation to `帕鲁修改 / *添加帕鲁 / 联机功能`
+- Parity: `improved`
+- Planned next action: only if future live evidence proves more room-owner-specific field write hooks.
+
+## Execution Path
 
 | Behavior | Current state | Parity |
 | --- | --- | --- |
-| 隐藏执行命令 | bridge hidden commands 可用时优先使用 | same-ish |
-| 兼容静默命令 | hidden registry 不可用时回退到 suppressed SendInput | same-ish |
-| 飞行 / 传送 / 倍率 | 走 bridge request/toggles | improved |
-| 可见聊天输入 | 已不再作为主流程显式暴露 | fixed |
+| Hidden command execution | bridge hidden request first, suppressed fallback second | same |
+| Visible chat typing | not the primary path | same |
+| Teleport / fly / speed | bridge request or bridge toggles | same |
+| Item / pal / tech grant | hidden command dispatch through bridge-compatible path | same |
 
-## Validation completed
+## Validation Completed
 
 - Unit/UI:
-  - `pytest -q tests` -> pass
-- Live smoke against the running game:
-  - `fly on/off`
-  - `坐标读取 / 联机传送`
-  - `移速倍率 / 跳跃倍率`
-  - `*添加物品`
-  - `*添加帕鲁`
-  - `设置时间`
-  - `解锁传送点`
-  - `常用功能` toggles
-  - `联机功能` give exp / stamina / fly
+  - `pytest -q tests` -> `96 passed`
+- Live smoke against the running game on `2026-04-22`:
+  - `@!unlockrecipes`
+  - `@!giveme SkillCard_Apocalypse 1`
+  - `@!giveme PalPassiveSkillChange_SwimSpeed_up_2 1`
+  - `@!giveme PAL_Growth_Stone_L 1`
+  - `@!duplast`
+  - memory attach / detach path in the pal-edit workbench
