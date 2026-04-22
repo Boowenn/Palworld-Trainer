@@ -22,12 +22,13 @@ Reference artifact: `D:\帕鲁修改器\PalworldTrainer-chenstack-0.13.1.exe`
 
 | Behavior | Current repo state | Parity | Action |
 | --- | --- | --- | --- |
-| 可见聊天命令输入/自动打字 | 已从主执行链路移除 | fixed | 不再回退到 `SendInput` |
-| 隐藏命令执行 | 走桥接 `run_hidden_commands` | same-ish | 继续扩展桥接覆盖面 |
+| 参考版兼容静默输入 | 已恢复为兼容回退链路，仅在桥接隐藏注册不可用时启用 | fixed | 保持“bridge 优先，兼容静默兜底” |
+| 可见聊天命令输入/自动打字 | 不再作为对用户可见的主路径 | fixed | 继续避免裸露聊天框回显 |
+| 隐藏命令执行 | 优先走桥接 `run_hidden_commands`，失败时回退参考版兼容静默输入 | same-ish | 继续扩展桥接覆盖面 |
 | 飞行/传送/坐标读取 | 优先走桥接 request/status | same-ish | 继续做真实会话烟测 |
 
 ## Known extra or conflicting areas
 
 - 原 `命令` 页和自由命令思路与参考版冲突，已从主界面移除。
 - 原 `高级` 内存扫描入口与参考版主流程冲突，已从顶层移除。
-- 旧的可见聊天框回退与参考版冲突，已移除主链路。
+- 旧的可见聊天框回退与参考版冲突，已改成仅在静默抑制可用时启用的兼容链路。

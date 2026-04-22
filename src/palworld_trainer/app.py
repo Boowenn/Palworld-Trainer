@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+from queue import Empty, SimpleQueue
 import subprocess
 import threading
 import time
@@ -165,11 +166,14 @@ class TrainerApp:
         self._mem_busy: bool = False
         self._mem_refresh_job: str | None = None
         self._route_stop_event = threading.Event()
+        self._ui_call_queue: SimpleQueue[Callable[[], None]] = SimpleQueue()
+        self._ui_call_job: str | None = None
         self._bridge_request_counter: int = int(time.time() * 1000)
 
         self._configure_root()
         self._build_style()
         self._build_layout()
+        self._schedule_ui_call_drain()
         self._refresh_status()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -181,6 +185,26 @@ class TrainerApp:
         self.root.title(f"{APP_TITLE}  v{self.version}")
         self.root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
         self.root.minsize(820, 580)
+
+    def _queue_ui_call(self, callback: Callable[[], None]) -> None:
+        self._ui_call_queue.put(callback)
+
+    def _schedule_ui_call_drain(self) -> None:
+        self._ui_call_job = self.root.after(40, self._drain_ui_call_queue)
+
+    def _drain_ui_call_queue(self) -> None:
+        self._ui_call_job = None
+        while True:
+            try:
+                callback = self._ui_call_queue.get_nowait()
+            except Empty:
+                break
+            try:
+                callback()
+            except Exception:
+                continue
+        if self.root.winfo_exists():
+            self._schedule_ui_call_drain()
         try:
             self.root.tk.call("tk", "scaling", 1.25)
         except tk.TclError:
@@ -1257,6 +1281,8 @@ class TrainerApp:
             return
 
         status = self._read_bridge_status()
+        bridge_version = status.bridge_version or "未知版本"
+        hidden_mode = self._hidden_command_dispatch_mode()
         if self.report.trainer_bridge_target is None:
             text = "未找到 UE4SS Mods 目录，无法部署玩家增强模块。"
             style = "Bad.TLabel"
@@ -1266,11 +1292,29 @@ class TrainerApp:
         elif not self.report.trainer_bridge_deployed or not self.report.trainer_bridge_enabled:
             text = "玩家增强模块还没部署完成，点右侧按钮即可自动修复。"
             style = "Warn.TLabel"
-        elif status.player_valid:
-            text = "玩家增强模块已就绪；无敌/体力/负重/倍率会按当前设置持续生效。"
+        elif status.player_valid and hidden_mode == "bridge":
+            text = (
+                f"玩家增强模块已就绪（bridge {bridge_version}，原生隐藏指令可用）；"
+                "飞行/坐标/物品/帕鲁等主流程都可直接使用。"
+            )
             style = "Good.TLabel"
+        elif status.player_valid and hidden_mode == "fallback":
+            text = (
+                f"玩家增强模块当前走兼容模式（bridge {bridge_version}）；"
+                "飞行/坐标走 bridge，物品等指令按参考版静默发送。"
+            )
+            style = "Good.TLabel"
+        elif status.player_valid:
+            text = (
+                f"玩家增强模块已连接（bridge {bridge_version}），"
+                "但隐藏指令链路未就绪；当前可先用飞行/坐标。"
+            )
+            style = "Warn.TLabel"
         else:
-            text = "玩家增强模块已写入，但当前这局还没载入；完全退出并重开游戏后生效。"
+            text = (
+                f"玩家增强模块已写入（bridge {bridge_version}），"
+                "但当前这局还没载入；请先进世界后再刷新状态。"
+            )
             style = "Warn.TLabel"
 
         self.player_bridge_status_label.configure(text=text, style=style)
@@ -1334,6 +1378,13 @@ class TrainerApp:
             return False
         return self._read_bridge_status().chat_suppression_ready
 
+    def _hidden_command_dispatch_mode(self) -> str:
+        if self._bridge_supports_hidden_commands():
+            return "bridge"
+        if self._bridge_can_hide_chat_commands():
+            return "fallback"
+        return "none"
+
     def _write_bridge_hidden_commands(self, commands: list[str]) -> tuple[bool, str]:
         normalized = [
             cmd.sanitize_command(command)
@@ -1356,12 +1407,22 @@ class TrainerApp:
         if not normalized:
             return
 
-        if self._bridge_supports_hidden_commands():
+        dispatch_mode = self._hidden_command_dispatch_mode()
+        if dispatch_mode == "bridge":
             ok, message = self._write_bridge_hidden_commands(normalized)
             if ok:
-                self._show_result(f"已无聊天回显执行：{label}", ok=True)
+                self._show_result(f"已通过 bridge 原生模式执行：{label}", ok=True)
             else:
                 self._show_result(f"{label} 发送失败：{message}", ok=False)
+            return
+
+        if dispatch_mode == "fallback":
+            results = game_control.send_chat_commands(normalized)
+            if results and all(result.ok for result in results):
+                self._show_result(f"已按参考版兼容模式执行：{label}", ok=True)
+            else:
+                reason = results[-1].message if results else "没有发送任何命令。"
+                self._show_result(f"{label} 兼容模式发送失败：{reason}", ok=False)
             return
 
         if self._bridge_runtime_ready():
@@ -1369,14 +1430,14 @@ class TrainerApp:
             self._show_result(
                 (
                     f"{label} 当前不能执行：桥接模块版本是 {version}，"
-                    "还不支持隐藏命令注册。请部署新桥接并完全重开游戏后再试。"
+                    "原生隐藏指令不可用，参考版兼容模式也不可用。"
                 ),
                 ok=False,
             )
             return
 
         self._show_result(
-            f"{label} 需要先让增强模块载入当前游戏会话后再使用；本工具不再回退到可见聊天命令输入。",
+            f"{label} 需要先让增强模块载入当前游戏会话后再使用；bridge 与兼容链路都未就绪。",
             ok=False,
         )
 
@@ -2970,34 +3031,30 @@ class TrainerApp:
         def worker() -> None:
             for idx, (x, y, z) in enumerate(coords, 1):
                 if self._route_stop_event.is_set():
-                    self.root.after(
-                        0,
+                    self._queue_ui_call(
                         lambda done=idx - 1, total=len(coords): self._route_done(
                             f"路径传送已停止（已发送 {done}/{total} 个点）。"
-                        ),
+                        )
                     )
                     return
 
-                self.root.after(
-                    0,
+                self._queue_ui_call(
                     lambda i=idx, total=len(coords): self.route_progress_label.configure(
                         text=f"[{i}/{total}]"
-                    ),
+                    )
                 )
                 ok, message = self._write_bridge_teleport_request(x, y, z)
                 if not ok:
-                    self.root.after(
-                        0,
-                        lambda m=message: self._route_done(m, ok=False),
+                    self._queue_ui_call(
+                        lambda m=message: self._route_done(m, ok=False)
                     )
                     return
                 self._route_stop_event.wait(delay)
 
-            self.root.after(
-                0,
+            self._queue_ui_call(
                 lambda total=len(coords): self._route_done(
                     f"路径传送完成，共发送 {total} 个点。"
-                ),
+                )
             )
 
         threading.Thread(target=worker, daemon=True).start()
@@ -3244,9 +3301,9 @@ class TrainerApp:
                 else:
                     snap = self.mem.refine_scan(slot, value)
             except Exception as error:  # noqa: BLE001 - report to UI
-                self.root.after(0, lambda: self._mem_scan_done(slot, None, str(error)))
+                self._queue_ui_call(lambda: self._mem_scan_done(slot, None, str(error)))
                 return
-            self.root.after(0, lambda: self._mem_scan_done(slot, len(snap), None))
+            self._queue_ui_call(lambda: self._mem_scan_done(slot, len(snap), None))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -3519,6 +3576,12 @@ class TrainerApp:
             self.mem.detach()
         except Exception:  # noqa: BLE001 - best effort on shutdown
             pass
+        self._route_stop_event.set()
+        if self._ui_call_job is not None:
+            try:
+                self.root.after_cancel(self._ui_call_job)
+            except tk.TclError:
+                pass
         if self._mem_refresh_job is not None:
             try:
                 self.root.after_cancel(self._mem_refresh_job)
@@ -3623,6 +3686,8 @@ class TrainerApp:
         self._rebuild_env_text()
         self._sync_player_cheat_controls()
         self._refresh_player_bridge_status()
+        status = self._read_bridge_status()
+        hidden_mode = self._hidden_command_dispatch_mode()
 
         if game_control.is_game_running():
             self.status_game.configure(text="游戏：运行中 ✔", style="Good.TLabel")
@@ -3643,16 +3708,29 @@ class TrainerApp:
                 text="聊天命令：当前进程未载入 UE4SS ⚠",
                 style="Warn.TLabel",
             )
+        elif self.report.client_cheat_commands_active and hidden_mode == "bridge":
+            self.status_cheats.configure(text="聊天命令：隐藏执行 ✔", style="Good.TLabel")
+        elif self.report.client_cheat_commands_active and hidden_mode == "fallback":
+            self.status_cheats.configure(text="聊天命令：兼容静默 ✔", style="Good.TLabel")
         elif self.report.client_cheat_commands_active:
-            self.status_cheats.configure(text="聊天命令：已启用 ✔", style="Good.TLabel")
+            self.status_cheats.configure(
+                text="聊天命令：模组在线（等待兼容链路）",
+                style="Warn.TLabel",
+            )
         elif self.report.client_cheat_commands_present:
             self.status_cheats.configure(text="聊天命令：未启用 ⚠", style="Warn.TLabel")
         else:
             self.status_cheats.configure(text="聊天命令：未安装 ✘", style="Bad.TLabel")
 
-        status = self._read_bridge_status()
-        if status.player_valid:
-            self.status_mem.configure(text="增强模块：当前会话已就绪 ✔", style="Good.TLabel")
+        if status.player_valid and hidden_mode == "bridge":
+            self.status_mem.configure(text="增强模块：原生模式 ✔", style="Good.TLabel")
+        elif status.player_valid and hidden_mode == "fallback":
+            self.status_mem.configure(text="增强模块：兼容模式 ✔", style="Good.TLabel")
+        elif status.player_valid:
+            self.status_mem.configure(
+                text="增强模块：已连接（仅飞行/坐标）",
+                style="Warn.TLabel",
+            )
         elif self.report.trainer_bridge_deployed and self.report.trainer_bridge_enabled:
             self.status_mem.configure(text="增强模块：已部署，重开游戏后生效 ⚠", style="Warn.TLabel")
         elif self.report.trainer_bridge_target is not None:

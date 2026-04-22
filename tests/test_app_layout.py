@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import tkinter as tk
 import unittest
 from unittest import mock
@@ -109,6 +110,22 @@ class AppLayoutTests(unittest.TestCase):
         finally:
             root.destroy()
 
+    def test_ui_queue_drains_during_headless_updates(self) -> None:
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            app = TrainerApp(root, "test")
+            seen: list[str] = []
+            app._queue_ui_call(lambda: seen.append("done"))
+            deadline = time.time() + 1.0
+            while time.time() < deadline and not seen:
+                root.update()
+                time.sleep(0.05)
+
+            self.assertEqual(["done"], seen)
+        finally:
+            root.destroy()
+
     def test_hidden_commands_require_new_enough_bridge_version(self) -> None:
         root = tk.Tk()
         root.withdraw()
@@ -175,21 +192,18 @@ class AppLayoutTests(unittest.TestCase):
         finally:
             root.destroy()
 
-    def test_hidden_commands_no_longer_fall_back_to_visible_chat(self) -> None:
+    def test_hidden_commands_fall_back_to_reference_compatible_chat_path(self) -> None:
         root = tk.Tk()
         root.withdraw()
         try:
             app = TrainerApp(root, "test")
             with (
                 mock.patch.object(app, "_bridge_supports_hidden_commands", return_value=False),
-                mock.patch.object(app, "_bridge_runtime_ready", return_value=True),
-                mock.patch.object(
-                    app,
-                    "_read_bridge_status",
-                    return_value=BridgeStatus(bridge_version="1.2.5"),
-                ),
-                mock.patch.object(app, "_send_with_label") as send_one,
-                mock.patch.object(app, "_send_many") as send_many,
+                mock.patch.object(app, "_bridge_can_hide_chat_commands", return_value=True),
+                mock.patch(
+                    "palworld_trainer.app.game_control.send_chat_commands",
+                    return_value=[mock.Mock(ok=True, message="Sent")],
+                ) as send_many,
                 mock.patch.object(app, "_show_result") as show_result,
             ):
                 app._dispatch_hidden_commands(
@@ -197,29 +211,30 @@ class AppLayoutTests(unittest.TestCase):
                     label="发放物品 x2",
                 )
 
-            send_one.assert_not_called()
-            send_many.assert_not_called()
+            send_many.assert_called_once_with([cmd.giveme("Wood", 2)])
             show_result.assert_called_once()
             shown_text = show_result.call_args.args[0]
-            self.assertIn("1.2.5", shown_text)
+            self.assertIn("兼容模式", shown_text)
         finally:
             root.destroy()
 
-    def test_hidden_commands_require_restart_instead_of_visible_chat_fallback(self) -> None:
+    def test_hidden_commands_report_when_bridge_and_fallback_both_unavailable(self) -> None:
         root = tk.Tk()
         root.withdraw()
         try:
             app = TrainerApp(root, "test")
             with (
                 mock.patch.object(app, "_bridge_supports_hidden_commands", return_value=False),
+                mock.patch.object(app, "_bridge_can_hide_chat_commands", return_value=False),
                 mock.patch.object(app, "_bridge_runtime_ready", return_value=True),
                 mock.patch.object(
                     app,
                     "_read_bridge_status",
                     return_value=BridgeStatus(bridge_version="1.1.2"),
                 ),
-                mock.patch.object(app, "_send_with_label") as send_one,
-                mock.patch.object(app, "_send_many") as send_many,
+                mock.patch(
+                    "palworld_trainer.app.game_control.send_chat_commands"
+                ) as send_many,
                 mock.patch.object(app, "_show_result") as show_result,
             ):
                 app._dispatch_hidden_commands(
@@ -227,11 +242,11 @@ class AppLayoutTests(unittest.TestCase):
                     label="发放物品 x2",
                 )
 
-            send_one.assert_not_called()
             send_many.assert_not_called()
             show_result.assert_called_once()
             shown_text = show_result.call_args.args[0]
             self.assertIn("1.1.2", shown_text)
+            self.assertIn("兼容模式也不可用", shown_text)
         finally:
             root.destroy()
 
