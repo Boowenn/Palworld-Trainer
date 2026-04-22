@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest import mock
 
 from tests import _bootstrap  # noqa: F401
 from palworld_trainer.coord_presets import (
@@ -33,6 +34,18 @@ SAMPLE_COORDS = """
 ]
 """.strip()
 
+SAMPLE_COORDS_WITH_NOTE = """
+[
+  {
+    "name": "Boss note group",
+    "items": [
+      { "name": "前面带*表示会出传奇图纸", "value": [ 0, 0, 0 ] },
+      { "name": "Lv11 boss", "value": [ -405723.5, 104713.297, -668.362122 ] }
+    ]
+  }
+]
+""".strip()
+
 
 class ParseCoordGroupsTests(unittest.TestCase):
     def test_parse_coord_groups_text(self) -> None:
@@ -49,6 +62,13 @@ class ParseCoordGroupsTests(unittest.TestCase):
         self.assertIn("阿努比斯", results[0].name)
 
 
+    def test_parse_coord_groups_text_skips_zero_placeholder_rows(self) -> None:
+        entries = flatten_coord_groups(parse_coord_groups_text(SAMPLE_COORDS_WITH_NOTE))
+
+        self.assertEqual(1, len(entries))
+        self.assertEqual("Lv11 boss", entries[0].name)
+
+
 class LoadCoordGroupsTests(unittest.TestCase):
     def test_pick_coord_file_prefers_game_root_override(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -59,7 +79,7 @@ class LoadCoordGroupsTests(unittest.TestCase):
             override.write_text(SAMPLE_COORDS, encoding="utf-8")
             bundled.write_text("[]", encoding="utf-8")
 
-            with unittest.mock.patch(
+            with mock.patch(
                 "palworld_trainer.coord_presets.get_bundled_coord_file",
                 return_value=bundled,
             ):

@@ -48,7 +48,7 @@ class ConfigTests(unittest.TestCase):
             with patch("palworld_trainer.config.get_settings_path", return_value=path):
                 loaded = load_settings()
         self.assertIsNone(loaded.game_root)
-        self.assertEqual("common", loaded.last_tab)
+        self.assertEqual("about", loaded.last_tab)
 
     def test_corrupt_file_returns_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -15,6 +15,14 @@ local items = {
 }
 """
 
+PAL_SAMPLE = """-- Auto-generated from Palworld Dataminer
+local pals = {
+    Quest_Farmer03_SheepBall = "Lamball",
+    SheepBall = "Lamball",
+    BOSS_SheepBall = "Lamball (Boss)",
+}
+"""
+
 
 class CatalogTests(unittest.TestCase):
     def test_parse_catalog_text_reads_key_value_pairs(self) -> None:
@@ -36,6 +44,13 @@ class CatalogTests(unittest.TestCase):
         entries = parse_catalog_text("item", ITEM_SAMPLE)
         results = search_catalog(entries, "", limit=10)
         self.assertEqual(4, len(results))
+
+    def test_search_catalog_prefers_plain_pal_over_variants(self) -> None:
+        entries = parse_catalog_text("pal", PAL_SAMPLE)
+
+        results = search_catalog(entries, "lamball", limit=3)
+
+        self.assertEqual("SheepBall", results[0].key)
 
     def test_search_catalog_no_match_returns_empty(self) -> None:
         entries = parse_catalog_text("item", ITEM_SAMPLE)

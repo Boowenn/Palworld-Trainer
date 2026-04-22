@@ -68,6 +68,8 @@ class CheatState:
 class BridgeStatus:
     player_valid: bool = False
     bridge_version: str = ""
+    hidden_registry_ready: bool = False
+    chat_suppression_ready: bool = False
     position_x: float = 0.0
     position_y: float = 0.0
     position_z: float = 0.0
@@ -81,6 +83,12 @@ class BridgeStatus:
         bridge_version = payload.get("bridge_version")
         if isinstance(bridge_version, str):
             status.bridge_version = bridge_version
+        hidden_registry_ready = payload.get("hidden_registry_ready")
+        if isinstance(hidden_registry_ready, bool):
+            status.hidden_registry_ready = hidden_registry_ready
+        chat_suppression_ready = payload.get("chat_suppression_ready")
+        if isinstance(chat_suppression_ready, bool):
+            status.chat_suppression_ready = chat_suppression_ready
         for key in ("position_x", "position_y", "position_z"):
             value = payload.get(key)
             try:

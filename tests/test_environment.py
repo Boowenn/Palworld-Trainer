@@ -139,7 +139,6 @@ class DeployBridgeTests(unittest.TestCase):
             mods_root = target.parent
             mods_txt = (mods_root / "mods.txt").read_text(encoding="utf-8")
             self.assertIn(f"{BRIDGE_MOD_NAME} : 1", mods_txt)
-
             mods_json = json.loads((mods_root / "mods.json").read_text(encoding="utf-8"))
             bridge_entry = next(
                 item for item in mods_json if item.get("mod_name") == BRIDGE_MOD_NAME

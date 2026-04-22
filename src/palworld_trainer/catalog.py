@@ -41,6 +41,14 @@ CATALOG_TITLES: dict[str, str] = {
 
 ENTRY_PATTERN = re.compile(r'^\s*([A-Za-z0-9_]+)\s*=\s*"([^"]+)",?\s*$')
 
+PAL_VARIANT_PREFIXES: tuple[str, ...] = (
+    "boss_",
+    "gym_",
+    "predator_",
+    "quest_",
+    "raid_",
+)
+
 
 def get_catalog_kinds() -> list[str]:
     return list(CATALOG_FILE_NAMES)
@@ -98,6 +106,16 @@ def load_all_catalogs(enum_dir: Path) -> dict[str, list[CatalogEntry]]:
     return {kind: load_catalog(enum_dir, kind) for kind in get_catalog_kinds()}
 
 
+def _variant_penalty(entry: CatalogEntry) -> int:
+    """Prefer the plain catalog key over quest/boss/raid variants."""
+
+    if entry.kind != "pal":
+        return 0
+
+    key = entry.key.casefold()
+    return 1 if key.startswith(PAL_VARIANT_PREFIXES) else 0
+
+
 def search_catalog(entries: list[CatalogEntry], query: str, limit: int = 200) -> list[CatalogEntry]:
     normalized = query.strip().casefold()
     if not normalized:
@@ -132,7 +150,13 @@ def search_catalog(entries: list[CatalogEntry], query: str, limit: int = 200) ->
 
         ranked.append(
             (
-                (priority, first_position, entry.label.casefold(), entry.key.casefold()),
+                (
+                    priority,
+                    first_position,
+                    _variant_penalty(entry),
+                    entry.label.casefold(),
+                    entry.key.casefold(),
+                ),
                 entry,
             )
         )

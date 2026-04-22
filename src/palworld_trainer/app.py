@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import subprocess
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, ttk
@@ -59,23 +60,37 @@ from .teleport_points import BOSS_TELEPORT_POINTS, BossTeleportPoint
 
 
 APP_TITLE = "幻兽帕鲁修改器"
-WINDOW_WIDTH = 960
-WINDOW_HEIGHT = 720
+WINDOW_WIDTH = 1040
+WINDOW_HEIGHT = 760
 
 RESULT_CLEAR_MS = 6000
+BRIDGE_HIDDEN_COMMANDS_MIN_VERSION = (1, 2, 0)
 
 TAB_NAMES = (
+    "about",
     "common",
+    "build",
     "character",
+    "pal_edit",
+    "online_pal",
     "items",
     "pals",
-    "tech",
-    "world",
     "coords",
-    "enhance",
-    "chat",
-    "settings",
+    "online",
+    "changelog",
 )
+
+
+def _parse_version_tuple(text: str) -> tuple[int, ...]:
+    parts: list[int] = []
+    for chunk in text.split("."):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if not chunk.isdigit():
+            break
+        parts.append(int(chunk))
+    return tuple(parts)
 
 
 class TrainerApp:
@@ -119,8 +134,11 @@ class TrainerApp:
         self._current_pal_results: list[CatalogEntry] = []
         self._current_tech_results: list[CatalogEntry] = []
         self._item_quick_choice_map: dict[str, CatalogEntry] = {}
+        self._item_full_choice_map: dict[str, CatalogEntry] = {}
         self._pal_quick_choice_map: dict[str, CatalogEntry] = {}
+        self._pal_full_choice_map: dict[str, CatalogEntry] = {}
         self._tech_quick_choice_map: dict[str, CatalogEntry] = {}
+        self._tech_full_choice_map: dict[str, CatalogEntry] = {}
         self._coord_group_names: list[str] = [
             group.name for group in self.coord_groups if group.items
         ]
@@ -147,7 +165,7 @@ class TrainerApp:
         self._mem_busy: bool = False
         self._mem_refresh_job: str | None = None
         self._route_stop_event = threading.Event()
-        self._bridge_request_counter: int = 0
+        self._bridge_request_counter: int = int(time.time() * 1000)
 
         self._configure_root()
         self._build_style()
@@ -227,16 +245,17 @@ class TrainerApp:
         self.notebook = ttk.Notebook(parent)
         self.notebook.pack(fill="both", expand=True, pady=(10, 8))
 
+        self._build_settings_tab()
         self._build_common_tab()
+        self._build_tech_tab()
         self._build_player_tab()
+        self._build_pal_edit_tab()
+        self._build_online_pal_tab()
         self._build_items_tab()
         self._build_pals_tab()
-        self._build_tech_tab()
-        self._build_world_tab()
         self._build_coords_tab()
-        self._build_enhance_tab()
-        self._build_chat_tab()
-        self._build_settings_tab()
+        self._build_online_tab()
+        self._build_changelog_tab()
 
         try:
             self.notebook.select(TAB_NAMES.index(self.settings.last_tab))
@@ -359,12 +378,12 @@ class TrainerApp:
 
     def _build_player_tab(self) -> None:
         tab = ttk.Frame(self.notebook, padding=16)
-        self.notebook.add(tab, text="角色")
+        self.notebook.add(tab, text="角色属性")
         self._build_simple_player_tab(tab)
         return
 
     def _build_simple_player_tab(self, tab: ttk.Frame) -> None:
-        ttk.Label(tab, text="角色功能", style="SubHeader.TLabel").pack(anchor="w")
+        ttk.Label(tab, text="角色属性", style="SubHeader.TLabel").pack(anchor="w")
 
         quick_frame = ttk.LabelFrame(tab, text="角色快捷操作", padding=(12, 8))
         quick_frame.pack(fill="x", pady=(0, 10))
@@ -457,16 +476,226 @@ class TrainerApp:
 
         self._refresh_player_bridge_status()
 
-    def _build_coords_tab(self) -> None:
+    def _build_pal_edit_tab(self) -> None:
         tab = ttk.Frame(self.notebook, padding=16)
-        self.notebook.add(tab, text="坐标")
+        self.notebook.add(tab, text="帕鲁修改")
 
-        ttk.Label(tab, text="坐标与传送", style="SubHeader.TLabel").pack(anchor="w")
+        ttk.Label(tab, text="帕鲁修改", style="SubHeader.TLabel").pack(anchor="w")
         ttk.Label(
             tab,
-            text="坐标收藏、首领直达、手动传送和路线传送都在这里。",
+            text=(
+                "参考修改器这里是单机帕鲁编辑入口。当前仓库这一轮先按参考版把入口和信息架构对齐，"
+                "并把新增/传送/常用流程移出可见命令输入；帕鲁精修会继续往这个页里补。"
+            ),
+            style="Status.TLabel",
+            wraplength=860,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 10))
+
+        actions = ttk.Frame(tab)
+        actions.pack(fill="x", pady=(0, 10))
+        ttk.Button(
+            actions,
+            text="打开 *添加帕鲁",
+            style="Big.TButton",
+            command=lambda: self.notebook.select(TAB_NAMES.index("pals")),
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            actions,
+            text="部署/更新增强模块",
+            style="Quiet.TButton",
+            command=self._on_deploy_bridge,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            actions,
+            text="刷新状态",
+            style="Quiet.TButton",
+            command=self._refresh_status,
+        ).pack(side="left")
+
+        inner = ttk.Notebook(tab)
+        inner.pack(fill="both", expand=True)
+
+        base = ttk.Frame(inner, padding=12)
+        inner.add(base, text="基础")
+        ttk.Label(
+            base,
+            text="基础属性、等级、星级、个体值、词条入口会按参考页继续往这里收敛。",
+            style="Status.TLabel",
+            wraplength=820,
+            justify="left",
+        ).pack(anchor="w")
+
+        learned = ttk.Frame(inner, padding=12)
+        inner.add(learned, text="习得技能")
+        ttk.Label(
+            learned,
+            text="技能编辑入口已保留页位，后续补齐到和参考版一致的批量技能流。",
+            style="Status.TLabel",
+            wraplength=820,
+            justify="left",
+        ).pack(anchor="w")
+
+        more = ttk.Frame(inner, padding=12)
+        inner.add(more, text="更多数据")
+        ttk.Label(
+            more,
+            text="更多数据页位已预留，后续用于对齐工作速度、SAN、体力等扩展字段。",
+            style="Status.TLabel",
+            wraplength=820,
+            justify="left",
+        ).pack(anchor="w")
+
+    def _build_online_pal_tab(self) -> None:
+        tab = ttk.Frame(self.notebook, padding=16)
+        self.notebook.add(tab, text="*联机帕鲁修改")
+
+        ttk.Label(tab, text="*联机帕鲁修改", style="SubHeader.TLabel").pack(anchor="w")
+        ttk.Label(
+            tab,
+            text=(
+                "参考修改器把它作为高级入口。当前版本先保留同名入口，"
+                "并把可稳定的桥接与无可见命令能力继续向这里迁移。"
+            ),
+            style="Status.TLabel",
+            wraplength=860,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 10))
+
+        row = ttk.Frame(tab)
+        row.pack(fill="x", pady=(0, 8))
+        ttk.Button(
+            row,
+            text="打开联机功能",
+            style="Big.TButton",
+            command=lambda: self.notebook.select(TAB_NAMES.index("online")),
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            row,
+            text="打开传送和移速",
+            style="Quiet.TButton",
+            command=lambda: self.notebook.select(TAB_NAMES.index("coords")),
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            row,
+            text="刷新状态",
+            style="Quiet.TButton",
+            command=self._refresh_status,
+        ).pack(side="left")
+
+    def _build_online_tab(self) -> None:
+        tab = ttk.Frame(self.notebook, padding=16)
+        self.notebook.add(tab, text="联机功能")
+
+        ttk.Label(tab, text="联机功能", style="SubHeader.TLabel").pack(anchor="w")
+        ttk.Label(
+            tab,
+            text=(
+                "这里收纳参考版里偏联机/联机房主向的一键操作。当前已切掉可见聊天命令输入，"
+                "优先走桥接请求或隐藏命令执行。"
+            ),
+            style="Status.TLabel",
+            wraplength=860,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 10))
+
+        quick = ttk.LabelFrame(tab, text="联机常用", padding=(12, 8))
+        quick.pack(fill="x", pady=(0, 10))
+        quick_row = ttk.Frame(quick)
+        quick_row.pack(fill="x")
+        buttons: list[tuple[str, Callable[[], None]]] = [
+            ("切换飞行", lambda: self._on_mem_fly(True)),
+            ("关闭飞行", lambda: self._on_mem_fly(False)),
+            ("脱困", lambda: self._send_with_label(cmd.unstuck(), "脱困")),
+            ("读取坐标", self._on_mem_read_pos),
+            ("打开传送和移速", lambda: self.notebook.select(TAB_NAMES.index("coords"))),
+        ]
+        for index, (label, callback) in enumerate(buttons):
+            ttk.Button(
+                quick_row,
+                text=label,
+                style="Big.TButton",
+                command=callback,
+            ).grid(row=0, column=index, padx=4, pady=4, sticky="ew")
+            quick_row.columnconfigure(index, weight=1)
+
+        ttk.Label(
+            tab,
+            text="更细的联机高级功能还会继续往这个页里收，不再单独暴露自由命令页。",
+            style="Status.TLabel",
+            wraplength=860,
+            justify="left",
+        ).pack(anchor="w")
+
+    def _build_changelog_tab(self) -> None:
+        tab = ttk.Frame(self.notebook, padding=16)
+        self.notebook.add(tab, text="更新记录")
+
+        ttk.Label(tab, text="更新记录", style="SubHeader.TLabel").pack(anchor="w")
+        self.changelog_text = tk.Text(tab, height=18, wrap="word")
+        self.changelog_text.pack(fill="both", expand=True, pady=(8, 0))
+        self.changelog_text.insert(
+            "1.0",
+            "\n".join(
+                (
+                    "参考修改器对齐进行中",
+                    "",
+                    "本轮已完成：",
+                    "1. 顶层页签顺序和命名开始按 chenstack 参考修改器对齐。",
+                    "2. 主流程不再依赖可见聊天命令输入。",
+                    "3. *添加物品 / *添加帕鲁 / 传送和移速 保留为主操作页。",
+                    "",
+                    "下一步会继续补齐：",
+                    "1. 帕鲁修改页的细分字段。",
+                    "2. 联机帕鲁修改页的高级入口。",
+                    "3. 制作和建造页的更多参考功能。",
+                )
+            ),
+        )
+        self.changelog_text.configure(state="disabled")
+
+    def _build_coords_tab(self) -> None:
+        tab = ttk.Frame(self.notebook, padding=16)
+        self.notebook.add(tab, text="传送和移速")
+
+        ttk.Label(tab, text="传送和移速", style="SubHeader.TLabel").pack(anchor="w")
+        ttk.Label(
+            tab,
+            text="参考版这里负责坐标读写、收藏夹、预设坐标和传送；当前页默认走无可见命令的桥接执行。",
             style="Status.TLabel",
         ).pack(anchor="w", pady=(4, 10))
+
+        speed_frame = ttk.LabelFrame(tab, text="移速与飞行", padding=(12, 8))
+        speed_frame.pack(fill="x", pady=(0, 10))
+
+        speed_row = ttk.Frame(speed_frame)
+        speed_row.pack(fill="x", pady=(0, 6))
+        ttk.Button(
+            speed_row,
+            text="开启飞行",
+            style="Big.TButton",
+            command=lambda: self._on_mem_fly(True),
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            speed_row,
+            text="关闭飞行",
+            style="Quiet.TButton",
+            command=lambda: self._on_mem_fly(False),
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            speed_row,
+            text="读取当前坐标",
+            style="Quiet.TButton",
+            command=self._on_mem_read_pos,
+        ).pack(side="left")
+
+        ttk.Label(
+            speed_frame,
+            text="移速/跳跃倍率和持续增强统一放在「角色属性」页应用，这里保留传送与位移主流程。",
+            style="Status.TLabel",
+            wraplength=840,
+            justify="left",
+        ).pack(anchor="w")
 
         favorite_frame = ttk.LabelFrame(tab, text="收藏夹", padding=(12, 8))
         favorite_frame.pack(fill="x", pady=(0, 10))
@@ -1093,6 +1322,64 @@ class TrainerApp:
     def _write_bridge_fly_request(self, enabled: bool) -> tuple[bool, str]:
         return self._write_bridge_request("set_fly", enabled=enabled)
 
+    def _bridge_supports_hidden_commands(self) -> bool:
+        if not self._bridge_runtime_ready():
+            return False
+        status = self._read_bridge_status()
+        version = _parse_version_tuple(status.bridge_version)
+        return version >= BRIDGE_HIDDEN_COMMANDS_MIN_VERSION and status.hidden_registry_ready
+
+    def _bridge_can_hide_chat_commands(self) -> bool:
+        if not self._bridge_runtime_ready():
+            return False
+        return self._read_bridge_status().chat_suppression_ready
+
+    def _write_bridge_hidden_commands(self, commands: list[str]) -> tuple[bool, str]:
+        normalized = [
+            cmd.sanitize_command(command)
+            for command in commands
+            if command and command.strip()
+        ]
+        if not normalized:
+            return False, "没有可发送的隐藏命令。"
+        return self._write_bridge_request(
+            "run_hidden_commands",
+            commands_text="\n".join(normalized),
+        )
+
+    def _dispatch_hidden_commands(self, commands: list[str], *, label: str) -> None:
+        normalized = [
+            cmd.sanitize_command(command)
+            for command in commands
+            if command and command.strip()
+        ]
+        if not normalized:
+            return
+
+        if self._bridge_supports_hidden_commands():
+            ok, message = self._write_bridge_hidden_commands(normalized)
+            if ok:
+                self._show_result(f"已无聊天回显执行：{label}", ok=True)
+            else:
+                self._show_result(f"{label} 发送失败：{message}", ok=False)
+            return
+
+        if self._bridge_runtime_ready():
+            version = self._read_bridge_status().bridge_version or "未知版本"
+            self._show_result(
+                (
+                    f"{label} 当前不能执行：桥接模块版本是 {version}，"
+                    "还不支持隐藏命令注册。请部署新桥接并完全重开游戏后再试。"
+                ),
+                ok=False,
+            )
+            return
+
+        self._show_result(
+            f"{label} 需要先让增强模块载入当前游戏会话后再使用；本工具不再回退到可见聊天命令输入。",
+            ok=False,
+        )
+
     def _collect_player_cheat_state_impl(self) -> CheatState | None:
         try:
             speed = float(self.bridge_speed_var.get().strip())
@@ -1162,11 +1449,9 @@ class TrainerApp:
 
     def _build_items_tab(self) -> None:
         tab = ttk.Frame(self.notebook, padding=16)
-        self.notebook.add(tab, text="物品")
+        self.notebook.add(tab, text="*添加物品")
 
-        ttk.Label(tab, text="快捷礼包（点一下把整包物品发给自己）", style="SubHeader.TLabel").pack(
-            anchor="w"
-        )
+        ttk.Label(tab, text="*添加物品", style="SubHeader.TLabel").pack(anchor="w")
         preset_grid = ttk.Frame(tab)
         preset_grid.pack(fill="x", pady=(8, 16))
         for index, preset in enumerate(cmd.QUICK_PRESETS):
@@ -1238,6 +1523,31 @@ class TrainerApp:
             command=self._add_selected_item_quick_favorite,
         ).pack(side="left")
 
+        full_row = ttk.Frame(shortcuts)
+        full_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(full_row, text="完整目录:").pack(side="left")
+        self.item_full_var = tk.StringVar()
+        self.item_full_box = ttk.Combobox(
+            full_row,
+            textvariable=self.item_full_var,
+            values=[],
+            state="readonly",
+            width=42,
+        )
+        self.item_full_box.pack(side="left", padx=(6, 10), fill="x", expand=True)
+        ttk.Button(
+            full_row,
+            text="直接给我",
+            style="Quiet.TButton",
+            command=self._give_selected_item_full,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            full_row,
+            text="收藏当前",
+            style="Quiet.TButton",
+            command=self._add_selected_item_full_favorite,
+        ).pack(side="left")
+
         recent_row = ttk.Frame(shortcuts)
         recent_row.pack(fill="x", pady=(0, 6))
         ttk.Label(recent_row, text="最近给予:").pack(side="left")
@@ -1284,12 +1594,7 @@ class TrainerApp:
 
         ttk.Separator(tab).pack(fill="x", pady=(4, 10))
 
-        ttk.Label(tab, text="高级查找（不知道名字时可以不管）", style="SubHeader.TLabel").pack(anchor="w")
-        ttk.Label(
-            tab,
-            text="默认列表会跟着上面的推荐分类走；只有要找冷门物品时再输入关键字。",
-            style="Status.TLabel",
-        ).pack(anchor="w", pady=(2, 8))
+        ttk.Label(tab, text="备用搜索", style="SubHeader.TLabel").pack(anchor="w")
 
         search_row = ttk.Frame(tab)
         search_row.pack(fill="x")
@@ -1330,13 +1635,14 @@ class TrainerApp:
 
         self._refresh_item_shortcuts()
         self._refresh_item_quick_choices()
+        self._refresh_item_full_choices()
         self._refresh_item_list()
 
     def _build_pals_tab(self) -> None:
         tab = ttk.Frame(self.notebook, padding=16)
-        self.notebook.add(tab, text="帕鲁")
+        self.notebook.add(tab, text="*添加帕鲁")
 
-        ttk.Label(tab, text="常用帕鲁（仅房主/单机有效）", style="SubHeader.TLabel").pack(anchor="w")
+        ttk.Label(tab, text="帕鲁生成（仅房主/单机有效）", style="SubHeader.TLabel").pack(anchor="w")
 
         shortcuts = ttk.LabelFrame(tab, text="傻瓜式点选", padding=(12, 8))
         shortcuts.pack(fill="x", pady=(0, 10))
@@ -1395,6 +1701,31 @@ class TrainerApp:
             command=self._add_selected_pal_quick_favorite,
         ).pack(side="left")
 
+        full_row = ttk.Frame(shortcuts)
+        full_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(full_row, text="完整目录:").pack(side="left")
+        self.pal_full_var = tk.StringVar()
+        self.pal_full_box = ttk.Combobox(
+            full_row,
+            textvariable=self.pal_full_var,
+            values=[],
+            state="readonly",
+            width=42,
+        )
+        self.pal_full_box.pack(side="left", padx=(6, 10), fill="x", expand=True)
+        ttk.Button(
+            full_row,
+            text="直接生成",
+            style="Quiet.TButton",
+            command=self._spawn_selected_pal_full,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            full_row,
+            text="收藏当前",
+            style="Quiet.TButton",
+            command=self._add_selected_pal_full_favorite,
+        ).pack(side="left")
+
         recent_row = ttk.Frame(shortcuts)
         recent_row.pack(fill="x", pady=(0, 6))
         ttk.Label(recent_row, text="最近生成:").pack(side="left")
@@ -1440,12 +1771,7 @@ class TrainerApp:
         ).pack(side="left")
 
         ttk.Separator(tab).pack(fill="x", pady=(4, 10))
-        ttk.Label(tab, text="高级查找（不知道名字时可以不管）", style="SubHeader.TLabel").pack(anchor="w")
-        ttk.Label(
-            tab,
-            text="默认列表会跟着上面的推荐分类走；只有要找冷门帕鲁时再输入关键字。",
-            style="Status.TLabel",
-        ).pack(anchor="w", pady=(2, 8))
+        ttk.Label(tab, text="备用搜索", style="SubHeader.TLabel").pack(anchor="w")
 
         search_row = ttk.Frame(tab)
         search_row.pack(fill="x")
@@ -1486,13 +1812,14 @@ class TrainerApp:
 
         self._refresh_pal_shortcuts()
         self._refresh_pal_quick_choices()
+        self._refresh_pal_full_choices()
         self._refresh_pal_list()
 
     def _build_tech_tab(self) -> None:
         tab = ttk.Frame(self.notebook, padding=16)
-        self.notebook.add(tab, text="科技")
+        self.notebook.add(tab, text="制作和建造")
 
-        ttk.Label(tab, text="科技解锁", style="SubHeader.TLabel").pack(anchor="w")
+        ttk.Label(tab, text="制作和建造 / 科技解锁", style="SubHeader.TLabel").pack(anchor="w")
 
         big_row = ttk.Frame(tab)
         big_row.pack(fill="x", pady=(8, 14))
@@ -1500,13 +1827,13 @@ class TrainerApp:
             big_row,
             text="🔓 解锁全部科技",
             style="Big.TButton",
-            command=lambda: self._send(cmd.unlock_all_tech()),
+            command=self._on_unlock_all_tech,
         ).pack(side="left", padx=4)
         ttk.Button(
             big_row,
             text="🗺 解锁全部传送点",
             style="Big.TButton",
-            command=lambda: self._send(cmd.unlock_fast_travel()),
+            command=self._on_unlock_fast_travel,
         ).pack(side="left", padx=4)
 
         ttk.Separator(tab).pack(fill="x", pady=(4, 10))
@@ -1555,13 +1882,27 @@ class TrainerApp:
             command=self._unlock_selected_tech_group,
         ).pack(side="left")
 
+        full_row = ttk.Frame(guide)
+        full_row.pack(fill="x", pady=(8, 0))
+        ttk.Label(full_row, text="完整目录:").pack(side="left")
+        self.tech_full_var = tk.StringVar()
+        self.tech_full_box = ttk.Combobox(
+            full_row,
+            textvariable=self.tech_full_var,
+            values=[],
+            state="readonly",
+            width=42,
+        )
+        self.tech_full_box.pack(side="left", padx=(6, 10), fill="x", expand=True)
+        ttk.Button(
+            full_row,
+            text="解锁当前",
+            style="Quiet.TButton",
+            command=self._unlock_selected_tech_full,
+        ).pack(side="left")
+
         ttk.Separator(tab).pack(fill="x", pady=(4, 10))
-        ttk.Label(tab, text="高级查找（不知道名字时可以不管）", style="SubHeader.TLabel").pack(anchor="w")
-        ttk.Label(
-            tab,
-            text="默认列表会跟着上面的推荐分类走；只有要找冷门科技时再输入关键字。",
-            style="Status.TLabel",
-        ).pack(anchor="w", pady=(2, 8))
+        ttk.Label(tab, text="备用搜索", style="SubHeader.TLabel").pack(anchor="w")
 
         search_row = ttk.Frame(tab)
         search_row.pack(fill="x")
@@ -1593,6 +1934,7 @@ class TrainerApp:
         ).pack(side="left")
 
         self._refresh_tech_quick_choices()
+        self._refresh_tech_full_choices()
         self._refresh_tech_list()
 
     def _build_world_tab(self) -> None:
@@ -1625,7 +1967,7 @@ class TrainerApp:
             slider_row,
             text="设置时间",
             style="Big.TButton",
-            command=lambda: self._send(cmd.set_time(self.world_time_var.get())),
+            command=lambda: self._on_set_time(self.world_time_var.get()),
         ).pack(side="left", padx=(10, 0))
 
         quick = ttk.Frame(tab)
@@ -1635,7 +1977,7 @@ class TrainerApp:
                 quick,
                 text=label,
                 style="Big.TButton",
-                command=lambda h=hour: self._send(cmd.set_time(h)),
+                command=lambda h=hour: self._on_set_time(h),
             ).pack(side="left", padx=4)
 
     def _build_enhance_tab(self) -> None:
@@ -1960,7 +2302,19 @@ class TrainerApp:
 
     def _build_settings_tab(self) -> None:
         tab = ttk.Frame(self.notebook, padding=16)
-        self.notebook.add(tab, text="设置")
+        self.notebook.add(tab, text="关于")
+
+        ttk.Label(tab, text="关于 / 环境", style="SubHeader.TLabel").pack(anchor="w")
+        ttk.Label(
+            tab,
+            text=(
+                "当前版本按 chenstack 参考修改器重排主流程。"
+                " 游戏目录、增强模块状态和环境诊断统一放在这里。"
+            ),
+            style="Status.TLabel",
+            wraplength=860,
+            justify="left",
+        ).pack(anchor="w", pady=(2, 8))
 
         ttk.Label(tab, text="游戏目录", style="SubHeader.TLabel").pack(anchor="w")
         path_row = ttk.Frame(tab)
@@ -2080,6 +2434,26 @@ class TrainerApp:
         if current not in values:
             variable.set(values[0] if values else "")
 
+    def _refresh_catalog_choice_box(
+        self,
+        entries: list[CatalogEntry],
+        choice_var: tk.StringVar,
+        choice_box: ttk.Combobox,
+        *,
+        choice_map_attr: str,
+    ) -> None:
+        choice_map: dict[str, CatalogEntry] = {}
+        values: list[str] = []
+        for entry in entries:
+            display = self._catalog_display(entry)
+            if display in choice_map:
+                display = f"{display} [{entry.key}]"
+            choice_map[display] = entry
+            values.append(display)
+
+        setattr(self, choice_map_attr, choice_map)
+        self._refresh_combo_values(choice_box, choice_var, values)
+
     def _remember_value(self, bucket: list[str], value: str, limit: int = 10) -> None:
         if value in bucket:
             bucket.remove(value)
@@ -2127,6 +2501,15 @@ class TrainerApp:
                     self._pal_entry_by_key,
                 ),
             )
+        if hasattr(self, "pal_favorite_box"):
+            self._refresh_combo_values(
+                self.pal_favorite_box,
+                self.pal_favorite_var,
+                self._catalog_values_for_keys(
+                    self.settings.favorite_pal_ids,
+                    self._pal_entry_by_key,
+                ),
+            )
 
     def _refresh_item_quick_choices(self) -> None:
         if not hasattr(self, "item_quick_choice_box"):
@@ -2157,6 +2540,38 @@ class TrainerApp:
         entry = self._selected_item_quick_entry()
         if entry is None:
             self._show_result("当前分类没有可收藏的物品。", ok=False)
+            return
+        self._remember_value(self.settings.favorite_item_ids, entry.key, limit=40)
+        save_settings(self.settings)
+        self._refresh_item_shortcuts()
+        self._show_result(f"已收藏物品：{self._catalog_display(entry)}。", ok=True)
+
+    def _refresh_item_full_choices(self) -> None:
+        if not hasattr(self, "item_full_box"):
+            return
+        self._refresh_catalog_choice_box(
+            self.item_entries,
+            self.item_full_var,
+            self.item_full_box,
+            choice_map_attr="_item_full_choice_map",
+        )
+
+    def _selected_item_full_entry(self) -> CatalogEntry | None:
+        if not hasattr(self, "item_full_var"):
+            return None
+        return self._item_full_choice_map.get(self.item_full_var.get().strip())
+
+    def _give_selected_item_full(self) -> None:
+        entry = self._selected_item_full_entry()
+        if entry is None:
+            self._show_result("完整目录里还没有可直接发放的物品。", ok=False)
+            return
+        self._give_item_entry(entry)
+
+    def _add_selected_item_full_favorite(self) -> None:
+        entry = self._selected_item_full_entry()
+        if entry is None:
+            self._show_result("先在完整目录里选一个物品。", ok=False)
             return
         self._remember_value(self.settings.favorite_item_ids, entry.key, limit=40)
         save_settings(self.settings)
@@ -2198,6 +2613,38 @@ class TrainerApp:
         self._refresh_pal_shortcuts()
         self._show_result(f"已收藏帕鲁：{self._catalog_display(entry)}。", ok=True)
 
+    def _refresh_pal_full_choices(self) -> None:
+        if not hasattr(self, "pal_full_box"):
+            return
+        self._refresh_catalog_choice_box(
+            self.pal_entries,
+            self.pal_full_var,
+            self.pal_full_box,
+            choice_map_attr="_pal_full_choice_map",
+        )
+
+    def _selected_pal_full_entry(self) -> CatalogEntry | None:
+        if not hasattr(self, "pal_full_var"):
+            return None
+        return self._pal_full_choice_map.get(self.pal_full_var.get().strip())
+
+    def _spawn_selected_pal_full(self) -> None:
+        entry = self._selected_pal_full_entry()
+        if entry is None:
+            self._show_result("完整目录里还没有可直接生成的帕鲁。", ok=False)
+            return
+        self._spawn_pal_entry(entry)
+
+    def _add_selected_pal_full_favorite(self) -> None:
+        entry = self._selected_pal_full_entry()
+        if entry is None:
+            self._show_result("先在完整目录里选一只帕鲁。", ok=False)
+            return
+        self._remember_value(self.settings.favorite_pal_ids, entry.key, limit=40)
+        save_settings(self.settings)
+        self._refresh_pal_shortcuts()
+        self._show_result(f"已收藏帕鲁：{self._catalog_display(entry)}。", ok=True)
+
     def _refresh_tech_quick_choices(self) -> None:
         if not hasattr(self, "tech_quick_choice_box"):
             return
@@ -2221,7 +2668,35 @@ class TrainerApp:
         if entry is None:
             self._show_result("当前分类没有可直接解锁的科技。", ok=False)
             return
-        self._send_with_label(cmd.unlock_tech(entry.key), f"解锁科技：{self._catalog_display(entry)}")
+        self._dispatch_hidden_commands(
+            [cmd.unlock_tech(entry.key)],
+            label=f"解锁科技：{self._catalog_display(entry)}",
+        )
+
+    def _refresh_tech_full_choices(self) -> None:
+        if not hasattr(self, "tech_full_box"):
+            return
+        self._refresh_catalog_choice_box(
+            self.tech_entries,
+            self.tech_full_var,
+            self.tech_full_box,
+            choice_map_attr="_tech_full_choice_map",
+        )
+
+    def _selected_tech_full_entry(self) -> CatalogEntry | None:
+        if not hasattr(self, "tech_full_var"):
+            return None
+        return self._tech_full_choice_map.get(self.tech_full_var.get().strip())
+
+    def _unlock_selected_tech_full(self) -> None:
+        entry = self._selected_tech_full_entry()
+        if entry is None:
+            self._show_result("先在完整目录里选一项科技。", ok=False)
+            return
+        self._dispatch_hidden_commands(
+            [cmd.unlock_tech(entry.key)],
+            label=f"解锁科技：{self._catalog_display(entry)}",
+        )
 
     def _unlock_selected_tech_group(self) -> None:
         if not hasattr(self, "tech_quick_group_var"):
@@ -2233,16 +2708,10 @@ class TrainerApp:
             self._show_result("当前分类没有可整组解锁的科技。", ok=False)
             return
         commands = [cmd.unlock_tech(entry.key) for entry in entries]
-        self._send_many(commands, label=f"{group_name}（共 {len(commands)} 项）")
-        if hasattr(self, "pal_favorite_box"):
-            self._refresh_combo_values(
-                self.pal_favorite_box,
-                self.pal_favorite_var,
-                self._catalog_values_for_keys(
-                    self.settings.favorite_pal_ids,
-                    self._pal_entry_by_key,
-                ),
-            )
+        self._dispatch_hidden_commands(
+            commands,
+            label=f"{group_name}（共 {len(commands)} 项）",
+        )
 
     def _saved_coord_labels(self) -> list[str]:
         labels: list[str] = []
@@ -2330,6 +2799,11 @@ class TrainerApp:
         for entry in results:
             self.item_listbox.insert("end", self._catalog_display(entry))
         self._current_item_results = results
+        self.item_listbox.selection_clear(0, "end")
+        if results:
+            self.item_listbox.selection_set(0)
+            self.item_listbox.activate(0)
+            self.item_listbox.see(0)
 
     def _refresh_pal_list(self) -> None:
         query = self.pal_search_var.get().strip() if hasattr(self, "pal_search_var") else ""
@@ -2346,6 +2820,11 @@ class TrainerApp:
         for entry in results:
             self.pal_listbox.insert("end", self._catalog_display(entry))
         self._current_pal_results = results
+        self.pal_listbox.selection_clear(0, "end")
+        if results:
+            self.pal_listbox.selection_set(0)
+            self.pal_listbox.activate(0)
+            self.pal_listbox.see(0)
 
     def _refresh_tech_list(self) -> None:
         query = self.tech_search_var.get().strip() if hasattr(self, "tech_search_var") else ""
@@ -2362,6 +2841,11 @@ class TrainerApp:
         for entry in results:
             self.tech_listbox.insert("end", self._catalog_display(entry))
         self._current_tech_results = results
+        self.tech_listbox.selection_clear(0, "end")
+        if results:
+            self.tech_listbox.selection_set(0)
+            self.tech_listbox.activate(0)
+            self.tech_listbox.see(0)
 
     def _refresh_time_label(self, time_var: tk.IntVar, time_label: ttk.Label) -> None:
         time_label.configure(text=f"{time_var.get()} 时")
@@ -2369,6 +2853,25 @@ class TrainerApp:
     # ------------------------------------------------------------------
     # Button handlers
     # ------------------------------------------------------------------
+
+    def _on_unlock_fast_travel(self) -> None:
+        self._dispatch_hidden_commands(
+            [cmd.unlock_fast_travel()],
+            label="解锁全部传送点",
+        )
+
+    def _on_unlock_all_tech(self) -> None:
+        self._dispatch_hidden_commands(
+            [cmd.unlock_all_tech()],
+            label="解锁全部科技",
+        )
+
+    def _on_set_time(self, hour: int) -> None:
+        safe_hour = max(0, min(23, int(hour)))
+        self._dispatch_hidden_commands(
+            [cmd.set_time(safe_hour)],
+            label=f"设置世界时间为 {safe_hour}:00",
+        )
 
     def _on_give_custom_exp(self) -> None:
         try:
@@ -2381,7 +2884,10 @@ class TrainerApp:
             return
         self.settings.custom_exp_amount = amount
         save_settings(self.settings)
-        self._send(cmd.give_exp(amount))
+        self._dispatch_hidden_commands(
+            [cmd.give_exp(amount)],
+            label=f"发放经验值 {amount}",
+        )
 
     def _on_mem_teleport(self) -> None:
         try:
@@ -2395,12 +2901,17 @@ class TrainerApp:
 
     def _on_mem_fly(self, enabled: bool) -> None:
         label = "开启飞行" if enabled else "关闭飞行"
-        bridge_ok = False
         if self._bridge_runtime_ready():
-            bridge_ok, _message = self._write_bridge_fly_request(enabled)
-        if bridge_ok:
-            label = f"{label}（增强模块 + 命令双保险）"
-        self._send_with_label(cmd.fly(enabled), label)
+            bridge_ok, message = self._write_bridge_fly_request(enabled)
+            if bridge_ok:
+                self._show_result(f"已无聊天回显执行：{label}", ok=True)
+            else:
+                self._show_result(f"{label} 发送失败：{message}", ok=False)
+            return
+        self._show_result(
+            f"{label} 需要桥接模块已载入当前会话；不会再自动往游戏聊天框输入命令。",
+            ok=False,
+        )
 
     def _on_mem_read_pos(self) -> None:
         status = self._read_bridge_status()
@@ -2409,9 +2920,9 @@ class TrainerApp:
             self._show_result("已从增强模块读取当前位置。", ok=True)
             return
 
-        self._send_with_label(
-            cmd.get_position(),
-            "读取当前位置（结果会显示在游戏聊天框）",
+        self._show_result(
+            "读取当前位置需要增强模块已载入当前会话；不会再走聊天框回显读取。",
+            ok=False,
         )
 
     # ------------------------------------------------------------------
@@ -2514,7 +3025,10 @@ class TrainerApp:
         label = preset.title
         if missing_count > 0:
             label = f"{preset.title}（已跳过 {missing_count} 个过期物品）"
-        self._send_many(commands, label=f"{label}（共 {len(commands)} 条）")
+        self._dispatch_hidden_commands(
+            commands,
+            label=f"{label}（共 {len(commands)} 条）",
+        )
 
     def _parse_count(self, raw: str, default: int = 1) -> int:
         try:
@@ -2529,7 +3043,10 @@ class TrainerApp:
         self._remember_recent(self.settings.recent_item_ids, entry.key)
         save_settings(self.settings)
         self._refresh_item_shortcuts()
-        self._send(cmd.giveme(entry.key, count))
+        self._dispatch_hidden_commands(
+            [cmd.giveme(entry.key, count)],
+            label=f"发放物品：{entry.label} x{count}",
+        )
 
     def _spawn_pal_entry(self, entry: CatalogEntry) -> None:
         count = self._parse_count(self.pal_count_var.get())
@@ -2537,7 +3054,10 @@ class TrainerApp:
         self._remember_recent(self.settings.recent_pal_ids, entry.key)
         save_settings(self.settings)
         self._refresh_pal_shortcuts()
-        self._send(cmd.spawn_pal(entry.key, count))
+        self._dispatch_hidden_commands(
+            [cmd.spawn_pal(entry.key, count)],
+            label=f"生成帕鲁：{entry.label} x{count}",
+        )
 
     def _load_recent_item_into_search(self) -> None:
         entry = self._catalog_entry_from_display(self.item_recent_var.get(), self._item_entry_by_key)
@@ -2659,7 +3179,10 @@ class TrainerApp:
             self._show_result("先在列表里选一项科技。", ok=False)
             return
         entry = self._current_tech_results[selection[0]]
-        self._send(cmd.unlock_tech(entry.key))
+        self._dispatch_hidden_commands(
+            [cmd.unlock_tech(entry.key)],
+            label=f"解锁科技：{entry.label}",
+        )
 
     def _remember_recent(self, bucket: list[str], key: str, limit: int = 10) -> None:
         self._remember_value(bucket, key, limit)
@@ -3049,16 +3572,14 @@ class TrainerApp:
     def _send(self, command: str) -> None:
         if not command:
             return
-        self._show_result(f"发送中：{command}", ok=True, pending=True)
-        threading.Thread(target=self._send_worker, args=(command,), daemon=True).start()
+        self._dispatch_hidden_commands([command], label="指令")
 
     def _send_with_label(self, command: str, label: str) -> None:
         """Dispatch a command and surface its human-readable name in the result bar."""
 
         if not command:
             return
-        self._show_result(f"发送 {label}：{command}", ok=True, pending=True)
-        threading.Thread(target=self._send_worker, args=(command,), daemon=True).start()
+        self._dispatch_hidden_commands([command], label=label)
 
     def _on_chat_freeform_send(self) -> None:
         raw = self.chat_freeform_var.get()
@@ -3089,25 +3610,8 @@ class TrainerApp:
         command = self._chat_history[selection[0]]
         self._send(command)
 
-    def _send_worker(self, command: str) -> None:
-        result = game_control.send_chat_command(command)
-        self.root.after(0, lambda: self._show_result(result.message, ok=result.ok))
-
     def _send_many(self, commands: list[str], *, label: str) -> None:
-        self._show_result(f"正在发送 {label}…", ok=True, pending=True)
-
-        def worker() -> None:
-            results = game_control.send_chat_commands(commands)
-            successes = sum(1 for item in results if item.ok)
-            ok = successes == len(commands)
-            message = (
-                f"{label} 发送完成：{successes}/{len(commands)} 成功"
-                if successes
-                else (results[0].message if results else "未发送。")
-            )
-            self.root.after(0, lambda: self._show_result(message, ok=ok))
-
-        threading.Thread(target=worker, daemon=True).start()
+        self._dispatch_hidden_commands(commands, label=label)
 
     # ------------------------------------------------------------------
     # Status + feedback

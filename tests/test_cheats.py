@@ -167,6 +167,8 @@ class BridgeStatusTests(unittest.TestCase):
                     {
                         "player_valid": True,
                         "bridge_version": "1.2.0",
+                        "hidden_registry_ready": True,
+                        "chat_suppression_ready": True,
                         "position_x": -123.5,
                         "position_y": 456.0,
                         "position_z": 789.25,
@@ -177,6 +179,8 @@ class BridgeStatusTests(unittest.TestCase):
             status = read_status(path)
             self.assertTrue(status.player_valid)
             self.assertEqual(status.bridge_version, "1.2.0")
+            self.assertTrue(status.hidden_registry_ready)
+            self.assertTrue(status.chat_suppression_ready)
             self.assertAlmostEqual(status.position_x, -123.5)
             self.assertAlmostEqual(status.position_y, 456.0)
             self.assertAlmostEqual(status.position_z, 789.25)
@@ -216,6 +220,21 @@ class WriteRequestTests(unittest.TestCase):
             self.assertEqual(payload["action"], "set_fly")
             self.assertEqual(payload["request_id"], 43)
             self.assertIs(payload["enabled"], True)
+
+    def test_write_request_keeps_extra_string_fields(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bridge" / "request.json"
+            ok, message = write_request(
+                path,
+                action="run_hidden_commands",
+                request_id=44,
+                commands_text="@!giveme Wood 2\n@!settime 6",
+            )
+            self.assertTrue(ok, message)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["action"], "run_hidden_commands")
+            self.assertEqual(payload["request_id"], 44)
+            self.assertEqual(payload["commands_text"], "@!giveme Wood 2\n@!settime 6")
 
 
 class DescribeStateTests(unittest.TestCase):

@@ -1,10 +1,15 @@
 local UEHelpers = require("UEHelpers")
 
 local ModName = "PalworldTrainerBridge"
-local Version = "1.1.2"
+local Version = "1.2.5"
 local LastFindQuery = nil
 local LogWriteHealthy = true
 local LastLogFailureShown = false
+local HiddenCommandRegistry = nil
+local HiddenCommandRegistryPath = nil
+local HiddenRegistryReady = false
+local ChatSuppressionReady = false
+local ChatSuppressionProbeLogged = false
 
 local function normalize_path(path)
     return tostring(path or ""):gsub("\\", "/")
@@ -448,6 +453,27 @@ local TickCounter = 0
 local LastTogglesRead = 0
 local LastStatusWrite = 0
 local LastRequestId = nil
+local HiddenCommandNames = {
+    "settime",
+    "giveexp",
+    "unstuck",
+    "help",
+    "unlocktech",
+    "fly",
+    "getpos",
+    "unlockalltech",
+    "giveme",
+    "unlockft",
+    "time",
+    "give",
+    "spawn",
+    "exp",
+    "goto",
+}
+local HiddenCommandLookup = {}
+for _, command_name in ipairs(HiddenCommandNames) do
+    HiddenCommandLookup[command_name] = true
+end
 
 local function safe_get_prop(object, name)
     if not object or not object:IsValid() then
@@ -501,7 +527,1113 @@ local function parse_number(text, key)
 end
 
 local function parse_string(text, key)
-    return text:match('"' .. key .. '"%s*:%s*"([^"]+)"')
+    local _, value_start = text:find('"' .. key .. '"%s*:%s*"', 1)
+    if not value_start then
+        return nil
+    end
+
+    local parts = {}
+    local index = value_start + 1
+    while index <= #text do
+        local ch = text:sub(index, index)
+        if ch == '"' then
+            return table.concat(parts)
+        end
+        if ch == "\\" then
+            index = index + 1
+            local escaped = text:sub(index, index)
+            if escaped == '"' or escaped == "\\" or escaped == "/" then
+                table.insert(parts, escaped)
+            elseif escaped == "b" then
+                table.insert(parts, "\b")
+            elseif escaped == "f" then
+                table.insert(parts, "\f")
+            elseif escaped == "n" then
+                table.insert(parts, "\n")
+            elseif escaped == "r" then
+                table.insert(parts, "\r")
+            elseif escaped == "t" then
+                table.insert(parts, "\t")
+            elseif escaped == "u" then
+                local hex = text:sub(index + 1, index + 4)
+                if hex:match("^%x%x%x%x$") and utf8 and utf8.char then
+                    local codepoint = tonumber(hex, 16)
+                    local ok, decoded = pcall(utf8.char, codepoint)
+                    if ok then
+                        table.insert(parts, decoded)
+                    end
+                    index = index + 4
+                end
+            elseif escaped ~= "" then
+                table.insert(parts, escaped)
+            end
+        else
+            table.insert(parts, ch)
+        end
+        index = index + 1
+    end
+    return nil
+end
+
+local function trim(text)
+    return tostring(text or ""):match("^%s*(.-)%s*$")
+end
+
+local function normalize_hidden_name(value)
+    if type(value) ~= "string" then
+        return nil
+    end
+    local normalized = string.lower(trim(value))
+    if normalized == "" then
+        return nil
+    end
+    return normalized
+end
+
+local function starts_with_hidden_chat_command(text)
+    local normalized = trim(text)
+    if normalized == "" then
+        return false
+    end
+    while normalized:sub(1, 1) == "/" do
+        normalized = trim(normalized:sub(2))
+    end
+    return normalized:sub(1, 2) == "@!"
+end
+
+local function path_mentions_client_cheat(text)
+    local normalized = normalize_hidden_name(text)
+    if not normalized then
+        return false
+    end
+    return normalized:find("clientcheatcommands", 1, true) ~= nil
+        or normalized:find("client_cheat_commands", 1, true) ~= nil
+        or normalized:find("clientcheat", 1, true) ~= nil
+end
+
+local function append_unique(list, seen, value)
+    if not value or seen[value] then
+        return
+    end
+    seen[value] = true
+    table.insert(list, value)
+end
+
+local function join_hidden_hits(values)
+    if not values or #values == 0 then
+        return "-"
+    end
+    return table.concat(values, ",")
+end
+
+local function has_hidden_callable_shape(value)
+    local function get_meta(candidate)
+        local getter = nil
+        if debug and debug.getmetatable then
+            getter = debug.getmetatable
+        elseif getmetatable then
+            getter = getmetatable
+        end
+        if not getter then
+            return nil
+        end
+
+        local ok, meta = pcall(getter, candidate)
+        if ok and type(meta) == "table" then
+            return meta
+        end
+        return nil
+    end
+
+    local function meta_has_callable(meta)
+        if type(meta) ~= "table" then
+            return false
+        end
+        if type(rawget(meta, "__call")) == "function" then
+            return true
+        end
+        local checked = 0
+        for key, entry in next, meta do
+            checked = checked + 1
+            if type(entry) == "function" then
+                return true
+            end
+            if type(key) == "string" then
+                local normalized_key = string.lower(key)
+                if normalized_key == "__call"
+                    or normalized_key == "__index"
+                    or normalized_key == "handler"
+                    or normalized_key == "execute"
+                    or normalized_key == "exec"
+                    or normalized_key == "callback"
+                    or normalized_key == "run"
+                    or normalized_key == "func"
+                then
+                    return true
+                end
+            end
+            if checked >= 24 then
+                break
+            end
+        end
+        return false
+    end
+
+    if type(value) == "function" then
+        return true
+    end
+    if type(value) ~= "table" then
+        return false
+    end
+
+    local meta = get_meta(value)
+    if meta_has_callable(meta) then
+        return true
+    end
+
+    local inspected = 0
+    for key, entry in next, value do
+        inspected = inspected + 1
+        if type(entry) == "function" then
+            return true
+        end
+        if type(entry) == "table" then
+            local entry_meta = get_meta(entry)
+            if meta_has_callable(entry_meta) then
+                return true
+            end
+            local nested_checked = 0
+            for _, nested_entry in next, entry do
+                nested_checked = nested_checked + 1
+                if type(nested_entry) == "function" then
+                    return true
+                end
+                if nested_checked >= 16 then
+                    break
+                end
+            end
+        end
+        if type(key) == "string" then
+            local normalized_key = string.lower(key)
+            if normalized_key == "handler"
+                or normalized_key == "execute"
+                or normalized_key == "exec"
+                or normalized_key == "callback"
+                or normalized_key == "run"
+                or normalized_key == "func"
+            then
+                return true
+            end
+        end
+        if inspected >= 32 then
+            break
+        end
+    end
+    return false
+end
+
+local function extract_hidden_descriptor_name(candidate)
+    if type(candidate) ~= "table" then
+        return nil
+    end
+
+    for _, key in ipairs({ "name", "Name", "command", "Command", "cmd", "Cmd" }) do
+        local normalized = normalize_hidden_name(rawget(candidate, key))
+        if normalized ~= nil then
+            return normalized
+        end
+    end
+
+    return normalize_hidden_name(rawget(candidate, 1))
+end
+
+local function describe_function(func)
+    if not debug or not debug.getinfo then
+        return "function"
+    end
+
+    local ok, info = pcall(debug.getinfo, func, "u")
+    if not ok or type(info) ~= "table" then
+        return "function"
+    end
+    return string.format(
+        "function(nparams=%s,vararg=%s)",
+        tostring(info.nparams),
+        tostring(info.isvararg)
+    )
+end
+
+local function describe_hidden_entry(value)
+    local value_type = type(value)
+    if value_type == "function" then
+        return describe_function(value)
+    end
+    if value_type ~= "table" then
+        return value_type
+    end
+
+    local parts = {}
+    local count = 0
+    for key, entry in next, value do
+        count = count + 1
+        if count > 6 then
+            table.insert(parts, "...")
+            break
+        end
+        local piece = tostring(key) .. "=" .. type(entry)
+        if type(entry) == "function" then
+            piece = tostring(key) .. "=" .. describe_function(entry)
+        end
+        table.insert(parts, piece)
+    end
+    return "table{" .. table.concat(parts, ", ") .. "}"
+end
+
+local function get_function_source(func)
+    if type(func) ~= "function" or not debug or not debug.getinfo then
+        return nil
+    end
+
+    local ok, info = pcall(debug.getinfo, func, "S")
+    if not ok or type(info) ~= "table" then
+        return nil
+    end
+    return tostring(info.source or "")
+end
+
+local function function_mentions_client_cheat(func)
+    return path_mentions_client_cheat(get_function_source(func))
+end
+
+local function summarize_hidden_candidate(candidate)
+    if type(candidate) ~= "table" then
+        return 0, {}, 0, {}, 0, {}, 0
+    end
+
+    local seen = {}
+    local direct_hits = {}
+    local indexed_hits = {}
+    local descriptor_hits = {}
+    local total_entries = 0
+
+    for _, command_name in ipairs(HiddenCommandNames) do
+        local direct_value = rawget(candidate, command_name)
+        if has_hidden_callable_shape(direct_value) then
+            append_unique(direct_hits, seen, command_name)
+        end
+
+        local ok, indexed_value = pcall(function()
+            return candidate[command_name]
+        end)
+        if ok and indexed_value ~= direct_value and has_hidden_callable_shape(indexed_value) then
+            append_unique(indexed_hits, seen, command_name)
+        end
+    end
+
+    for key, value in next, candidate do
+        total_entries = total_entries + 1
+
+        local normalized_key = normalize_hidden_name(key)
+        if normalized_key and HiddenCommandLookup[normalized_key] and has_hidden_callable_shape(value) then
+            append_unique(direct_hits, seen, normalized_key)
+        end
+
+        local descriptor_name = extract_hidden_descriptor_name(value)
+        if descriptor_name and HiddenCommandLookup[descriptor_name] and has_hidden_callable_shape(value) then
+            append_unique(descriptor_hits, seen, descriptor_name)
+        end
+
+    end
+
+    return #direct_hits, direct_hits, #indexed_hits, indexed_hits, #descriptor_hits, descriptor_hits, total_entries
+end
+
+local function looks_like_hidden_registry(candidate)
+    if candidate == HiddenCommandNames or candidate == HiddenCommandLookup then
+        return false, {}, {}, {}
+    end
+
+    local direct_count, direct_hits, indexed_count, indexed_hits, descriptor_count, descriptor_hits =
+        summarize_hidden_candidate(candidate)
+    local total_count = direct_count + indexed_count + descriptor_count
+    if direct_count >= 4 then
+        return true, direct_hits, indexed_hits, descriptor_hits
+    end
+    if indexed_count >= 4 then
+        return true, direct_hits, indexed_hits, descriptor_hits
+    end
+    if direct_count + indexed_count >= 2 and total_count >= 5 then
+        return true, direct_hits, indexed_hits, descriptor_hits
+    end
+    if descriptor_count >= 4 then
+        return true, direct_hits, indexed_hits, descriptor_hits
+    end
+    return false, direct_hits, indexed_hits, descriptor_hits
+end
+
+local function remember_hidden_candidate(candidates, path, candidate, direct_hits, indexed_hits, descriptor_hits)
+    local score = (#direct_hits * 12) + (#indexed_hits * 10) + (#descriptor_hits * 4)
+    if path_mentions_client_cheat(path) then
+        score = score + 40
+    end
+    if score < 2 then
+        return
+    end
+
+    for index, existing in ipairs(candidates) do
+        if existing.path == path then
+            if existing.score >= score then
+                return
+            end
+            table.remove(candidates, index)
+            break
+        end
+    end
+
+    table.insert(candidates, {
+        score = score,
+        path = path,
+        direct_hits = direct_hits,
+        indexed_hits = indexed_hits,
+        descriptor_hits = descriptor_hits,
+        description = describe_hidden_entry(candidate),
+    })
+    table.sort(candidates, function(left, right)
+        if left.score == right.score then
+            return left.path < right.path
+        end
+        return left.score > right.score
+    end)
+    while #candidates > 8 do
+        table.remove(candidates)
+    end
+end
+
+local function try_get_debug_registry()
+    if not debug or not debug.getregistry then
+        return nil
+    end
+    local ok, registry = pcall(debug.getregistry)
+    if ok and type(registry) == "table" then
+        return registry
+    end
+    return nil
+end
+
+local function seed_hidden_client_cheat_roots(queue, seen_tables, seen_functions)
+    local seeded = 0
+
+    if package and type(package.loaded) == "table" then
+        for key, value in next, package.loaded do
+            local key_text = tostring(key)
+            if path_mentions_client_cheat(key_text) then
+                if type(value) == "table" then
+                    enqueue_hidden_table(queue, seen_tables, "package.loaded." .. key_text, value, 0)
+                    enqueue_hidden_metatable(queue, seen_tables, "package.loaded." .. key_text, value, 1)
+                    seeded = seeded + 1
+                elseif type(value) == "function" then
+                    enqueue_hidden_function(queue, seen_functions, "package.loaded." .. key_text, value, 0)
+                    seeded = seeded + 1
+                end
+            elseif type(value) == "function" and function_mentions_client_cheat(value) then
+                enqueue_hidden_function(queue, seen_functions, "package.loaded[" .. key_text .. "]<function>", value, 0)
+                seeded = seeded + 1
+            end
+        end
+    end
+
+    local registry = try_get_debug_registry()
+    if type(registry) == "table" then
+        local registry_count = 0
+        for key, value in next, registry do
+            if type(value) == "function" and function_mentions_client_cheat(value) then
+                enqueue_hidden_function(
+                    queue,
+                    seen_functions,
+                    "debug.getregistry()[" .. tostring(key) .. "]<client_cheat_function>",
+                    value,
+                    0
+                )
+                registry_count = registry_count + 1
+            elseif type(value) == "table" and path_mentions_client_cheat(key) then
+                enqueue_hidden_table(
+                    queue,
+                    seen_tables,
+                    "debug.getregistry()[" .. tostring(key) .. "]<client_cheat_table>",
+                    value,
+                    0
+                )
+                enqueue_hidden_metatable(
+                    queue,
+                    seen_tables,
+                    "debug.getregistry()[" .. tostring(key) .. "]<client_cheat_table>",
+                    value,
+                    1
+                )
+                registry_count = registry_count + 1
+            end
+
+            if registry_count >= 256 then
+                break
+            end
+        end
+        seeded = seeded + registry_count
+    end
+
+    return seeded
+end
+
+local function try_get_metatable(value)
+    local getter = nil
+    if debug and debug.getmetatable then
+        getter = debug.getmetatable
+    elseif getmetatable then
+        getter = getmetatable
+    end
+    if not getter then
+        return nil
+    end
+
+    local ok, meta = pcall(getter, value)
+    if ok and type(meta) == "table" then
+        return meta
+    end
+    return nil
+end
+
+local function safe_param_get(param)
+    if param == nil then
+        return nil
+    end
+
+    local ok, value = pcall(function()
+        return param:get()
+    end)
+    if ok then
+        return value
+    end
+    return param
+end
+
+local function safe_param_set(param, value)
+    if param == nil then
+        return false
+    end
+
+    local ok = pcall(function()
+        param:set(value)
+    end)
+    return ok
+end
+
+local function text_like_to_string(value)
+    if type(value) == "string" then
+        return value
+    end
+    if value == nil or type(value) ~= "userdata" then
+        return nil
+    end
+
+    local ok_type, value_type = pcall(function()
+        return value:type()
+    end)
+    if not ok_type then
+        return nil
+    end
+    if value_type ~= "FString"
+        and value_type ~= "FText"
+        and value_type ~= "FName"
+        and value_type ~= "FUtf8String"
+        and value_type ~= "FAnsiString"
+    then
+        return nil
+    end
+
+    local ok_text, text = pcall(function()
+        return value:ToString()
+    end)
+    if ok_text and type(text) == "string" then
+        return text
+    end
+    return nil
+end
+
+local function blank_text_like(value)
+    if type(value) == "string" then
+        return ""
+    end
+    if value == nil or type(value) ~= "userdata" then
+        return nil
+    end
+
+    local ok_type, value_type = pcall(function()
+        return value:type()
+    end)
+    if not ok_type then
+        return nil
+    end
+
+    if value_type == "FString"
+        or value_type == "FUtf8String"
+        or value_type == "FAnsiString"
+    then
+        local ok_clear = pcall(function()
+            if value.Clear then
+                value:Clear()
+            elseif value.Empty then
+                value:Empty()
+            end
+        end)
+        if ok_clear then
+            return value
+        end
+        return ""
+    end
+    if value_type == "FText" then
+        local ok_text, empty_text = pcall(FText, "")
+        if ok_text then
+            return empty_text
+        end
+        return nil
+    end
+    if value_type == "FName" then
+        local ok_name, empty_name = pcall(FName, "")
+        if ok_name then
+            return empty_name
+        end
+        return nil
+    end
+
+    return nil
+end
+
+local function extract_chat_text_candidate(payload)
+    local direct_text = text_like_to_string(payload)
+    if direct_text ~= nil then
+        return direct_text, "direct"
+    end
+
+    if payload == nil or (type(payload) ~= "table" and type(payload) ~= "userdata") then
+        return nil, nil
+    end
+
+    for _, field in ipairs({
+        "Message",
+        "Text",
+        "Content",
+        "Body",
+        "ChatText",
+        "DisplayText",
+        "RawText",
+    }) do
+        local ok_field, field_value = pcall(function()
+            return payload[field]
+        end)
+        if ok_field then
+            local field_text = text_like_to_string(field_value)
+            if field_text ~= nil then
+                return field_text, field
+            end
+        end
+    end
+
+    return nil, nil
+end
+
+local function suppress_chat_param_message(param)
+    local payload = safe_param_get(param)
+    local message_text, mode = extract_chat_text_candidate(payload)
+    if not message_text or not starts_with_hidden_chat_command(message_text) then
+        return false, message_text, mode or "not_hidden"
+    end
+
+    local replacement = blank_text_like(payload)
+    if replacement ~= nil and safe_param_set(param, replacement) then
+        return true, message_text, "param_set:" .. tostring(mode)
+    end
+
+    if payload ~= nil and (type(payload) == "table" or type(payload) == "userdata") then
+        for _, field in ipairs({
+            "Message",
+            "Text",
+            "Content",
+            "Body",
+            "ChatText",
+            "DisplayText",
+            "RawText",
+        }) do
+            local ok_field, field_value = pcall(function()
+                return payload[field]
+            end)
+            if ok_field then
+                local field_text = text_like_to_string(field_value)
+                if field_text ~= nil then
+                    local blank_value = blank_text_like(field_value)
+                    if blank_value == nil then
+                        blank_value = ""
+                    end
+                    local ok_set = pcall(function()
+                        payload[field] = blank_value
+                    end)
+                    if ok_set then
+                        pcall(function()
+                            param:set(payload)
+                        end)
+                        return true, message_text, "field_set:" .. field
+                    end
+                end
+            end
+        end
+    end
+
+    return false, message_text, "unable_to_blank"
+end
+
+local function enqueue_hidden_table(queue, seen_tables, path, value, depth)
+    if type(value) ~= "table" or seen_tables[value] then
+        return
+    end
+    seen_tables[value] = true
+    table.insert(queue, {
+        kind = "table",
+        path = path,
+        value = value,
+        depth = depth,
+    })
+end
+
+local function enqueue_hidden_function(queue, seen_functions, path, value, depth)
+    if type(value) ~= "function" or seen_functions[value] then
+        return
+    end
+    seen_functions[value] = true
+    table.insert(queue, {
+        kind = "function",
+        path = path,
+        value = value,
+        depth = depth,
+    })
+end
+
+local function enqueue_hidden_metatable(queue, seen_tables, path, value, depth)
+    local meta = try_get_metatable(value)
+    if type(meta) == "table" then
+        enqueue_hidden_table(queue, seen_tables, string.format("%s<metatable>", path), meta, depth)
+    end
+end
+
+local function enqueue_hidden_upvalues(queue, seen_tables, seen_functions, path, func, depth)
+    if type(func) ~= "function" or not debug or not debug.getupvalue then
+        return
+    end
+
+    for index = 1, 24 do
+        local name, value = debug.getupvalue(func, index)
+        if name == nil then
+            break
+        end
+        local child_path = string.format("%s<upvalue:%s>", path, tostring(name))
+        if type(value) == "table" then
+            enqueue_hidden_table(queue, seen_tables, child_path, value, depth)
+        elseif type(value) == "function" then
+            enqueue_hidden_function(queue, seen_functions, child_path, value, depth)
+        end
+    end
+end
+
+local function hidden_child_path(path, key)
+    local key_text = tostring(key)
+    local child_path = string.format("%s[%s]", path, key_text)
+    if type(key) == "string" and key:match("^[%w_]+$") then
+        child_path = path .. "." .. key
+    end
+    return child_path
+end
+
+local function discover_hidden_registry()
+    if HiddenCommandRegistry ~= nil then
+        HiddenRegistryReady = true
+        return HiddenCommandRegistry, HiddenCommandRegistryPath
+    end
+
+    local max_depth = 8
+    local max_nodes = 16384
+    local queue = {}
+    local seen_tables = {}
+    local seen_functions = {}
+    local best_candidates = {}
+    enqueue_hidden_table(queue, seen_tables, "package.loaded", package.loaded, 0)
+    enqueue_hidden_table(queue, seen_tables, "_G", _G, 0)
+    enqueue_hidden_metatable(queue, seen_tables, "package.loaded", package.loaded, 1)
+    enqueue_hidden_metatable(queue, seen_tables, "_G", _G, 1)
+
+    local debug_registry = try_get_debug_registry()
+    if debug_registry then
+        enqueue_hidden_table(queue, seen_tables, "debug.getregistry()", debug_registry, 0)
+        enqueue_hidden_metatable(queue, seen_tables, "debug.getregistry()", debug_registry, 1)
+    end
+    local targeted_roots = seed_hidden_client_cheat_roots(queue, seen_tables, seen_functions)
+    if targeted_roots > 0 then
+        log(string.format("Seeded %d ClientCheatCommands-specific discovery roots.", targeted_roots))
+    end
+
+    local index = 1
+    while index <= #queue and index <= max_nodes do
+        local node = queue[index]
+        index = index + 1
+
+        if node.kind == "table" then
+            local matched, direct_hits, indexed_hits, descriptor_hits = looks_like_hidden_registry(node.value)
+            if matched then
+                HiddenCommandRegistry = node.value
+                HiddenCommandRegistryPath = node.path
+                HiddenRegistryReady = true
+                log(string.format(
+                    "Hidden registry found: %s (direct=%s indexed=%s descriptor=%s)",
+                    node.path,
+                    join_hidden_hits(direct_hits),
+                    join_hidden_hits(indexed_hits),
+                    join_hidden_hits(descriptor_hits)
+                ))
+                for _, command_name in ipairs(HiddenCommandNames) do
+                    local entry = rawget(node.value, command_name)
+                    if entry ~= nil then
+                        log(string.format("  %s => %s", command_name, describe_hidden_entry(entry)))
+                    end
+                end
+                return HiddenCommandRegistry, HiddenCommandRegistryPath
+            end
+
+            remember_hidden_candidate(
+                best_candidates,
+                node.path,
+                node.value,
+                direct_hits,
+                indexed_hits,
+                descriptor_hits
+            )
+
+            if node.depth < max_depth then
+                enqueue_hidden_metatable(queue, seen_tables, node.path, node.value, node.depth + 1)
+                for key, value in next, node.value do
+                    local child_path = hidden_child_path(node.path, key)
+
+                    if type(key) == "table" then
+                        enqueue_hidden_table(queue, seen_tables, child_path .. "<key>", key, node.depth + 1)
+                    elseif type(key) == "function" then
+                        enqueue_hidden_function(queue, seen_functions, child_path .. "<key>", key, node.depth + 1)
+                    end
+
+                    if type(value) == "table" then
+                        enqueue_hidden_table(queue, seen_tables, child_path, value, node.depth + 1)
+                    elseif type(value) == "function" then
+                        enqueue_hidden_function(queue, seen_functions, child_path, value, node.depth + 1)
+                    end
+                end
+            end
+        elseif node.kind == "function" and node.depth < max_depth then
+            enqueue_hidden_metatable(queue, seen_tables, node.path, node.value, node.depth + 1)
+            enqueue_hidden_upvalues(queue, seen_tables, seen_functions, node.path, node.value, node.depth + 1)
+        end
+    end
+
+    HiddenRegistryReady = false
+    if index > max_nodes then
+        log(string.format("Hidden registry discovery hit node cap %d.", max_nodes))
+    end
+    if #best_candidates > 0 then
+        log("Hidden registry discovery failed. Top candidates:")
+        for _, candidate in ipairs(best_candidates) do
+            log(string.format(
+                "  score=%d path=%s direct=%s indexed=%s descriptor=%s => %s",
+                candidate.score,
+                candidate.path,
+                join_hidden_hits(candidate.direct_hits),
+                join_hidden_hits(candidate.indexed_hits),
+                join_hidden_hits(candidate.descriptor_hits),
+                candidate.description
+            ))
+        end
+        return nil, nil
+    end
+
+    log("Hidden registry discovery failed.")
+    return nil, nil
+end
+
+local function parse_hidden_command_line(line)
+    local normalized = trim(line)
+    if normalized == "" then
+        return nil
+    end
+
+    while normalized:sub(1, 1) == "/" do
+        normalized = trim(normalized:sub(2))
+    end
+    if normalized:sub(1, 2) == "@!" then
+        normalized = normalized:sub(3)
+    elseif normalized:sub(1, 1) == "!" or normalized:sub(1, 1) == "@" then
+        normalized = normalized:sub(2)
+    end
+
+    normalized = trim(normalized)
+    if normalized == "" then
+        return nil
+    end
+
+    local command_name, args_text = normalized:match("^(%S+)%s*(.-)%s*$")
+    if not command_name or command_name == "" then
+        return nil
+    end
+
+    local args = {}
+    if args_text and args_text ~= "" then
+        for token in args_text:gmatch("%S+") do
+            table.insert(args, token)
+        end
+    end
+
+    return string.lower(command_name), args_text or "", args
+end
+
+local function collect_hidden_callables(entry, label)
+    local callables = {}
+    local seen = {}
+
+    local function add_callable(func, func_label, self_arg)
+        if type(func) ~= "function" then
+            return
+        end
+        local owner_key = self_arg or false
+        seen[func] = seen[func] or {}
+        if seen[func][owner_key] then
+            return
+        end
+        seen[func][owner_key] = true
+        table.insert(callables, {
+            func = func,
+            label = func_label,
+            self_arg = self_arg,
+        })
+    end
+
+    local function add_metacall(value, value_label)
+        local meta = try_get_metatable(value)
+        if type(meta) ~= "table" then
+            return
+        end
+        local metacall = rawget(meta, "__call")
+        if type(metacall) == "function" then
+            add_callable(metacall, value_label .. ".__call", value)
+        end
+    end
+
+    if type(entry) == "function" then
+        add_callable(entry, label)
+        return callables
+    end
+    if type(entry) ~= "table" then
+        return callables
+    end
+
+    add_metacall(entry, label)
+    for key, value in next, entry do
+        if type(value) == "function" then
+            add_callable(value, string.format("%s.%s", label, tostring(key)), entry)
+        end
+    end
+    for key, value in next, entry do
+        if type(value) == "table" then
+            local nested_label = string.format("%s.%s", label, tostring(key))
+            add_metacall(value, nested_label)
+            for nested_key, nested_value in next, value do
+                if type(nested_value) == "function" then
+                    add_callable(
+                        nested_value,
+                        string.format("%s.%s", nested_label, tostring(nested_key)),
+                        value
+                    )
+                end
+            end
+        end
+    end
+
+    return callables
+end
+
+local function invoke_hidden_callable(callable, command_name, args_text, args)
+    local unpack_args = table.unpack or unpack
+    local attempts = {}
+
+    local function add_attempt(label, fn)
+        table.insert(attempts, {
+            label = label,
+            fn = fn,
+        })
+    end
+
+    local function add_attempts(prefix, invoke)
+        if #args == 0 then
+            add_attempt(prefix .. "no_args", function()
+                return invoke()
+            end)
+            add_attempt(prefix .. "empty_args_table", function()
+                return invoke({})
+            end)
+            add_attempt(prefix .. "empty_args_text", function()
+                return invoke("")
+            end)
+            add_attempt(prefix .. "command_and_empty_table", function()
+                return invoke(command_name, {})
+            end)
+            add_attempt(prefix .. "command_only", function()
+                return invoke(command_name)
+            end)
+            add_attempt(prefix .. "command_and_empty_text", function()
+                return invoke(command_name, "")
+            end)
+        else
+            add_attempt(prefix .. "args_table", function()
+                return invoke(args)
+            end)
+            add_attempt(prefix .. "args_text", function()
+                return invoke(args_text)
+            end)
+            if unpack_args then
+                add_attempt(prefix .. "unpacked_args", function()
+                    return invoke(unpack_args(args))
+                end)
+            end
+            add_attempt(prefix .. "command_and_args_table", function()
+                return invoke(command_name, args)
+            end)
+            add_attempt(prefix .. "command_and_args_text", function()
+                return invoke(command_name, args_text)
+            end)
+            add_attempt(prefix .. "command_args_text_and_table", function()
+                return invoke(command_name, args_text, args)
+            end)
+            if unpack_args then
+                add_attempt(prefix .. "command_and_unpacked_args", function()
+                    return invoke(command_name, unpack_args(args))
+                end)
+            end
+        end
+    end
+
+    if callable.self_arg ~= nil then
+        add_attempts("self_", function(...)
+            return callable.func(callable.self_arg, ...)
+        end)
+    end
+    add_attempts("", function(...)
+        return callable.func(...)
+    end)
+
+    local last_error = "no_attempts"
+    for _, attempt in ipairs(attempts) do
+        local ok, result = pcall(attempt.fn)
+        if ok and result ~= false then
+            log(string.format(
+                "Hidden command '%s' dispatched via %s / %s",
+                command_name,
+                callable.label,
+                attempt.label
+            ))
+            return true, nil
+        end
+        last_error = ok and "returned false" or tostring(result)
+    end
+
+    return false, last_error
+end
+
+local function resolve_hidden_entry(registry, command_name)
+    local entry = rawget(registry, command_name)
+    if entry ~= nil then
+        return entry, "direct"
+    end
+
+    local ok, indexed_entry = pcall(function()
+        return registry[command_name]
+    end)
+    if ok and indexed_entry ~= nil then
+        return indexed_entry, "metatable"
+    end
+
+    for key, value in next, registry do
+        local normalized_key = normalize_hidden_name(key)
+        if normalized_key == command_name then
+            return value, string.format("string_key:%s", tostring(key))
+        end
+
+        local descriptor_name = extract_hidden_descriptor_name(value)
+        if descriptor_name == command_name then
+            return value, string.format("descriptor:%s", tostring(key))
+        end
+    end
+
+    return nil, nil
+end
+
+local function execute_hidden_command(command_name, args_text, args)
+    local registry = discover_hidden_registry()
+    if not registry then
+        return false, "registry_missing"
+    end
+
+    local entry, resolve_mode = resolve_hidden_entry(registry, command_name)
+    if entry == nil then
+        return false, "command_not_registered"
+    end
+    if resolve_mode ~= "direct" then
+        log(string.format(
+            "Hidden command '%s' resolved via %s at %s",
+            command_name,
+            tostring(resolve_mode),
+            tostring(HiddenCommandRegistryPath or "<unknown>")
+        ))
+    end
+
+    local callables = collect_hidden_callables(entry, command_name)
+    if #callables == 0 then
+        return false, "entry_not_callable"
+    end
+
+    local last_error = "call_failed"
+    for _, callable in ipairs(callables) do
+        local ok, error_message = invoke_hidden_callable(callable, command_name, args_text, args)
+        if ok then
+            return true, nil
+        end
+        last_error = error_message or last_error
+    end
+
+    return false, last_error
+end
+
+local function run_hidden_commands(request)
+    local commands_text = trim(request.commands_text)
+    if commands_text == "" then
+        return false, "empty_commands"
+    end
+
+    local executed = 0
+    for line in commands_text:gmatch("[^\r\n]+") do
+        local command_name, args_text, args = parse_hidden_command_line(line)
+        if command_name ~= nil then
+            local ok, error_message = execute_hidden_command(command_name, args_text, args)
+            if not ok then
+                return false, string.format("%s (%s)", command_name, tostring(error_message))
+            end
+            executed = executed + 1
+        end
+    end
+
+    if executed < 1 then
+        return false, "no_valid_commands"
+    end
+    return true, tostring(executed)
 end
 
 local function write_status()
@@ -514,8 +1646,10 @@ local function write_status()
     local player = get_player()
     if not player:IsValid() then
         handle:write(string.format(
-            '{\n  "player_valid": false,\n  "bridge_version": "%s"\n}\n',
-            Version
+            '{\n  "player_valid": false,\n  "bridge_version": "%s",\n  "hidden_registry_ready": %s,\n  "chat_suppression_ready": %s\n}\n',
+            Version,
+            tostring(HiddenRegistryReady),
+            tostring(ChatSuppressionReady)
         ))
         handle:close()
         return true
@@ -523,8 +1657,10 @@ local function write_status()
 
     local location = player:K2_GetActorLocation()
     handle:write(string.format(
-        '{\n  "player_valid": true,\n  "bridge_version": "%s",\n  "position_x": %.3f,\n  "position_y": %.3f,\n  "position_z": %.3f\n}\n',
+        '{\n  "player_valid": true,\n  "bridge_version": "%s",\n  "hidden_registry_ready": %s,\n  "chat_suppression_ready": %s,\n  "position_x": %.3f,\n  "position_y": %.3f,\n  "position_z": %.3f\n}\n',
         Version,
+        tostring(HiddenRegistryReady),
+        tostring(ChatSuppressionReady),
         location.X,
         location.Y,
         location.Z
@@ -558,6 +1694,7 @@ local function read_request()
         y = parse_number(text, "y"),
         z = parse_number(text, "z"),
         enabled = parse_bool(text, "enabled"),
+        commands_text = parse_string(text, "commands_text"),
     }
 end
 
@@ -632,6 +1769,28 @@ local function process_request()
             log(string.format("Fly request #%d => mode %d", request.request_id, desired_mode))
         else
             log(string.format("Fly request #%d => fallback mode %d", request.request_id, desired_mode))
+        end
+        pcall(write_status)
+    elseif request.action == "run_hidden_commands" then
+        local player = get_player()
+        if not player:IsValid() then
+            log(string.format("Hidden-command request #%d ignored: local player not ready.", request.request_id))
+            return
+        end
+
+        local ok, detail = run_hidden_commands(request)
+        if ok then
+            log(string.format(
+                "Hidden-command request #%d executed %s command(s).",
+                request.request_id,
+                tostring(detail)
+            ))
+        else
+            log(string.format(
+                "Hidden-command request #%d failed: %s",
+                request.request_id,
+                tostring(detail)
+            ))
         end
         pcall(write_status)
     end
@@ -1044,6 +2203,54 @@ RegisterHook("/Script/Engine.PlayerController:ClientRestart", function(self, new
     end)
 end)
 
+do
+    local ok, pre_id, post_id = pcall(
+        RegisterHook,
+        "/Script/Pal.PalUIChat:OnReceivedChat",
+        function(context, message_param)
+            local hook_ok, hook_error = pcall(function()
+                local suppressed, message_text, detail = suppress_chat_param_message(message_param)
+                if not message_text or not starts_with_hidden_chat_command(message_text) then
+                    return
+                end
+
+                if not ChatSuppressionProbeLogged then
+                    ChatSuppressionProbeLogged = true
+                    log(string.format(
+                        "Chat suppression probe => detail=%s text=%s",
+                        tostring(detail),
+                        tostring(message_text)
+                    ))
+                end
+
+                if suppressed then
+                    log(string.format(
+                        "Suppressed visible chat command via %s: %s",
+                        tostring(detail),
+                        tostring(message_text)
+                    ))
+                else
+                    log(string.format(
+                        "Visible chat command suppression failed (%s): %s",
+                        tostring(detail),
+                        tostring(message_text)
+                    ))
+                end
+            end)
+            if not hook_ok then
+                log("Chat suppression hook error: " .. tostring(hook_error))
+            end
+        end
+    )
+
+    if ok and pre_id ~= nil then
+        ChatSuppressionReady = true
+    else
+        ChatSuppressionReady = false
+        log("Chat suppression hook registration failed: " .. tostring(pre_id))
+    end
+end
+
 LoopAsync(200, function()
     TickCounter = TickCounter + 1
 
@@ -1070,4 +2277,6 @@ ExecuteInGameThread(function()
     pcall(read_toggles)
     pcall(write_status)
     log("Initial cheat state: " .. describe_cheats())
+    pcall(discover_hidden_registry)
+    pcall(write_status)
 end)

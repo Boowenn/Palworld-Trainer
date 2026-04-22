@@ -31,6 +31,12 @@ class CoordPresetGroup:
     items: tuple[CoordPreset, ...]
 
 
+def _is_placeholder_preset(x: float, y: float, z: float) -> bool:
+    """Chenstack coordinate packs sometimes store note rows as 0,0,0."""
+
+    return x == 0.0 and y == 0.0 and z == 0.0
+
+
 def get_bundled_coord_file() -> Path:
     """Return the coordinate library bundled with the trainer."""
 
@@ -110,6 +116,8 @@ def parse_coord_groups_text(content: str) -> tuple[CoordPresetGroup, ...]:
                 y = float(value[1])
                 z = float(value[2])
             except (TypeError, ValueError):
+                continue
+            if _is_placeholder_preset(x, y, z):
                 continue
             items.append(CoordPreset(group=group_name, name=item_name, x=x, y=y, z=z))
         groups.append(CoordPresetGroup(name=group_name, items=tuple(items)))
